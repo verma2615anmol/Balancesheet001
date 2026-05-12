@@ -793,6 +793,11 @@ function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t
 #  INCOME TAX CALCULATOR — PY 2025-26 / AY 2026-27
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  INCOME TAX CALCULATOR — Multi-Year: PY 2023-24 to PY 2026-27
+# ══════════════════════════════════════════════════════════════════════════════
+
 TAX_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Income Tax Calculator – CA Toolkit</title>
@@ -813,7 +818,6 @@ h1 em{font-style:normal;color:var(--brand)}
 
 .main-wrap{max-width:1200px;margin:0 auto;padding:0 24px 48px}
 
-/* ── Regime Toggle ────────────────────────────────────────── */
 .regime-toggle{display:flex;justify-content:center;gap:12px;margin-bottom:28px;flex-wrap:wrap}
 .regime-btn{padding:10px 28px;border-radius:10px;border:2px solid var(--border);
             background:var(--white);font-family:inherit;font-size:13px;font-weight:700;
@@ -821,7 +825,6 @@ h1 em{font-style:normal;color:var(--brand)}
 .regime-btn.active{border-color:var(--brand);background:#EFF6FF;color:var(--brand);box-shadow:0 2px 12px rgba(29,78,216,.12)}
 .regime-btn:hover{border-color:var(--brand)}
 
-/* ── Cards ────────────────────────────────────────────────── */
 .calc-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
 @media(max-width:860px){.calc-grid{grid-template-columns:1fr}}
 .card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
@@ -834,7 +837,6 @@ h1 em{font-style:normal;color:var(--brand)}
 .card-head p{font-size:12px;color:var(--muted);margin-top:1px}
 .card-body{padding:20px}
 
-/* ── Form Fields ──────────────────────────────────────────── */
 .section-title{font-size:12px;font-weight:700;color:var(--brand);text-transform:uppercase;
                letter-spacing:.06em;margin:16px 0 10px;padding-bottom:6px;
                border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px}
@@ -866,7 +868,6 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
            transition:background .2s;margin-top:8px}
 .btn-reset:hover{background:#E5E7EB}
 
-/* ── Result Panel ─────────────────────────────────────────── */
 .result-panel{display:none}
 .result-panel.show{display:block}
 .result-row{display:flex;justify-content:space-between;align-items:center;
@@ -904,6 +905,7 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
 
 .disclaimer{font-size:11px;color:var(--muted);line-height:1.6;margin-top:16px;
             padding:12px;background:#F9FAFB;border-radius:8px;border:1px solid var(--border)}
+.disclaimer.future{background:#FFFBEB;border-color:#FDE68A}
 .toast{position:fixed;bottom:24px;right:24px;background:var(--ink);color:#fff;
        padding:11px 18px;border-radius:10px;font-size:13px;font-weight:500;
        transform:translateY(80px);transition:transform .3s;z-index:999}
@@ -913,7 +915,15 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
            border:1px solid var(--border);border-radius:8px;padding:7px 14px;font-size:12px;
            font-weight:600;cursor:pointer;font-family:inherit;transition:all .2s;margin-top:8px}
 .print-btn:hover{background:#E5E7EB}
-@media print{nav,footer,.hero,.regime-toggle,.card:first-child,.btn-calc,.btn-reset,.print-btn,.toast{display:none!important}
+
+.year-pills{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.year-pill{padding:6px 14px;border-radius:8px;border:1.5px solid var(--border);background:var(--white);
+           font-size:12px;font-weight:600;cursor:pointer;transition:all .2s;color:var(--muted);font-family:inherit}
+.year-pill.active{border-color:var(--brand);background:#EFF6FF;color:var(--brand)}
+.year-pill:hover{border-color:var(--brand)}
+.year-pill .future-tag{font-size:9px;background:#FDE68A;color:#92400E;padding:1px 5px;border-radius:4px;margin-left:4px;font-weight:700}
+
+@media print{nav,footer,.hero,.regime-toggle,.card:first-child,.btn-calc,.btn-reset,.print-btn,.toast,.year-pills{display:none!important}
              .result-panel{display:block!important}.calc-grid{display:block!important}
              .card{box-shadow:none!important;border:1px solid #ccc!important}}
 </style></head><body>
@@ -936,9 +946,9 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
 </nav>
 
 <section class="hero">
-  <div class="hero-badge">🧮 PY 2025-26 · AY 2026-27</div>
+  <div class="hero-badge">🧮 Multi-Year · PY 2023-24 to PY 2026-27</div>
   <h1>Income Tax <em>Calculator</em></h1>
-  <p>Calculate tax under Old &amp; New Regime. Enter income under 5 heads, deductions, TDS/TCS — get instant comparison with slab-wise breakup.</p>
+  <p>Calculate tax under Old &amp; New Regime for any year from PY 2023-24 to PY 2026-27. Income under 5 heads, deductions, TDS/TCS — instant comparison with slab-wise breakup.</p>
 </section>
 
 <div class="main-wrap">
@@ -957,22 +967,26 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
     <div class="card">
       <div class="card-head">
         <div class="icon" style="background:#EFF6FF">👤</div>
-        <div><h2>Basic Information</h2><p>Assessee details</p></div>
+        <div><h2>Basic Information</h2><p>Assessee details &amp; Assessment Year</p></div>
       </div>
       <div class="card-body">
+        <div class="field">
+          <label>Assessment Year</label>
+          <div class="year-pills" id="yearPills">
+            <button class="year-pill" onclick="setYear('2023-24')">PY 2023-24<br/><span style="font-size:10px;font-weight:400;color:var(--muted)">AY 2024-25</span></button>
+            <button class="year-pill" onclick="setYear('2024-25')">PY 2024-25<br/><span style="font-size:10px;font-weight:400;color:var(--muted)">AY 2025-26</span></button>
+            <button class="year-pill active" onclick="setYear('2025-26')">PY 2025-26<br/><span style="font-size:10px;font-weight:400;color:var(--muted)">AY 2026-27</span></button>
+            <button class="year-pill" onclick="setYear('2026-27')">PY 2026-27<br/><span style="font-size:10px;font-weight:400;color:var(--muted)">AY 2027-28</span><span class="future-tag">Upcoming</span></button>
+          </div>
+          <div id="futureYearNote" style="display:none;margin-top:6px;padding:8px 12px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;font-size:11px;color:#92400E;font-weight:500">
+            ⚠️ PY 2026-27 rates are based on Union Budget 2026 (no changes from PY 2025-26). Final rates subject to any future amendments.
+          </div>
+        </div>
         <div class="row2">
           <div class="field">
             <label>Assessee Name <span style="font-weight:400;text-transform:none">(optional)</span></label>
             <input type="text" id="assesseeName" placeholder="e.g. Rajesh Kumar" style="border:1.5px solid var(--border);border-radius:8px;padding:9px 12px;font-family:inherit;font-size:13px;width:100%"/>
           </div>
-          <div class="field">
-            <label>Assessment Year</label>
-            <select id="assessYear">
-              <option value="2026-27" selected>AY 2026-27 (PY 2025-26)</option>
-            </select>
-          </div>
-        </div>
-        <div class="row2">
           <div class="field">
             <label>Age Category</label>
             <select id="ageCategory">
@@ -981,13 +995,13 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
               <option value="supersenior">Super Senior Citizen (80+)</option>
             </select>
           </div>
-          <div class="field">
-            <label>Residential Status</label>
-            <select id="residentialStatus">
-              <option value="resident">Resident</option>
-              <option value="nri">Non-Resident</option>
-            </select>
-          </div>
+        </div>
+        <div class="field">
+          <label>Residential Status</label>
+          <select id="residentialStatus" style="max-width:280px">
+            <option value="resident">Resident</option>
+            <option value="nri">Non-Resident</option>
+          </select>
         </div>
       </div>
     </div>
@@ -999,7 +1013,6 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
         <div><h2>Income Under 5 Heads</h2><p>Gross Total Income computation</p></div>
       </div>
       <div class="card-body">
-        <!-- HEAD 1: SALARY -->
         <div class="section-title">📋 1. Income from Salary</div>
         <div class="row2">
           <div class="field">
@@ -1015,10 +1028,9 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
         <div class="field">
           <label>Standard Deduction</label>
           <input type="number" id="stdDeduction" value="75000" placeholder="75000" min="0"/>
-          <p class="hint">₹75,000 for both regimes from FY 2024-25 onwards</p>
+          <p class="hint" id="stdDedHint">₹75,000 for PY 2024-25 onwards. ₹50,000 for PY 2023-24.</p>
         </div>
 
-        <!-- HEAD 2: HOUSE PROPERTY -->
         <div class="section-title">🏠 2. Income from House Property</div>
         <div class="row2">
           <div class="field">
@@ -1029,11 +1041,10 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
           <div class="field">
             <label>Interest on Home Loan (Sec 24b)</label>
             <input type="number" id="homeLoanInterest" placeholder="0" min="0"/>
-            <p class="hint">Max ₹2L self-occupied (old regime). ₹2L in new regime too</p>
+            <p class="hint">Max ₹2L self-occupied</p>
           </div>
         </div>
 
-        <!-- HEAD 3: BUSINESS/PROFESSION -->
         <div class="section-title">💼 3. Profits from Business / Profession</div>
         <div class="field">
           <label>Net Profit from Business / Profession</label>
@@ -1041,13 +1052,12 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
           <p class="hint">After all business deductions. Can be loss (negative)</p>
         </div>
 
-        <!-- HEAD 4: CAPITAL GAINS -->
         <div class="section-title">📈 4. Capital Gains</div>
         <div class="row2">
           <div class="field">
             <label>STCG u/s 111A (equity, STT paid)</label>
             <input type="number" id="stcg111a" placeholder="0" min="0"/>
-            <p class="hint">Taxed at 20%</p>
+            <p class="hint" id="stcgRateHint">Rate varies by year</p>
           </div>
           <div class="field">
             <label>STCG — Other (non-equity)</label>
@@ -1059,16 +1069,15 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
           <div class="field">
             <label>LTCG u/s 112A (equity, STT paid)</label>
             <input type="number" id="ltcg112a" placeholder="0" min="0"/>
-            <p class="hint">12.5% above ₹1.25 lakh exemption</p>
+            <p class="hint" id="ltcgRateHint">Rate &amp; exemption varies by year</p>
           </div>
           <div class="field">
             <label>LTCG — Other (property, debt etc.)</label>
             <input type="number" id="ltcgOther" placeholder="0" min="0"/>
-            <p class="hint">12.5% flat (post July 2024 rule)</p>
+            <p class="hint" id="ltcgOtherHint">Rate varies by year</p>
           </div>
         </div>
 
-        <!-- HEAD 5: OTHER SOURCES -->
         <div class="section-title">📦 5. Income from Other Sources</div>
         <div class="row2">
           <div class="field">
@@ -1088,7 +1097,7 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
     <div class="card" id="deductions-card">
       <div class="card-head">
         <div class="icon" style="background:#FFFBEB">🧾</div>
-        <div><h2>Deductions (Chapter VI-A)</h2><p>Applicable in Old Regime only</p></div>
+        <div><h2>Deductions (Chapter VI-A)</h2><p>Applicable in Old Regime only (except 80CCD(2))</p></div>
       </div>
       <div class="card-body">
         <div class="row2">
@@ -1107,7 +1116,7 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
           <div class="field">
             <label>80CCD(2) — Employer NPS</label>
             <input type="number" id="ded80ccd2" placeholder="0" min="0"/>
-            <p class="hint">14% of salary (available in both regimes)</p>
+            <p class="hint">Available in both regimes</p>
           </div>
           <div class="field">
             <label>80D — Medical Insurance</label>
@@ -1163,7 +1172,6 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
       </div>
     </div>
 
-    <!-- ──── CALCULATE BUTTON ──── -->
     <button class="btn-calc" onclick="calculateTax()">🧮 Calculate Tax</button>
     <button class="btn-reset" onclick="resetForm()">↺ Reset All Fields</button>
   </div>
@@ -1172,11 +1180,10 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
   <div id="result-section">
     <div class="result-panel" id="resultPanel">
 
-      <!-- Single regime result -->
       <div class="card" id="singleResult" style="display:none">
         <div class="card-head">
           <div class="icon" style="background:#ECFDF5">📊</div>
-          <div><h2 id="resultTitle">Tax Computation</h2><p id="resultSubtitle">PY 2025-26 · AY 2026-27</p></div>
+          <div><h2 id="resultTitle">Tax Computation</h2><p id="resultSubtitle"></p></div>
         </div>
         <div class="card-body">
           <div id="resultBody"></div>
@@ -1184,10 +1191,9 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
         </div>
       </div>
 
-      <!-- Comparison result -->
       <div id="compareResult" style="display:none">
         <div class="compare-box">
-          <h3>⚖️ Regime Comparison</h3>
+          <h3>⚖️ Regime Comparison — <span id="compareYearLabel"></span></h3>
           <div class="regime-winner" id="regimeWinner"></div>
           <div class="savings" id="savingsAmt"></div>
           <table class="compare-table">
@@ -1215,7 +1221,6 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
         <button class="print-btn" onclick="window.print()">🖨️ Print / Save PDF</button>
       </div>
 
-      <!-- Slab Breakup -->
       <div class="card" style="margin-top:16px" id="slabCard">
         <div class="card-head">
           <div class="icon" style="background:#F0FDF4">📋</div>
@@ -1224,42 +1229,32 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
         <div class="card-body" id="slabBody"></div>
       </div>
 
-      <div class="disclaimer">
-        <strong>⚠ Disclaimer:</strong> This calculator is for estimation purposes only based on Income Tax provisions
-        for PY 2025-26 (AY 2026-27). Actual tax liability may differ based on specific exemptions, deductions, and
-        interpretations. Always consult a qualified Chartered Accountant for final tax computation.
-        Surcharge and marginal relief calculations are indicative. Special rate incomes (capital gains, winnings)
+      <div class="disclaimer" id="disclaimerBox">
+        <strong>⚠ Disclaimer:</strong> This calculator is for estimation purposes only. Actual tax liability may differ
+        based on specific exemptions, deductions, and interpretations. Always consult a qualified Chartered Accountant
+        for final tax computation. Surcharge marginal relief is indicative. Special rate incomes (capital gains, winnings)
         are not eligible for Section 87A rebate.
+      </div>
+      <div class="disclaimer future" id="futureDisclaimer" style="display:none;margin-top:8px">
+        <strong>📅 Future Year Note:</strong> PY 2026-27 (AY 2027-28) rates are based on the Union Budget 2026 which
+        retained PY 2025-26 slab rates without changes. These rates are subject to any future amendments or notifications
+        by the Government. Always verify with the latest Finance Act before finalizing.
       </div>
     </div>
 
     <!-- Before calculation: show slab reference -->
     <div id="preCalcInfo">
-      <div class="card">
+      <div class="card" id="refSlabCard">
         <div class="card-head">
           <div class="icon" style="background:#EFF6FF">📋</div>
-          <div><h2>New Regime Slab Rates</h2><p>AY 2026-27 (Default)</p></div>
+          <div><h2 id="refSlabTitle">New Regime Slab Rates</h2><p id="refSlabSub"></p></div>
         </div>
-        <div class="card-body">
-          <table class="slab-table">
-            <thead><tr><th>Income Slab</th><th style="text-align:right">Rate</th></tr></thead>
-            <tbody>
-              <tr><td>Up to ₹4,00,000</td><td class="amt">Nil</td></tr>
-              <tr><td>₹4,00,001 – ₹8,00,000</td><td class="amt">5%</td></tr>
-              <tr><td>₹8,00,001 – ₹12,00,000</td><td class="amt">10%</td></tr>
-              <tr><td>₹12,00,001 – ₹16,00,000</td><td class="amt">15%</td></tr>
-              <tr><td>₹16,00,001 – ₹20,00,000</td><td class="amt">20%</td></tr>
-              <tr><td>₹20,00,001 – ₹24,00,000</td><td class="amt">25%</td></tr>
-              <tr><td>Above ₹24,00,000</td><td class="amt">30%</td></tr>
-            </tbody>
-          </table>
-          <p class="hint" style="margin-top:10px">Rebate u/s 87A: Income up to ₹12 lakh → zero tax (max rebate ₹60,000). Standard deduction ₹75,000 for salaried → effective ₹12.75L tax-free.</p>
-        </div>
+        <div class="card-body" id="refSlabBody"></div>
       </div>
       <div class="card">
         <div class="card-head">
           <div class="icon" style="background:#FFFBEB">📋</div>
-          <div><h2>Old Regime Slab Rates</h2><p>AY 2026-27</p></div>
+          <div><h2>Old Regime Slab Rates</h2><p>Unchanged across all years</p></div>
         </div>
         <div class="card-body">
           <table class="slab-table">
@@ -1271,26 +1266,15 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
               <tr><td>Above ₹10,00,000</td><td class="amt">30%</td></tr>
             </tbody>
           </table>
-          <p class="hint" style="margin-top:10px">Senior citizens (60-80): exempt up to ₹3L. Super seniors (80+): exempt up to ₹5L. Rebate u/s 87A: up to ₹5L → max ₹12,500 rebate.</p>
+          <p class="hint" style="margin-top:10px">Senior citizens (60-80): exempt up to ₹3L. Super seniors (80+): exempt up to ₹5L. Rebate u/s 87A: up to ₹5L → max ₹12,500.</p>
         </div>
       </div>
       <div class="card">
         <div class="card-head">
           <div class="icon" style="background:#F5F3FF">📋</div>
-          <div><h2>Special Rate Incomes</h2><p>AY 2026-27</p></div>
+          <div><h2>Special Rate Incomes</h2><p id="refSpecialSub"></p></div>
         </div>
-        <div class="card-body">
-          <table class="slab-table">
-            <thead><tr><th>Type</th><th style="text-align:right">Rate</th></tr></thead>
-            <tbody>
-              <tr><td>STCG u/s 111A (equity, STT paid)</td><td class="amt">20%</td></tr>
-              <tr><td>LTCG u/s 112A (equity, STT paid) above ₹1.25L</td><td class="amt">12.5%</td></tr>
-              <tr><td>LTCG — Other assets</td><td class="amt">12.5%</td></tr>
-              <tr><td>Winnings (lottery, games, etc.)</td><td class="amt">30%</td></tr>
-            </tbody>
-          </table>
-          <p class="hint" style="margin-top:10px">Health &amp; Education Cess @ 4% applicable on tax + surcharge. Surcharge: 10% (50L–1Cr), 15% (1Cr–2Cr), 25% (2Cr–5Cr), 37% (above 5Cr — old regime only). New regime max surcharge 25%.</p>
-        </div>
+        <div class="card-body" id="refSpecialBody"></div>
       </div>
     </div>
   </div>
@@ -1301,62 +1285,128 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
   <p class="footer-brand">CA Toolkit</p>
   <p>Built for Indian Chartered Accountants · Saves hours every year</p>
   <p style="margin-top:6px">Created by CA Articles of GD Singla &amp; Co.</p>
-  <p style="margin-top:12px;font-size:11px">© 2026 CA Toolkit · <span style="color:var(--accent)">Income Tax Calculator — PY 2025-26 / AY 2026-27</span></p>
+  <p style="margin-top:12px;font-size:11px">© 2026 CA Toolkit · <span style="color:var(--accent)">Income Tax Calculator — PY 2023-24 to PY 2026-27</span></p>
 </footer>
 <div class="toast" id="toast"></div>
 
 <script>
 /* ═══════════════════════════════════════════════════════════════════════
-   INCOME TAX CALCULATOR — PY 2025-26 / AY 2026-27
+   INCOME TAX CALCULATOR — Multi-Year Engine
+   PY 2023-24 | PY 2024-25 | PY 2025-26 | PY 2026-27 (upcoming)
    ═══════════════════════════════════════════════════════════════════════ */
 
 let currentRegime = 'new';
+let currentYear = '2025-26';
 
-function setRegime(r) {
-  currentRegime = r;
-  document.querySelectorAll('.regime-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('btn-' + r).classList.add('active');
-  // Show/hide deductions card
-  const dc = document.getElementById('deductions-card');
-  if (r === 'new') { dc.style.opacity = '0.4'; dc.style.pointerEvents = 'none'; }
-  else { dc.style.opacity = '1'; dc.style.pointerEvents = 'auto'; }
-}
+/* ── YEAR-SPECIFIC TAX CONFIGURATIONS ─────────────────────────────── */
+const YEAR_CONFIG = {
+  '2023-24': {
+    label: 'PY 2023-24 (AY 2024-25)',
+    ayLabel: 'AY 2024-25',
+    isFuture: false,
+    stdDeduction: 50000,
+    newSlabs: [
+      { upto: 300000,  rate: 0 },
+      { upto: 600000,  rate: 0.05 },
+      { upto: 900000,  rate: 0.10 },
+      { upto: 1200000, rate: 0.15 },
+      { upto: 1500000, rate: 0.20 },
+      { upto: Infinity, rate: 0.30 },
+    ],
+    rebateNew: { limit: 700000, max: 25000 },
+    rebateOld: { limit: 500000, max: 12500 },
+    stcg111aRate: 0.15,
+    ltcg112aRate: 0.10,
+    ltcg112aExempt: 100000,
+    ltcgOtherRate: 0.20, // with indexation
+    ltcgOtherLabel: '20% (with indexation)',
+    maxSurchargeNew: 0.25,
+  },
+  '2024-25': {
+    label: 'PY 2024-25 (AY 2025-26)',
+    ayLabel: 'AY 2025-26',
+    isFuture: false,
+    stdDeduction: 75000,
+    newSlabs: [
+      { upto: 300000,  rate: 0 },
+      { upto: 700000,  rate: 0.05 },
+      { upto: 1000000, rate: 0.10 },
+      { upto: 1200000, rate: 0.15 },
+      { upto: 1500000, rate: 0.20 },
+      { upto: Infinity, rate: 0.30 },
+    ],
+    rebateNew: { limit: 700000, max: 25000 },
+    rebateOld: { limit: 500000, max: 12500 },
+    stcg111aRate: 0.20, // changed from July 2024
+    ltcg112aRate: 0.125, // changed from July 2024
+    ltcg112aExempt: 125000, // changed from July 2024
+    ltcgOtherRate: 0.125, // changed from July 2024
+    ltcgOtherLabel: '12.5% (no indexation)',
+    maxSurchargeNew: 0.25,
+  },
+  '2025-26': {
+    label: 'PY 2025-26 (AY 2026-27)',
+    ayLabel: 'AY 2026-27',
+    isFuture: false,
+    stdDeduction: 75000,
+    newSlabs: [
+      { upto: 400000,  rate: 0 },
+      { upto: 800000,  rate: 0.05 },
+      { upto: 1200000, rate: 0.10 },
+      { upto: 1600000, rate: 0.15 },
+      { upto: 2000000, rate: 0.20 },
+      { upto: 2400000, rate: 0.25 },
+      { upto: Infinity, rate: 0.30 },
+    ],
+    rebateNew: { limit: 1200000, max: 60000 },
+    rebateOld: { limit: 500000, max: 12500 },
+    stcg111aRate: 0.20,
+    ltcg112aRate: 0.125,
+    ltcg112aExempt: 125000,
+    ltcgOtherRate: 0.125,
+    ltcgOtherLabel: '12.5%',
+    maxSurchargeNew: 0.25,
+  },
+  '2026-27': {
+    label: 'PY 2026-27 (AY 2027-28)',
+    ayLabel: 'AY 2027-28',
+    isFuture: true,
+    stdDeduction: 75000,
+    newSlabs: [
+      { upto: 400000,  rate: 0 },
+      { upto: 800000,  rate: 0.05 },
+      { upto: 1200000, rate: 0.10 },
+      { upto: 1600000, rate: 0.15 },
+      { upto: 2000000, rate: 0.20 },
+      { upto: 2400000, rate: 0.25 },
+      { upto: Infinity, rate: 0.30 },
+    ],
+    rebateNew: { limit: 1200000, max: 60000 },
+    rebateOld: { limit: 500000, max: 12500 },
+    stcg111aRate: 0.20,
+    ltcg112aRate: 0.125,
+    ltcg112aExempt: 125000,
+    ltcgOtherRate: 0.125,
+    ltcgOtherLabel: '12.5%',
+    maxSurchargeNew: 0.25,
+  },
+};
 
-// Init
-setRegime('new');
-
-function v(id) { return parseFloat(document.getElementById(id).value) || 0; }
-function fmt(n) {
-  if (n < 0) return '-₹' + Math.abs(Math.round(n)).toLocaleString('en-IN');
-  return '₹' + Math.round(n).toLocaleString('en-IN');
-}
-
-/* ── NEW REGIME SLABS ─────────────────────────────────────────────── */
-const NEW_SLABS = [
-  { upto: 400000,  rate: 0    },
-  { upto: 800000,  rate: 0.05 },
-  { upto: 1200000, rate: 0.10 },
-  { upto: 1600000, rate: 0.15 },
-  { upto: 2000000, rate: 0.20 },
-  { upto: 2400000, rate: 0.25 },
-  { upto: Infinity, rate: 0.30 },
-];
-
-/* ── OLD REGIME SLABS (below 60) ──────────────────────────────────── */
+/* ── OLD REGIME SLABS (unchanged across all years) ────────────────── */
 const OLD_SLABS_BELOW60 = [
-  { upto: 250000,  rate: 0    },
+  { upto: 250000,  rate: 0 },
   { upto: 500000,  rate: 0.05 },
   { upto: 1000000, rate: 0.20 },
   { upto: Infinity, rate: 0.30 },
 ];
 const OLD_SLABS_SENIOR = [
-  { upto: 300000,  rate: 0    },
+  { upto: 300000,  rate: 0 },
   { upto: 500000,  rate: 0.05 },
   { upto: 1000000, rate: 0.20 },
   { upto: Infinity, rate: 0.30 },
 ];
 const OLD_SLABS_SUPERSENIOR = [
-  { upto: 500000,  rate: 0    },
+  { upto: 500000,  rate: 0 },
   { upto: 1000000, rate: 0.20 },
   { upto: Infinity, rate: 0.30 },
 ];
@@ -1368,19 +1418,96 @@ function getOldSlabs() {
   return OLD_SLABS_BELOW60;
 }
 
-/* ── Slab-based tax calculation ───────────────────────────────────── */
-function calcSlabTax(taxableIncome, slabs) {
-  let tax = 0;
+function cfg() { return YEAR_CONFIG[currentYear]; }
+
+/* ── UI: Year selection ───────────────────────────────────────────── */
+function setYear(yr) {
+  currentYear = yr;
+  document.querySelectorAll('.year-pill').forEach(b => b.classList.remove('active'));
+  event.currentTarget.classList.add('active');
+
+  const c = cfg();
+  // Update std deduction default
+  document.getElementById('stdDeduction').value = c.stdDeduction;
+  document.getElementById('stdDedHint').textContent =
+    c.stdDeduction === 50000 ? '₹50,000 for PY 2023-24' : '₹75,000 for PY 2024-25 onwards';
+
+  // Update hints for capital gains rates
+  document.getElementById('stcgRateHint').textContent =
+    'Taxed at ' + (c.stcg111aRate * 100) + '%' + (currentYear === '2024-25' ? ' (post July 2024 budget)' : '');
+  document.getElementById('ltcgRateHint').textContent =
+    (c.ltcg112aRate * 100) + '% above ₹' + (c.ltcg112aExempt / 100000).toFixed(2).replace('.00','') + ' lakh exemption';
+  document.getElementById('ltcgOtherHint').textContent = c.ltcgOtherLabel;
+
+  // Future year note
+  document.getElementById('futureYearNote').style.display = c.isFuture ? 'block' : 'none';
+
+  // Update reference slab tables
+  updateRefSlabs();
+
+  // Hide results on year change
+  document.getElementById('resultPanel').classList.remove('show');
+  document.getElementById('preCalcInfo').style.display = 'block';
+}
+
+function setRegime(r) {
+  currentRegime = r;
+  document.querySelectorAll('.regime-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('btn-' + r).classList.add('active');
+  const dc = document.getElementById('deductions-card');
+  if (r === 'new') { dc.style.opacity = '0.4'; dc.style.pointerEvents = 'none'; }
+  else { dc.style.opacity = '1'; dc.style.pointerEvents = 'auto'; }
+}
+
+function updateRefSlabs() {
+  const c = cfg();
+  const slabs = c.newSlabs;
+  document.getElementById('refSlabTitle').textContent = 'New Regime Slab Rates';
+  document.getElementById('refSlabSub').textContent = c.label + (c.isFuture ? ' (Estimated)' : '');
+  let h = '<table class="slab-table"><thead><tr><th>Income Slab</th><th style="text-align:right">Rate</th></tr></thead><tbody>';
   let prev = 0;
+  for (const s of slabs) {
+    const from = '₹' + prev.toLocaleString('en-IN');
+    const to = s.upto === Infinity ? '& above' : '₹' + s.upto.toLocaleString('en-IN');
+    const label = s.upto === Infinity ? 'Above ' + from : from + ' – ' + to;
+    h += '<tr><td>' + (prev === 0 ? 'Up to ' + to : label) + '</td><td class="amt">' + (s.rate === 0 ? 'Nil' : (s.rate*100)+'%') + '</td></tr>';
+    prev = s.upto;
+  }
+  h += '</tbody></table>';
+  const rebateInfo = c.rebateNew.limit >= 1200000
+    ? 'Rebate u/s 87A: Income up to ₹' + (c.rebateNew.limit/100000) + ' lakh → zero tax (max rebate ₹' + c.rebateNew.max.toLocaleString('en-IN') + ').'
+    : 'Rebate u/s 87A: Income up to ₹' + (c.rebateNew.limit/100000) + ' lakh → zero tax (max rebate ₹' + c.rebateNew.max.toLocaleString('en-IN') + ').';
+  h += '<p class="hint" style="margin-top:10px">' + rebateInfo + ' Standard deduction ₹' + c.stdDeduction.toLocaleString('en-IN') + ' for salaried.</p>';
+  document.getElementById('refSlabBody').innerHTML = h;
+
+  // Special rates reference
+  document.getElementById('refSpecialSub').textContent = c.label;
+  let sp = '<table class="slab-table"><thead><tr><th>Type</th><th style="text-align:right">Rate</th></tr></thead><tbody>';
+  sp += '<tr><td>STCG u/s 111A (equity, STT paid)</td><td class="amt">' + (c.stcg111aRate*100) + '%</td></tr>';
+  sp += '<tr><td>LTCG u/s 112A (equity) above ₹' + (c.ltcg112aExempt/100000).toFixed(2).replace('.00','') + 'L</td><td class="amt">' + (c.ltcg112aRate*100) + '%</td></tr>';
+  sp += '<tr><td>LTCG — Other assets</td><td class="amt">' + c.ltcgOtherLabel + '</td></tr>';
+  sp += '<tr><td>Winnings (lottery, games, etc.)</td><td class="amt">30%</td></tr>';
+  sp += '</tbody></table>';
+  sp += '<p class="hint" style="margin-top:10px">Health &amp; Education Cess @ 4% on tax + surcharge. Max surcharge under new regime: 25%.</p>';
+  document.getElementById('refSpecialBody').innerHTML = sp;
+}
+
+/* ── Helpers ───────────────────────────────────────────────────────── */
+function v(id) { return parseFloat(document.getElementById(id).value) || 0; }
+function fmt(n) {
+  if (n < 0) return '-₹' + Math.abs(Math.round(n)).toLocaleString('en-IN');
+  return '₹' + Math.round(n).toLocaleString('en-IN');
+}
+
+/* ── Slab-based tax ───────────────────────────────────────────────── */
+function calcSlabTax(taxableIncome, slabs) {
+  let tax = 0, prev = 0;
   const breakup = [];
   for (const slab of slabs) {
     if (taxableIncome <= prev) break;
     const chunk = Math.min(taxableIncome, slab.upto) - prev;
     const t = chunk * slab.rate;
-    breakup.push({
-      from: prev, to: Math.min(taxableIncome, slab.upto),
-      rate: slab.rate, amount: chunk, tax: t
-    });
+    breakup.push({ from: prev, to: Math.min(taxableIncome, slab.upto), rate: slab.rate, amount: chunk, tax: t });
     tax += t;
     prev = slab.upto;
   }
@@ -1391,13 +1518,12 @@ function calcSlabTax(taxableIncome, slabs) {
 function calcSurcharge(tax, totalIncome, isNewRegime) {
   if (totalIncome <= 5000000) return 0;
   let rate = 0;
+  const maxNew = cfg().maxSurchargeNew;
   if (isNewRegime) {
-    // New regime: max surcharge 25%
     if (totalIncome <= 10000000) rate = 0.10;
     else if (totalIncome <= 20000000) rate = 0.15;
-    else rate = 0.25;
+    else rate = maxNew;
   } else {
-    // Old regime
     if (totalIncome <= 10000000) rate = 0.10;
     else if (totalIncome <= 20000000) rate = 0.15;
     else if (totalIncome <= 50000000) rate = 0.25;
@@ -1410,9 +1536,10 @@ function calcSurcharge(tax, totalIncome, isNewRegime) {
   for (const th of thresholds) {
     if (totalIncome > th && totalIncome <= th * 1.2) {
       const excess = totalIncome - th;
-      const taxAtThreshold = calcSlabTax(th, isNewRegime ? NEW_SLABS : getOldSlabs()).tax;
-      const surchargeAtThreshold = calcSurcharge(taxAtThreshold, th, isNewRegime);
-      const maxTax = taxAtThreshold + surchargeAtThreshold + excess;
+      const slabs = isNewRegime ? cfg().newSlabs : getOldSlabs();
+      const taxAtTh = calcSlabTax(th, slabs).tax;
+      const surchAtTh = calcSurcharge(taxAtTh, th, isNewRegime);
+      const maxTax = taxAtTh + surchAtTh + excess;
       if (tax + surcharge > maxTax) {
         surcharge = maxTax - tax;
         if (surcharge < 0) surcharge = 0;
@@ -1422,174 +1549,151 @@ function calcSurcharge(tax, totalIncome, isNewRegime) {
   return surcharge;
 }
 
-/* ── Surcharge for special rate incomes (capped at 15%) ───────── */
 function calcSurchargeCapped(tax, totalIncome) {
   if (totalIncome <= 5000000) return 0;
   let rate = Math.min(0.15, totalIncome > 10000000 ? 0.15 : 0.10);
   return tax * rate;
 }
 
-/* ── Main Computation ─────────────────────────────────────────── */
+/* ── Main Computation ─────────────────────────────────────────────── */
 function computeForRegime(isNew) {
+  const c = cfg();
   const name = document.getElementById('assesseeName').value.trim();
-  const age = document.getElementById('ageCategory').value;
   const isResident = document.getElementById('residentialStatus').value === 'resident';
 
-  // ── Head 1: Salary
+  // Head 1: Salary
   const grossSalary = v('grossSalary');
   const exemptAllow = isNew ? 0 : v('exemptAllow');
   const stdDed = v('stdDeduction');
   const salaryIncome = Math.max(0, grossSalary - exemptAllow - stdDed);
 
-  // ── Head 2: House Property
+  // Head 2: House Property
   let houseRaw = v('houseIncome');
   const loanInt = v('homeLoanInterest');
-  const houseIncome = houseRaw - loanInt; // can be negative (loss)
+  const houseIncome = houseRaw - loanInt;
   const houseLoss = houseIncome < 0 ? houseIncome : 0;
-  // Set-off of house property loss capped at ₹2L against other heads
   const houseLossCapped = Math.max(houseLoss, -200000);
 
-  // ── Head 3: Business
+  // Head 3: Business
   const businessIncome = v('businessIncome');
 
-  // ── Head 4: Capital Gains
+  // Head 4: Capital Gains
   const stcg111a = v('stcg111a');
   const stcgOther = v('stcgOther');
   const ltcg112a = v('ltcg112a');
   const ltcgOther = v('ltcgOther');
 
-  // ── Head 5: Other Sources
+  // Head 5: Other Sources
   const otherIncome = v('otherIncome');
   const winnings = v('winningsIncome');
 
-  // ── Gross Total Income
+  // Gross Total Income (normal portion)
   const normalIncome = salaryIncome + Math.max(0, houseIncome) + businessIncome + stcgOther + otherIncome;
-  // Apply house loss set-off
   const normalAfterLoss = Math.max(0, normalIncome + houseLossCapped);
 
-  // ── Deductions (Old Regime only, except 80CCD(2) available in both)
+  // Deductions
   let totalDeductions = 0;
   let ded80ccd2 = v('ded80ccd2');
   if (isNew) {
-    totalDeductions = ded80ccd2; // Only employer NPS in new regime
+    totalDeductions = ded80ccd2;
   } else {
-    const ded80c = Math.min(v('ded80c'), 150000);
-    const ded80ccd1b = Math.min(v('ded80ccd1b'), 50000);
-    const ded80d = v('ded80d');
-    const ded80e = v('ded80e');
-    const ded80g = v('ded80g');
-    const ded80tta = v('ded80tta');
-    const dedOth = v('dedOther');
-    totalDeductions = ded80c + ded80ccd1b + ded80ccd2 + ded80d + ded80e + ded80g + ded80tta + dedOth;
+    totalDeductions = Math.min(v('ded80c'), 150000) + Math.min(v('ded80ccd1b'), 50000) +
+      ded80ccd2 + v('ded80d') + v('ded80e') + v('ded80g') + v('ded80tta') + v('dedOther');
   }
 
-  // ── Taxable Income (normal slab portion)
   const normalTaxable = Math.max(0, normalAfterLoss - totalDeductions);
 
-  // ── Tax on Normal Income at slab rates
-  const slabs = isNew ? NEW_SLABS : getOldSlabs();
+  // Tax on normal income
+  const slabs = isNew ? c.newSlabs : getOldSlabs();
   const slabResult = calcSlabTax(normalTaxable, slabs);
   let normalTax = slabResult.tax;
 
-  // ── Section 87A Rebate on normal slab income
+  // Rebate u/s 87A
   let rebate87a = 0;
   if (isResident) {
-    if (isNew && normalTaxable <= 1200000) {
-      rebate87a = Math.min(normalTax, 60000);
-    } else if (!isNew && normalTaxable <= 500000) {
-      rebate87a = Math.min(normalTax, 12500);
+    const rebateCfg = isNew ? c.rebateNew : c.rebateOld;
+    if (normalTaxable <= rebateCfg.limit) {
+      rebate87a = Math.min(normalTax, rebateCfg.max);
     }
   }
   normalTax = Math.max(0, normalTax - rebate87a);
 
-  // ── Special rate taxes
-  const taxSTCG111A = stcg111a * 0.20;
-  const ltcg112aExempt = Math.min(ltcg112a, 125000);
-  const taxLTCG112A = Math.max(0, ltcg112a - 125000) * 0.125;
-  const taxLTCGOther = ltcgOther * 0.125;
+  // Special rate taxes (year-specific rates)
+  const taxSTCG111A = stcg111a * c.stcg111aRate;
+  const ltcg112aExempt = Math.min(ltcg112a, c.ltcg112aExempt);
+  const taxLTCG112A = Math.max(0, ltcg112a - c.ltcg112aExempt) * c.ltcg112aRate;
+  const taxLTCGOther = ltcgOther * c.ltcgOtherRate;
   const taxWinnings = winnings * 0.30;
-
   const totalSpecialTax = taxSTCG111A + taxLTCG112A + taxLTCGOther + taxWinnings;
 
-  // ── Total income for surcharge calculation
   const totalIncome = normalTaxable + stcg111a + ltcg112a + ltcgOther + winnings;
 
-  // ── Surcharge
+  // Surcharge
   const surchargeNormal = calcSurcharge(normalTax, totalIncome, isNew);
   const surchargeSpecial = calcSurchargeCapped(totalSpecialTax, totalIncome);
   const totalSurcharge = surchargeNormal + surchargeSpecial;
 
-  // ── Health & Education Cess @ 4%
+  // Cess
   const totalBeforeCess = normalTax + totalSpecialTax + totalSurcharge;
   const cess = totalBeforeCess * 0.04;
-
-  // ── Total Tax
   const totalTax = totalBeforeCess + cess;
 
-  // ── Less: TDS, TCS, Advance Tax
+  // Prepaid taxes
   const tdsPaid = v('tds');
   const tcsPaid = v('tcs');
   const advTax = v('advanceTax');
   const totalPrepaid = tdsPaid + tcsPaid + advTax;
-
   const netPayable = totalTax - totalPrepaid;
 
   return {
-    name, age, isNew, isResident,
+    yearLabel: c.label, ayLabel: c.ayLabel, isFuture: c.isFuture,
+    name, isNew, isResident, c,
     grossSalary, exemptAllow, stdDed, salaryIncome,
     houseRaw, loanInt, houseIncome, houseLossCapped,
     businessIncome,
     stcg111a, stcgOther, ltcg112a, ltcg112aExempt, ltcgOther,
     otherIncome, winnings,
-    normalIncome: normalAfterLoss,
-    totalDeductions,
-    normalTaxable,
+    normalIncome: normalAfterLoss, totalDeductions, normalTaxable,
     slabResult,
-    normalTax: normalTax + rebate87a, // before rebate for display
-    rebate87a,
+    normalTax: normalTax + rebate87a, rebate87a,
     normalTaxAfterRebate: normalTax,
-    taxSTCG111A, taxLTCG112A, taxLTCGOther, taxWinnings,
-    totalSpecialTax,
-    totalIncome,
-    surchargeNormal, surchargeSpecial, totalSurcharge,
-    cess,
-    totalTax,
-    tdsPaid, tcsPaid, advTax, totalPrepaid,
-    netPayable,
+    taxSTCG111A, taxLTCG112A, taxLTCGOther, taxWinnings, totalSpecialTax,
+    totalIncome, surchargeNormal, surchargeSpecial, totalSurcharge,
+    cess, totalTax,
+    tdsPaid, tcsPaid, advTax, totalPrepaid, netPayable,
   };
 }
 
-/* ── Render single regime result ───────────────────────────────── */
-function renderResult(r) {
-  const regLabel = r.isNew ? 'New Regime' : 'Old Regime';
-  let h = '';
+/* ── Render result rows ────────────────────────────────────────────── */
+function row(lbl, val, cls) {
+  return '<div class="result-row '+(cls||'')+'"><span class="lbl">'+lbl+'</span><span class="val">'+val+'</span></div>';
+}
 
+function renderResult(r) {
+  const c = r.c;
+  let h = '';
   h += row('Gross Salary', fmt(r.grossSalary));
   if (!r.isNew) h += row('Less: Exempt Allowances', fmt(-r.exemptAllow), 'sub');
-  h += row('Less: Standard Deduction', fmt(-r.stdDed), 'sub');
+  h += row('Less: Standard Deduction (₹'+c.stdDeduction.toLocaleString('en-IN')+')', fmt(-r.stdDed), 'sub');
   h += row('Net Salary Income (Head 1)', fmt(r.salaryIncome));
   h += '<div style="height:6px"></div>';
-
   h += row('House Property Income (Head 2)', fmt(r.houseIncome));
   if (r.houseLossCapped < 0) h += row('Loss set-off (max ₹2L)', fmt(r.houseLossCapped), 'sub');
   h += row('Business Income (Head 3)', fmt(r.businessIncome));
 
   if (r.stcg111a || r.stcgOther || r.ltcg112a || r.ltcgOther)
     h += row('Capital Gains (Head 4)', fmt(r.stcg111a + r.stcgOther + r.ltcg112a + r.ltcgOther));
-  if (r.stcg111a) h += row('STCG u/s 111A @ 20%', fmt(r.stcg111a), 'sub');
+  if (r.stcg111a) h += row('STCG u/s 111A @ '+(c.stcg111aRate*100)+'%', fmt(r.stcg111a), 'sub');
   if (r.stcgOther) h += row('STCG — Other (slab rate)', fmt(r.stcgOther), 'sub');
-  if (r.ltcg112a) h += row('LTCG u/s 112A (exempt ₹1.25L)', fmt(r.ltcg112a), 'sub');
-  if (r.ltcgOther) h += row('LTCG — Other @ 12.5%', fmt(r.ltcgOther), 'sub');
+  if (r.ltcg112a) h += row('LTCG u/s 112A (exempt ₹'+(c.ltcg112aExempt/100000)+'L)', fmt(r.ltcg112a), 'sub');
+  if (r.ltcgOther) h += row('LTCG — Other @ '+c.ltcgOtherLabel, fmt(r.ltcgOther), 'sub');
 
   h += row('Other Sources (Head 5)', fmt(r.otherIncome + r.winnings));
   if (r.winnings) h += row('Winnings @ 30%', fmt(r.winnings), 'sub');
 
   h += '<div style="height:4px;border-top:2px solid var(--border);margin:10px 0"></div>';
   h += row('Gross Total Income', fmt(r.normalIncome + r.stcg111a + r.ltcg112a + r.ltcgOther + r.winnings), 'total');
-
-  if (r.totalDeductions > 0) {
-    h += row('Less: Deductions Ch VI-A', fmt(-r.totalDeductions));
-  }
+  if (r.totalDeductions > 0) h += row('Less: Deductions Ch VI-A', fmt(-r.totalDeductions));
   h += row('Total Taxable Income (Normal)', fmt(r.normalTaxable), 'total');
 
   h += '<div style="height:4px;border-top:2px solid var(--border);margin:10px 0"></div>';
@@ -1599,9 +1703,9 @@ function renderResult(r) {
 
   if (r.totalSpecialTax > 0) {
     h += '<div style="height:6px"></div>';
-    if (r.taxSTCG111A) h += row('Tax on STCG 111A @ 20%', fmt(r.taxSTCG111A), 'sub');
-    if (r.taxLTCG112A) h += row('Tax on LTCG 112A @ 12.5%', fmt(r.taxLTCG112A), 'sub');
-    if (r.taxLTCGOther) h += row('Tax on LTCG Other @ 12.5%', fmt(r.taxLTCGOther), 'sub');
+    if (r.taxSTCG111A) h += row('Tax on STCG 111A @ '+(c.stcg111aRate*100)+'%', fmt(r.taxSTCG111A), 'sub');
+    if (r.taxLTCG112A) h += row('Tax on LTCG 112A @ '+(c.ltcg112aRate*100)+'%', fmt(r.taxLTCG112A), 'sub');
+    if (r.taxLTCGOther) h += row('Tax on LTCG Other @ '+c.ltcgOtherLabel, fmt(r.taxLTCGOther), 'sub');
     if (r.taxWinnings) h += row('Tax on Winnings @ 30%', fmt(r.taxWinnings), 'sub');
     h += row('Total Special Rate Tax', fmt(r.totalSpecialTax));
   }
@@ -1618,50 +1722,40 @@ function renderResult(r) {
   const cls = r.netPayable > 0 ? 'payable' : 'refund';
   const lbl = r.netPayable > 0 ? 'Net Tax Payable' : 'Refund Due';
   h += row(lbl, fmt(Math.abs(r.netPayable)), 'total ' + cls);
-
   return h;
 }
 
-function row(lbl, val, cls) {
-  return `<div class="result-row ${cls||''}""><span class="lbl">${lbl}</span><span class="val">${val}</span></div>`;
-}
-
-/* ── Render slab breakup table ─────────────────────────────────── */
 function renderSlabs(result) {
   const slabs = result.slabResult.breakup;
   let h = '<table class="slab-table"><thead><tr><th>Slab</th><th style="text-align:right">Income</th><th style="text-align:right">Rate</th><th style="text-align:right">Tax</th></tr></thead><tbody>';
   for (const s of slabs) {
-    h += `<tr><td>₹${Math.round(s.from).toLocaleString('en-IN')} – ₹${s.to===Infinity?'∞':Math.round(s.to).toLocaleString('en-IN')}</td>
-          <td class="amt">${fmt(s.amount)}</td>
-          <td class="amt">${(s.rate*100).toFixed(0)}%</td>
-          <td class="amt">${fmt(s.tax)}</td></tr>`;
+    h += '<tr><td>₹'+Math.round(s.from).toLocaleString('en-IN')+' – ₹'+(s.to===Infinity?'∞':Math.round(s.to).toLocaleString('en-IN'))+'</td>';
+    h += '<td class="amt">'+fmt(s.amount)+'</td><td class="amt">'+(s.rate*100).toFixed(0)+'%</td><td class="amt">'+fmt(s.tax)+'</td></tr>';
   }
-  h += `<tr style="font-weight:800;border-top:2px solid var(--border)"><td>Total</td><td></td><td></td><td class="amt">${fmt(result.slabResult.tax)}</td></tr>`;
+  h += '<tr style="font-weight:800;border-top:2px solid var(--border)"><td>Total</td><td></td><td></td><td class="amt">'+fmt(result.slabResult.tax)+'</td></tr>';
   h += '</tbody></table>';
   return h;
 }
 
-/* ── CALCULATE ────────────────────────────────────────────────── */
+/* ── CALCULATE ────────────────────────────────────────────────────── */
 function calculateTax() {
+  const c = cfg();
   const panel = document.getElementById('resultPanel');
   const preInfo = document.getElementById('preCalcInfo');
 
   if (currentRegime === 'both') {
-    // Compare both
     const rNew = computeForRegime(true);
     const rOld = computeForRegime(false);
 
     document.getElementById('singleResult').style.display = 'none';
     document.getElementById('compareResult').style.display = 'block';
+    document.getElementById('compareYearLabel').textContent = c.label + (c.isFuture ? ' (Estimated)' : '');
 
-    // Winner
     const diff = Math.abs(rNew.totalTax - rOld.totalTax);
     const winner = rNew.totalTax <= rOld.totalTax ? 'New Regime' : 'Old Regime';
-    document.getElementById('regimeWinner').innerHTML =
-      `<strong>${winner}</strong> saves you more tax`;
+    document.getElementById('regimeWinner').innerHTML = '<strong>' + winner + '</strong> saves you more tax';
     document.getElementById('savingsAmt').textContent = 'Save ' + fmt(diff);
 
-    // Compare table
     let ct = '';
     ct += cmpRow('Taxable Income', rNew.normalTaxable, rOld.normalTaxable, true);
     ct += cmpRow('Tax on Normal Income', rNew.normalTaxAfterRebate, rOld.normalTaxAfterRebate, true);
@@ -1672,21 +1766,17 @@ function calculateTax() {
     ct += cmpRow('Net Payable/Refund', rNew.netPayable, rOld.netPayable, true);
     document.getElementById('compareBody').innerHTML = ct;
 
-    // Detailed
     document.getElementById('newRegimeDetail').innerHTML = renderResult(rNew);
     document.getElementById('oldRegimeDetail').innerHTML = renderResult(rOld);
 
-    // Slab cards for both
-    document.getElementById('slabRegimeLabel').textContent = 'New Regime';
+    document.getElementById('slabRegimeLabel').textContent = c.label;
     document.getElementById('slabBody').innerHTML =
       '<h3 style="font-size:13px;font-weight:700;margin-bottom:8px">🆕 New Regime Slabs</h3>' +
       renderSlabs(rNew) +
       '<div style="height:16px"></div>' +
       '<h3 style="font-size:13px;font-weight:700;margin-bottom:8px">📜 Old Regime Slabs</h3>' +
       renderSlabs(rOld);
-
   } else {
-    // Single regime
     const isNew = currentRegime === 'new';
     const result = computeForRegime(isNew);
 
@@ -1695,22 +1785,22 @@ function calculateTax() {
 
     const label = isNew ? '🆕 New Regime' : '📜 Old Regime';
     document.getElementById('resultTitle').textContent = 'Tax Computation — ' + label;
-    if (result.name) {
-      document.getElementById('resultSubtitle').textContent = result.name + ' · PY 2025-26 · AY 2026-27';
-    }
+    document.getElementById('resultSubtitle').textContent =
+      (result.name ? result.name + ' · ' : '') + c.label + (c.isFuture ? ' (Estimated)' : '');
 
     document.getElementById('resultBody').innerHTML = renderResult(result);
-    document.getElementById('slabRegimeLabel').textContent = isNew ? 'New Regime' : 'Old Regime';
+    document.getElementById('slabRegimeLabel').textContent = (isNew ? 'New Regime' : 'Old Regime') + ' · ' + c.label;
     document.getElementById('slabBody').innerHTML = renderSlabs(result);
   }
+
+  // Show/hide future disclaimer
+  document.getElementById('futureDisclaimer').style.display = c.isFuture ? 'block' : 'none';
 
   panel.classList.add('show');
   preInfo.style.display = 'none';
   document.getElementById('slabCard').style.display = 'block';
-
-  // Scroll to results
   document.getElementById('result-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  toast('Tax calculated successfully!');
+  toast('Tax calculated for ' + c.label + '!');
 }
 
 function cmpRow(label, valNew, valOld, lowerBetter) {
@@ -1719,12 +1809,12 @@ function cmpRow(label, valNew, valOld, lowerBetter) {
   if (lowerBetter) {
     if (valNew < valOld) nCls = 'winner'; else if (valOld < valNew) oCls = 'winner';
   }
-  return `<tr><td style="text-align:left;font-weight:500">${label}</td><td class="${nCls}">${nw}</td><td class="${oCls}">${ol}</td></tr>`;
+  return '<tr><td style="text-align:left;font-weight:500">'+label+'</td><td class="'+nCls+'">'+nw+'</td><td class="'+oCls+'">'+ol+'</td></tr>';
 }
 
 function resetForm() {
   document.querySelectorAll('input[type=number]').forEach(i => {
-    if (i.id === 'stdDeduction') i.value = 75000;
+    if (i.id === 'stdDeduction') i.value = cfg().stdDeduction;
     else i.value = '';
   });
   document.getElementById('assesseeName').value = '';
@@ -1742,8 +1832,13 @@ function toast(msg) {
   t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 3000);
 }
+
+// Initialize
+setRegime('new');
+updateRefSlabs();
 </script>
 </body></html>"""
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ADMIN PANEL
