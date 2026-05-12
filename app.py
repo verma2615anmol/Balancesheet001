@@ -672,7 +672,7 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
     </div>
     <div class="plan">
       <div class="plan-name">Starter</div>
-      <div class="plan-price">₹399</div>
+      <div class="plan-price">₹60</div>
       <div class="plan-uploads">10 uploads</div>
       <div class="plan-validity">3 month validity</div>
       <ul><li>All features</li><li>All sheet types</li><li>Up to 20 MB</li></ul>
@@ -681,7 +681,7 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
     <div class="plan pop">
       <div class="plan-badge">Most Popular</div>
       <div class="plan-name">Standard</div>
-      <div class="plan-price">₹899</div>
+      <div class="plan-price">₹130</div>
       <div class="plan-uploads">25 uploads</div>
       <div class="plan-validity">3 month validity</div>
       <ul><li>All features</li><li>Priority support</li><li>Up to 20 MB</li></ul>
@@ -689,7 +689,7 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
     </div>
     <div class="plan">
       <div class="plan-name">Professional</div>
-      <div class="plan-price">₹1,799</div>
+      <div class="plan-price">₹270</div>
       <div class="plan-uploads">60 uploads</div>
       <div class="plan-validity">3 month validity</div>
       <ul><li>All features</li><li>Priority support</li><li>Up to 20 MB</li></ul>
@@ -697,7 +697,7 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
     </div>
     <div class="plan">
       <div class="plan-name">Firm</div>
-      <div class="plan-price">₹3,499</div>
+      <div class="plan-price">₹600</div>
       <div class="plan-uploads">150 uploads</div>
       <div class="plan-validity">3 month validity</div>
       <ul><li>All features</li><li>WhatsApp support</li><li>Up to 20 MB</li></ul>
