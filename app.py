@@ -210,7 +210,7 @@ input:focus{border-color:var(--brand)}
 .lr a{color:var(--brand);text-decoration:none;font-weight:500}
 </style></head><body>
 <div class="auth-card">
-  <div class="auth-logo">CAToolkit</span></div>
+  <div class="auth-logo">CA<span>Toolkit</span></div>
   <div class="auth-sub">Professional tools for Indian CAs &amp; Accountants</div>
   <h2>Sign in</h2>
   <p style="font-size:13px;color:var(--muted);margin-bottom:24px">Enter your credentials to continue</p>
@@ -290,8 +290,12 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       <span class="badge b-{{ plan }}">{{ plan_label }}</span>
       {% if is_admin %}<span class="badge" style="background:#EFF6FF;color:var(--brand);margin-left:4px">Admin</span>{% endif %}
     </span>
+    {% if username %}
     {% if is_admin %}<a href="/admin" class="nav-btn">Admin Panel</a>{% endif %}
     <a href="/logout" class="nav-link">Sign out</a>
+    {% else %}
+    <a href="/login" class="nav-btn">Sign In</a>
+    {% endif %}
   </div>
 </nav>
 
@@ -301,6 +305,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   <p>Professional tools built by CA Articles of GD Singla &amp; Co. — designed to save hours of manual work every year.</p>
 </div>
 
+{% if username %}
 <!-- Upload usage strip -->
 <div class="usage-strip">
   <div class="usage-box">
@@ -317,37 +322,68 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <a href="/tool/converter#pricing" class="upgrade-link">Upgrade plan →</a>
   </div>
 </div>
+{% endif %}
 
 <!-- Tools grid -->
 <div class="tools-grid">
 
+  <!-- PREMIUM: Login required -->
+  {% if username %}
   <a href="/tool/converter" class="tool-card">
+  {% else %}
+  <a href="/login" class="tool-card">
+  {% endif %}
+    {% if not username %}<div style="position:absolute;top:12px;right:12px;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🔒 Login Required</div>{% endif %}
     <div class="tool-icon" style="background:#EFF6FF">📊</div>
     <h2>Balance Sheet Year-Shift</h2>
     <p>Roll over your comparative Excel balance sheet to any new financial year in seconds. Shifts CY→PY, clears CY, restores all formulas and updates every date.</p>
-    <span class="tool-tag tag-live">✓ Live</span>
+    <span class="tool-tag tag-live">✓ Live · Premium</span>
     <div class="arrow">→</div>
   </a>
 
-  <div class="tool-card disabled">
+  <!-- PREMIUM: Login required -->
+  <div class="tool-card disabled" style="position:relative">
+    <div style="position:absolute;top:12px;right:12px;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🔒 Premium</div>
     <div class="tool-icon" style="background:#F0FDF4">📋</div>
     <h2>Balance Sheet from Trial Balance</h2>
     <p>Generate a formatted comparative balance sheet directly from your trial balance data. No manual formatting required.</p>
     <span class="tool-tag tag-soon">🔜 Coming Soon</span>
   </div>
 
+  <!-- FREE: No login needed -->
   <a href="/tool/tax-calculator" class="tool-card">
+    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
     <div class="tool-icon" style="background:#FFFBEB">🧮</div>
     <h2>Income Tax Calculator</h2>
-    <p>Calculate income tax liability under old and new regime for PY 2025-26 (AY 2026-27). Income under 5 heads, TDS/TCS, surcharge &amp; cess — all built in.</p>
-    <span class="tool-tag tag-live">✓ Live</span>
+    <p>Calculate income tax under old and new regime for PY 2025-26. Income under 5 heads, TDS/TCS, surcharge &amp; cess — all built in.</p>
+    <span class="tool-tag tag-live">✓ Live · Free</span>
+    <div class="arrow">→</div>
+  </a>
+
+  <!-- FREE: No login needed -->
+  <a href="/tool/tds-calculator" class="tool-card">
+    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
+    <div class="tool-icon" style="background:#EFF6FF">📑</div>
+    <h2>TDS Calculator</h2>
+    <p>Calculate TDS amount, rate and due date for any payment type. Covers all major sections — 194C, 194J, 194H, 192 and more.</p>
+    <span class="tool-tag tag-live">✓ Live · Free</span>
+    <div class="arrow">→</div>
+  </a>
+
+  <!-- FREE: No login needed -->
+  <a href="/tool/depreciation-calculator" class="tool-card">
+    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
+    <div class="tool-icon" style="background:#F5F3FF">🏭</div>
+    <h2>Depreciation Calculator</h2>
+    <p>Calculate depreciation under Companies Act 2013 (WDV/SLM) and Income Tax Act. Get full schedule with opening/closing WDV.</p>
+    <span class="tool-tag tag-live">✓ Live · Free</span>
     <div class="arrow">→</div>
   </a>
 
   <div class="tool-card disabled">
-    <div class="tool-icon" style="background:#F5F3FF">🚀</div>
-    <h2>More Features Coming Soon</h2>
-    <p>We're building more tools for Indian CAs. Stay tuned — new utilities will be added regularly based on your feedback.</p>
+    <div class="tool-icon" style="background:#FEF2F2">🚀</div>
+    <h2>More Tools Coming Soon</h2>
+    <p>We're building more tools for Indian CAs. Stay tuned — new utilities added regularly based on your feedback.</p>
     <span class="tool-tag tag-soon">Stay Tuned</span>
   </div>
 
@@ -524,7 +560,8 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
     </span>
     {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
     <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
-    <a href="/logout" class="nav-link">Sign out</a>
+    {% if username %}<a href="/logout" class="nav-link">Sign out</a>
+    {% else %}<a href="/login" class="nav-btn">Sign In</a>{% endif %}
   </div>
 </nav>
 
@@ -1841,6 +1878,604 @@ updateRefSlabs();
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  TDS CALCULATOR TEMPLATE
+# ══════════════════════════════════════════════════════════════════════════════
+
+TDS_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TDS Calculator – CA Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+<style>
+""" + BASE_CSS + """
+.nav-links{display:flex;gap:20px;list-style:none}
+.nav-links a{text-decoration:none;color:var(--muted);font-size:13px;font-weight:500;transition:color .2s}
+.nav-links a:hover{color:var(--brand)}
+.hero{text-align:center;padding:48px 24px 32px;max-width:700px;margin:0 auto}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#ECFDF5;
+            color:#065F46;border:1px solid #A7F3D0;border-radius:99px;
+            padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:16px}
+h1{font-size:clamp(22px,4vw,36px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:12px}
+h1 em{font-style:normal;color:var(--brand)}
+.hero p{font-size:14px;color:var(--muted);line-height:1.7;max-width:500px;margin:0 auto}
+.main{max-width:900px;margin:0 auto;padding:32px 24px 56px;
+      display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start}
+@media(max-width:700px){.main{grid-template-columns:1fr}}
+.card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
+      box-shadow:var(--shadow);overflow:hidden}
+.card-head{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.card-head .icon{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px}
+.card-head h2{font-size:14px;font-weight:700}
+.card-head p{font-size:12px;color:var(--muted);margin-top:1px}
+.card-body{padding:20px}
+.field{margin-bottom:16px}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:5px}
+.hint{font-size:11px;color:var(--muted);margin-top:4px}
+input[type=number],input[type=text],select{width:100%;border:1.5px solid var(--border);border-radius:8px;
+  padding:9px 12px;font-family:inherit;font-size:13px;color:var(--ink);background:var(--white);
+  transition:border-color .2s;outline:none}
+input:focus,select:focus{border-color:var(--brand)}
+.btn{width:100%;background:var(--brand);color:#fff;border:none;border-radius:10px;
+     padding:12px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;transition:background .2s}
+.btn:hover{background:var(--brand-d)}
+.result-box{display:none;margin-top:16px;background:#F0FDF4;border:1px solid #A7F3D0;
+            border-radius:10px;padding:20px}
+.result-main{font-size:28px;font-weight:800;color:#065F46;margin-bottom:4px}
+.result-sub{font-size:13px;color:var(--muted);margin-bottom:16px}
+.result-table{width:100%;border-collapse:collapse;font-size:13px}
+.result-table td{padding:8px 0;border-bottom:1px solid #D1FAE5}
+.result-table tr:last-child td{border:none}
+.result-table td:last-child{text-align:right;font-weight:600;color:var(--ink)}
+.sections-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+.sections-table th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+                   color:var(--muted);border-bottom:1.5px solid var(--border);padding:6px 8px}
+.sections-table td{padding:8px;border-bottom:1px solid var(--border);vertical-align:top}
+.sections-table tr:last-child td{border:none}
+.sections-table tr:hover td{background:#F9FAFB}
+footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-size:12px}
+.footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:4px}
+</style></head><body>
+
+<nav>
+  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <ul class="nav-links">
+    <li><a href="/#tool">All Tools</a></li>
+  </ul>
+  <div class="nav-right">
+    {% if username %}
+    <span class="nav-user">👤 <strong>{{ username }}</strong></span>
+    {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
+    <a href="/logout" class="nav-link">Sign out</a>
+    {% else %}
+    <a href="/login" class="nav-btn">Sign In</a>
+    {% endif %}
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-badge">🆓 Free Tool · No Login Required</div>
+  <h1>TDS Calculator</h1>
+  <p>Calculate TDS amount, applicable rate and deposit due date for any payment type. Covers all major sections under Income Tax Act.</p>
+</section>
+
+<div class="main">
+  <div class="card">
+    <div class="card-head">
+      <div class="icon" style="background:#EFF6FF">📑</div>
+      <div><h2>Calculate TDS</h2><p>Enter payment details below</p></div>
+    </div>
+    <div class="card-body">
+      <div class="field">
+        <label>Nature of Payment (Section)</label>
+        <select id="tdsSection" onchange="updateSection()">
+          <option value="">— Select Section —</option>
+          <option value="192">Sec 192 – Salary</option>
+          <option value="192A">Sec 192A – PF Withdrawal</option>
+          <option value="193">Sec 193 – Interest on Securities</option>
+          <option value="194">Sec 194 – Dividend</option>
+          <option value="194A">Sec 194A – Interest (Banks/Others)</option>
+          <option value="194B">Sec 194B – Lottery/Puzzle Winnings</option>
+          <option value="194C_ind">Sec 194C – Contractor (Individual/HUF)</option>
+          <option value="194C_oth">Sec 194C – Contractor (Others)</option>
+          <option value="194D">Sec 194D – Insurance Commission</option>
+          <option value="194DA">Sec 194DA – Life Insurance Policy</option>
+          <option value="194G">Sec 194G – Lottery Ticket Commission</option>
+          <option value="194H">Sec 194H – Commission/Brokerage</option>
+          <option value="194I_land">Sec 194I – Rent (Land/Building)</option>
+          <option value="194I_plant">Sec 194I – Rent (Plant/Machinery)</option>
+          <option value="194IA">Sec 194IA – Purchase of Immovable Property</option>
+          <option value="194IB">Sec 194IB – Rent by Individual/HUF</option>
+          <option value="194J_fee">Sec 194J – Professional Fees</option>
+          <option value="194J_tech">Sec 194J – Technical Services/Royalty</option>
+          <option value="194K">Sec 194K – Income from Mutual Fund Units</option>
+          <option value="194LA">Sec 194LA – Compensation (Land Acquisition)</option>
+          <option value="194LB">Sec 194LB – Interest (Infrastructure Bond)</option>
+          <option value="194M">Sec 194M – Contractor/Professional by Individual</option>
+          <option value="194N">Sec 194N – Cash Withdrawal</option>
+          <option value="194O">Sec 194O – E-Commerce Operator</option>
+          <option value="194P">Sec 194P – Senior Citizen (75+)</option>
+          <option value="194Q">Sec 194Q – Purchase of Goods</option>
+          <option value="194R">Sec 194R – Benefit/Perquisite</option>
+          <option value="194S">Sec 194S – VDA/Crypto</option>
+          <option value="206C">Sec 206C – TCS (Various)</option>
+        </select>
+        <p class="hint" id="sectionHint">Select a section to see threshold and rate details</p>
+      </div>
+      <div class="field">
+        <label>Payment Amount (₹)</label>
+        <input type="number" id="paymentAmt" placeholder="e.g. 100000" min="0"/>
+        <p class="hint">Enter the gross payment amount before TDS</p>
+      </div>
+      <div class="field">
+        <label>Payee Type</label>
+        <select id="payeeType">
+          <option value="resident">Resident Individual/HUF</option>
+          <option value="company">Resident Company/Firm</option>
+          <option value="nri">Non-Resident</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Payment Month</label>
+        <select id="paymentMonth">
+          <option value="1">April</option>
+          <option value="2">May</option>
+          <option value="3">June</option>
+          <option value="4">July</option>
+          <option value="5">August</option>
+          <option value="6">September</option>
+          <option value="7">October</option>
+          <option value="8">November</option>
+          <option value="9">December</option>
+          <option value="10">January</option>
+          <option value="11">February</option>
+          <option value="12">March</option>
+        </select>
+        <p class="hint">Used to calculate TDS deposit due date</p>
+      </div>
+      <button class="btn" onclick="calcTDS()">Calculate TDS →</button>
+
+      <div class="result-box" id="resultBox">
+        <div class="result-main" id="tdsAmt"></div>
+        <div class="result-sub" id="tdsSub"></div>
+        <table class="result-table">
+          <tr><td>Payment Amount</td><td id="rPayment"></td></tr>
+          <tr><td>Applicable Section</td><td id="rSection"></td></tr>
+          <tr><td>TDS Rate</td><td id="rRate"></td></tr>
+          <tr><td>TDS Amount</td><td id="rTDS"></td></tr>
+          <tr><td>Net Payment to Payee</td><td id="rNet"></td></tr>
+          <tr><td>TDS Deposit Due Date</td><td id="rDue"></td></tr>
+          <tr><td>Challan</td><td id="rChallan"></td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card" style="margin-bottom:18px">
+      <div class="card-head">
+        <div class="icon" style="background:#FFFBEB">📋</div>
+        <div><h2>TDS Rate Chart</h2><p>Common sections at a glance</p></div>
+      </div>
+      <div class="card-body" style="padding:0">
+        <table class="sections-table">
+          <thead><tr><th>Section</th><th>Nature</th><th>Threshold</th><th>Rate</th></tr></thead>
+          <tbody>
+            <tr><td>192</td><td>Salary</td><td>Basic exemption</td><td>Slab rate</td></tr>
+            <tr><td>194A</td><td>Interest (Bank)</td><td>₹40,000 (₹50,000 Sr.)</td><td>10%</td></tr>
+            <tr><td>194C</td><td>Contractor (Ind)</td><td>₹30,000 single / ₹1L p.a.</td><td>1%</td></tr>
+            <tr><td>194C</td><td>Contractor (Others)</td><td>₹30,000 single / ₹1L p.a.</td><td>2%</td></tr>
+            <tr><td>194H</td><td>Commission</td><td>₹15,000</td><td>5%</td></tr>
+            <tr><td>194I</td><td>Rent (Land/Bldg)</td><td>₹2,40,000 p.a.</td><td>10%</td></tr>
+            <tr><td>194I</td><td>Rent (P&M)</td><td>₹2,40,000 p.a.</td><td>2%</td></tr>
+            <tr><td>194J</td><td>Professional Fee</td><td>₹30,000</td><td>10%</td></tr>
+            <tr><td>194J</td><td>Technical Services</td><td>₹30,000</td><td>2%</td></tr>
+            <tr><td>194Q</td><td>Purchase of Goods</td><td>₹50L p.a.</td><td>0.1%</td></tr>
+            <tr><td>194IA</td><td>Immovable Property</td><td>₹50L</td><td>1%</td></tr>
+            <tr><td>194S</td><td>VDA/Crypto</td><td>₹10,000/₹50,000</td><td>1%</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#F0FDF4">📅</div>
+        <div><h2>Due Date Rules</h2><p>When to deposit TDS</p></div>
+      </div>
+      <div class="card-body">
+        <div style="font-size:12px;line-height:1.9;color:var(--muted)">
+          <p><strong style="color:var(--ink)">Government Deductors:</strong> Same day (without challan) or 7th of next month (with challan)</p>
+          <p style="margin-top:8px"><strong style="color:var(--ink)">Other Deductors (April–Feb):</strong> 7th of the following month</p>
+          <p style="margin-top:8px"><strong style="color:var(--ink)">March deductions:</strong> 30th April</p>
+          <p style="margin-top:8px"><strong style="color:var(--ink)">Interest for late deposit:</strong> 1.5% per month from date of deduction</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <p class="footer-brand">CA Toolkit</p>
+  <p>Built for Indian Chartered Accountants · Created by CA Articles of GD Singla &amp; Co.</p>
+  <p style="margin-top:10px;font-size:11px">© 2026 CA Toolkit · Free tool · For reference only — verify with latest CBDT circulars</p>
+</footer>
+
+<script>
+const TDS_DATA = {
+  "192":      {rate:0,    threshold:0,       label:"Salary",                    challan:"ITNS 281", note:"As per applicable slab rate"},
+  "192A":     {rate:10,   threshold:50000,   label:"PF Withdrawal",             challan:"ITNS 281", note:"No PAN: 20%"},
+  "193":      {rate:10,   threshold:10000,   label:"Interest on Securities",    challan:"ITNS 281", note:""},
+  "194":      {rate:10,   threshold:5000,    label:"Dividend",                  challan:"ITNS 281", note:""},
+  "194A":     {rate:10,   threshold:40000,   label:"Interest (Bank/Others)",    challan:"ITNS 281", note:"Senior citizen threshold ₹50,000. No PAN: 20%"},
+  "194B":     {rate:30,   threshold:10000,   label:"Lottery/Puzzle Winnings",   challan:"ITNS 281", note:""},
+  "194C_ind": {rate:1,    threshold:30000,   label:"Contractor (Individual)",   challan:"ITNS 281", note:"Annual aggregate limit ₹1,00,000"},
+  "194C_oth": {rate:2,    threshold:30000,   label:"Contractor (Others)",       challan:"ITNS 281", note:"Annual aggregate limit ₹1,00,000"},
+  "194D":     {rate:5,    threshold:15000,   label:"Insurance Commission",      challan:"ITNS 281", note:""},
+  "194DA":    {rate:5,    threshold:100000,  label:"Life Insurance Policy",     challan:"ITNS 281", note:"On income portion only"},
+  "194G":     {rate:5,    threshold:15000,   label:"Lottery Ticket Commission", challan:"ITNS 281", note:""},
+  "194H":     {rate:5,    threshold:15000,   label:"Commission/Brokerage",      challan:"ITNS 281", note:""},
+  "194I_land":{rate:10,   threshold:240000,  label:"Rent (Land/Building)",      challan:"ITNS 281", note:"Annual threshold"},
+  "194I_plant":{rate:2,   threshold:240000,  label:"Rent (Plant/Machinery)",    challan:"ITNS 281", note:"Annual threshold"},
+  "194IA":    {rate:1,    threshold:5000000, label:"Immovable Property",        challan:"ITNS 26QB",note:""},
+  "194IB":    {rate:5,    threshold:50000,   label:"Rent by Ind/HUF (monthly)", challan:"ITNS 26QC",note:"Per month threshold"},
+  "194J_fee": {rate:10,   threshold:30000,   label:"Professional Fees",         challan:"ITNS 281", note:""},
+  "194J_tech":{rate:2,    threshold:30000,   label:"Technical Services/Royalty",challan:"ITNS 281", note:""},
+  "194K":     {rate:10,   threshold:5000,    label:"Mutual Fund Income",        challan:"ITNS 281", note:""},
+  "194LA":    {rate:10,   threshold:250000,  label:"Land Acquisition Comp.",    challan:"ITNS 281", note:""},
+  "194M":     {rate:5,    threshold:5000000, label:"Contractor/Prof (Ind)",     challan:"ITNS 26QD",note:"Annual threshold"},
+  "194N":     {rate:2,    threshold:2000000, label:"Cash Withdrawal",           challan:"ITNS 281", note:"3% if no ITR filed in prior 3 years"},
+  "194O":     {rate:1,    threshold:500000,  label:"E-Commerce Operator",       challan:"ITNS 281", note:""},
+  "194Q":     {rate:0.1,  threshold:5000000, label:"Purchase of Goods",         challan:"ITNS 281", note:"Annual threshold"},
+  "194R":     {rate:10,   threshold:20000,   label:"Benefit/Perquisite",        challan:"ITNS 281", note:""},
+  "194S":     {rate:1,    threshold:10000,   label:"VDA/Crypto",                challan:"ITNS 281", note:"₹50,000 threshold for specified persons"},
+  "206C":     {rate:1,    threshold:0,       label:"TCS (Various)",             challan:"ITNS 281", note:"Rate varies by goods type"},
+};
+
+function fmt(n){ return "₹" + Math.round(n).toLocaleString("en-IN"); }
+
+function updateSection(){
+  const s = document.getElementById("tdsSection").value;
+  const hint = document.getElementById("sectionHint");
+  if(!s){ hint.textContent = "Select a section to see threshold and rate details"; return; }
+  const d = TDS_DATA[s];
+  if(!d) return;
+  hint.textContent = d.rate === 0
+    ? "Rate: Slab rate · " + (d.threshold ? "Threshold: " + fmt(d.threshold) : "No fixed threshold")
+    : "Rate: " + d.rate + "% · Threshold: " + (d.threshold ? fmt(d.threshold) : "Nil") + (d.note ? " · " + d.note : "");
+}
+
+function calcTDS(){
+  const sec = document.getElementById("tdsSection").value;
+  const amt = parseFloat(document.getElementById("paymentAmt").value);
+  const month = parseInt(document.getElementById("paymentMonth").value);
+
+  if(!sec){ alert("Please select a section."); return; }
+  if(!amt || amt <= 0){ alert("Please enter a valid payment amount."); return; }
+
+  const d = TDS_DATA[sec];
+  if(!d){ alert("Section data not found."); return; }
+
+  // Check threshold
+  if(d.threshold && amt < d.threshold){
+    document.getElementById("resultBox").style.display = "block";
+    document.getElementById("tdsAmt").textContent = "No TDS";
+    document.getElementById("tdsSub").textContent = "Payment (" + fmt(amt) + ") is below the threshold limit of " + fmt(d.threshold);
+    document.getElementById("rPayment").textContent = fmt(amt);
+    document.getElementById("rSection").textContent = "Sec " + sec.replace("_ind","(Ind)").replace("_oth","(Oth)").replace("_land","(Land)").replace("_plant","(Plant)").replace("_fee","(Fee)").replace("_tech","(Tech)");
+    document.getElementById("rRate").textContent = d.rate + "%";
+    document.getElementById("rTDS").textContent = "Nil (below threshold)";
+    document.getElementById("rNet").textContent = fmt(amt);
+    document.getElementById("rDue").textContent = "—";
+    document.getElementById("rChallan").textContent = d.challan;
+    return;
+  }
+
+  const rate = d.rate === 0 ? 0 : d.rate;
+  const tds = amt * rate / 100;
+  const net = amt - tds;
+
+  // Due date
+  const monthNames = ["April","May","June","July","August","September","October","November","December","January","February","March"];
+  let dueStr;
+  if(month === 12){ dueStr = "30th April (for March deductions)"; }
+  else {
+    const nextIdx = month % 12;
+    dueStr = "7th " + monthNames[nextIdx];
+  }
+
+  document.getElementById("resultBox").style.display = "block";
+  document.getElementById("tdsAmt").textContent = rate === 0 ? "Slab Rate" : fmt(tds) + " TDS";
+  document.getElementById("tdsSub").textContent = rate === 0 ? "TDS at applicable slab rate — compute based on estimated annual income" : "TDS at " + rate + "% on " + fmt(amt);
+  document.getElementById("rPayment").textContent = fmt(amt);
+  document.getElementById("rSection").textContent = "Sec " + sec.replace("_ind"," (Ind)").replace("_oth"," (Oth)").replace("_land"," (Land)").replace("_plant"," (Plant)").replace("_fee"," (Fee)").replace("_tech"," (Tech)") + " — " + d.label;
+  document.getElementById("rRate").textContent = rate === 0 ? "Slab rate" : rate + "%";
+  document.getElementById("rTDS").textContent = rate === 0 ? "As per slab" : fmt(tds);
+  document.getElementById("rNet").textContent = rate === 0 ? fmt(amt) + " (gross)" : fmt(net);
+  document.getElementById("rDue").textContent = dueStr;
+  document.getElementById("rChallan").textContent = d.challan + (d.note ? " · " + d.note : "");
+}
+</script>
+</body></html>"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  DEPRECIATION CALCULATOR TEMPLATE
+# ══════════════════════════════════════════════════════════════════════════════
+
+DEP_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Depreciation Calculator – CA Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+<style>
+""" + BASE_CSS + """
+.hero{text-align:center;padding:40px 24px 28px;max-width:700px;margin:0 auto}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#ECFDF5;
+            color:#065F46;border:1px solid #A7F3D0;border-radius:99px;
+            padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:14px}
+h1{font-size:clamp(22px,4vw,34px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:10px}
+h1 em{font-style:normal;color:var(--brand)}
+.hero p{font-size:14px;color:var(--muted);line-height:1.7;max-width:500px;margin:0 auto}
+.main{max-width:1000px;margin:0 auto;padding:28px 24px 48px}
+.card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
+      box-shadow:var(--shadow);overflow:hidden;margin-bottom:20px}
+.card-head{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.card-head .icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px}
+.card-head h2{font-size:14px;font-weight:700}
+.card-head p{font-size:12px;color:var(--muted);margin-top:1px}
+.card-body{padding:20px}
+.form-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media(max-width:700px){.form-grid{grid-template-columns:1fr}}
+.field{margin-bottom:0}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:5px}
+.hint{font-size:11px;color:var(--muted);margin-top:4px}
+input[type=number],input[type=text],select{width:100%;border:1.5px solid var(--border);border-radius:8px;
+  padding:9px 12px;font-family:inherit;font-size:13px;color:var(--ink);background:var(--white);
+  transition:border-color .2s;outline:none}
+input:focus,select:focus{border-color:var(--brand)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+.btn{background:var(--brand);color:#fff;border:none;border-radius:10px;
+     padding:11px 24px;font-family:inherit;font-size:14px;font-weight:700;
+     cursor:pointer;transition:background .2s;margin-top:16px}
+.btn:hover{background:var(--brand-d)}
+.result-section{display:none}
+.summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+@media(max-width:700px){.summary-grid{grid-template-columns:1fr 1fr}}
+.summary-box{background:var(--white);border:1px solid var(--border);border-radius:10px;padding:16px}
+.summary-box .val{font-size:20px;font-weight:800;color:var(--brand);margin-bottom:4px}
+.summary-box .lbl{font-size:11px;color:var(--muted)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+   color:var(--muted);border-bottom:1.5px solid var(--border);padding:7px 10px}
+td{padding:9px 10px;border-bottom:1px solid var(--border)}
+tr:last-child td{border:none;font-weight:700;background:#F9FAFB}
+td:not(:first-child){text-align:right}
+.tag-it{background:#EFF6FF;color:var(--brand);font-size:10px;font-weight:700;
+        padding:2px 7px;border-radius:99px}
+.tag-ca{background:#F5F3FF;color:#5B21B6;font-size:10px;font-weight:700;
+        padding:2px 7px;border-radius:99px}
+footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-size:12px}
+.footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:4px}
+</style></head><body>
+
+<nav>
+  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <div class="nav-right">
+    {% if username %}
+    <span class="nav-user">👤 <strong>{{ username }}</strong></span>
+    {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
+    <a href="/logout" class="nav-link">Sign out</a>
+    {% else %}
+    <a href="/login" class="nav-btn">Sign In</a>
+    {% endif %}
+    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-badge">🆓 Free Tool · No Login Required</div>
+  <h1>Depreciation Calculator</h1>
+  <p>Calculate depreciation under <strong>Companies Act 2013</strong> (WDV/SLM) and <strong>Income Tax Act</strong>. Get full year-wise schedule instantly.</p>
+</section>
+
+<div class="main">
+  <div class="card">
+    <div class="card-head">
+      <div class="icon" style="background:#F5F3FF">🏭</div>
+      <div><h2>Asset Details</h2><p>Enter asset information to generate depreciation schedule</p></div>
+    </div>
+    <div class="card-body">
+      <div class="form-grid">
+        <div class="field">
+          <label>Asset Name</label>
+          <input type="text" id="assetName" placeholder="e.g. Machinery, Vehicle"/>
+        </div>
+        <div class="field">
+          <label>Cost of Asset (₹)</label>
+          <input type="number" id="assetCost" placeholder="e.g. 500000" min="0"/>
+        </div>
+        <div class="field">
+          <label>Date of Purchase</label>
+          <input type="date" id="purchaseDate"/>
+        </div>
+        <div class="field">
+          <label>Asset Block (IT Act)</label>
+          <select id="itBlock">
+            <option value="15">15% — Furniture, Fittings</option>
+            <option value="15b">15% — Ships</option>
+            <option value="30">30% — Motor Cars (not used for hire)</option>
+            <option value="40">40% — Motor Taxis, Buses (hire)</option>
+            <option value="40b">40% — Machinery (general)</option>
+            <option value="60">60% — Computers &amp; Software</option>
+            <option value="80">80% — Energy saving devices</option>
+            <option value="100">100% — Books, Scientific research</option>
+            <option value="10">10% — Buildings (residential)</option>
+            <option value="5">5% — Buildings (other)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Asset Class (Companies Act)</label>
+          <select id="caClass">
+            <option value="15_wdv">Buildings — Factory (5% SLM / 15 yr WDV)</option>
+            <option value="10_wdv">Buildings — Other (10% SLM / 10 yr WDV)</option>
+            <option value="15_plant">Plant &amp; Machinery General (15% SLM)</option>
+            <option value="30_plant">Plant &amp; Machinery (30% SLM — certain)</option>
+            <option value="20_furn">Furniture &amp; Fixtures (10% SLM)</option>
+            <option value="25_comp">Computers &amp; Peripherals (40% SLM)</option>
+            <option value="20_veh">Vehicles — Motor Car (20% SLM)</option>
+            <option value="30_veh">Vehicles — Motor Cycle (30% SLM)</option>
+            <option value="10_off">Office Equipment (20% SLM)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Method (Companies Act)</label>
+          <select id="caMethod">
+            <option value="slm">SLM — Straight Line Method</option>
+            <option value="wdv">WDV — Written Down Value</option>
+          </select>
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>Number of Years to Project</label>
+          <input type="number" id="numYears" value="5" min="1" max="20"/>
+        </div>
+        <div class="field">
+          <label>Salvage / Residual Value (₹)</label>
+          <input type="number" id="salvageVal" value="0" min="0"/>
+          <p class="hint">Under Companies Act, minimum 5% of cost</p>
+        </div>
+      </div>
+      <button class="btn" onclick="calcDep()">Generate Depreciation Schedule →</button>
+    </div>
+  </div>
+
+  <div class="result-section" id="resultSection">
+    <div class="summary-grid" id="summaryGrid"></div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#EFF6FF">📊</div>
+        <div><h2>Income Tax Act Schedule <span class="tag-it">IT Act</span></h2>
+             <p>WDV method — Block of assets basis</p></div>
+      </div>
+      <div class="card-body" style="padding:0;overflow-x:auto">
+        <table id="itTable">
+          <thead><tr><th>FY</th><th>Opening WDV</th><th>Additions</th><th>Depreciation</th><th>Closing WDV</th></tr></thead>
+          <tbody id="itBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <div class="card-head">
+        <div class="icon" style="background:#F5F3FF">📋</div>
+        <div><h2>Companies Act 2013 Schedule <span class="tag-ca">Companies Act</span></h2>
+             <p id="caMethodLabel">SLM method</p></div>
+      </div>
+      <div class="card-body" style="padding:0;overflow-x:auto">
+        <table id="caTable">
+          <thead><tr><th>FY</th><th>Opening WDV</th><th>Depreciation</th><th>Closing WDV</th><th>Acc. Dep.</th></tr></thead>
+          <tbody id="caBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <p class="footer-brand">CA Toolkit</p>
+  <p>Built for Indian Chartered Accountants · Created by CA Articles of GD Singla &amp; Co.</p>
+  <p style="margin-top:10px;font-size:11px">© 2026 CA Toolkit · For reference only — verify with latest MCA/CBDT notifications</p>
+</footer>
+
+<script>
+const IT_RATES = {"15":15,"15b":15,"30":30,"40":40,"40b":40,"60":60,"80":80,"100":100,"10":10,"5":5};
+const CA_RATES = {
+  "15_wdv":  {slm:6.67, wdv:15,  life:15},
+  "10_wdv":  {slm:10,   wdv:10,  life:10},
+  "15_plant":{slm:6.67, wdv:15,  life:15},
+  "30_plant":{slm:10,   wdv:30,  life:10},
+  "20_furn": {slm:10,   wdv:10,  life:10},
+  "25_comp": {slm:40,   wdv:40,  life:3},
+  "20_veh":  {slm:20,   wdv:20,  life:5},
+  "30_veh":  {slm:30,   wdv:30,  life:4},
+  "10_off":  {slm:20,   wdv:20,  life:5},
+};
+
+function fmt(n){ return "₹"+Math.round(n).toLocaleString("en-IN"); }
+
+function calcDep(){
+  const cost = parseFloat(document.getElementById("assetCost").value);
+  const name = document.getElementById("assetName").value || "Asset";
+  const pd   = document.getElementById("purchaseDate").value;
+  const itBl = document.getElementById("itBlock").value;
+  const caCl = document.getElementById("caClass").value;
+  const meth = document.getElementById("caMethod").value;
+  const yrs  = Math.min(parseInt(document.getElementById("numYears").value)||5, 20);
+  const salv = Math.max(parseFloat(document.getElementById("salvageVal").value)||0, cost*0.05);
+
+  if(!cost||cost<=0){alert("Enter a valid asset cost.");return;}
+  if(!pd){alert("Enter purchase date.");return;}
+
+  const purchaseYear = parseInt(pd.split("-")[0]);
+  const purchaseMon  = parseInt(pd.split("-")[1]);
+  // IT Act: if purchased after 3 Oct (i.e. used < 180 days), half rate in first year
+  const halfRate = purchaseMon >= 10 || (purchaseMon === 9 && parseInt(pd.split("-")[2]) > 3);
+
+  const itRate = IT_RATES[itBl] / 100;
+  const caInfo = CA_RATES[caCl];
+  const caRate = meth === "slm" ? caInfo.slm/100 : caInfo.wdv/100;
+
+  // IT Schedule (WDV)
+  let itWDV = cost, itRows = "";
+  for(let i=0;i<yrs;i++){
+    const fy = `FY ${purchaseYear + i}-${String(purchaseYear+i+1).slice(-2)}`;
+    const additions = i===0 ? cost : 0;
+    const rate = (i===0 && halfRate) ? itRate/2 : itRate;
+    const dep = Math.round(itWDV * rate);
+    const closing = itWDV - dep;
+    itRows += `<tr><td>${fy}</td><td>${fmt(itWDV)}</td><td>${i===0?fmt(additions):"—"}</td><td>${fmt(dep)}</td><td>${fmt(closing)}</td></tr>`;
+    itWDV = closing;
+    if(itWDV <= 0) break;
+  }
+  document.getElementById("itBody").innerHTML = itRows;
+
+  // CA Schedule
+  let caWDV = cost, caAcc = 0, caRows = "";
+  document.getElementById("caMethodLabel").textContent = meth.toUpperCase() + " method";
+  for(let i=0;i<yrs;i++){
+    const fy = `FY ${purchaseYear + i}-${String(purchaseYear+i+1).slice(-2)}`;
+    let dep;
+    if(meth === "slm"){
+      dep = Math.round((cost - salv) * caRate);
+      if(caWDV - dep < salv) dep = Math.max(0, caWDV - salv);
+    } else {
+      dep = Math.round(caWDV * caRate);
+      if(caWDV - dep < salv) dep = Math.max(0, caWDV - salv);
+    }
+    caAcc += dep;
+    const closing = caWDV - dep;
+    caRows += `<tr><td>${fy}</td><td>${fmt(caWDV)}</td><td>${fmt(dep)}</td><td>${fmt(closing)}</td><td>${fmt(caAcc)}</td></tr>`;
+    caWDV = closing;
+    if(caWDV <= salv) break;
+  }
+  document.getElementById("caBody").innerHTML = caRows;
+
+  // Summary
+  const itDep1 = cost * ((halfRate?itRate/2:itRate));
+  const caDep1 = meth==="slm" ? (cost-salv)*caRate : cost*caRate;
+  document.getElementById("summaryGrid").innerHTML =
+    `<div class="summary-box"><div class="val">${fmt(cost)}</div><div class="lbl">Asset Cost</div></div>
+     <div class="summary-box"><div class="val">${fmt(itDep1)}</div><div class="lbl">Year 1 Dep (IT Act)</div></div>
+     <div class="summary-box"><div class="val">${fmt(caDep1)}</div><div class="lbl">Year 1 Dep (Co. Act)</div></div>
+     <div class="summary-box"><div class="val">${fmt(salv)}</div><div class="lbl">Residual Value</div></div>`;
+
+  document.getElementById("resultSection").style.display = "block";
+  document.getElementById("resultSection").scrollIntoView({behavior:"smooth"});
+}
+</script>
+</body></html>"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  ADMIN PANEL
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -2055,10 +2690,19 @@ def user_ctx(user):
     )
 
 @app.route("/")
-@login_required
 def dashboard():
-    user = get_user_by_id(session["uid"])
-    return render_template_string(DASHBOARD_T, **user_ctx(user))
+    if "uid" in session:
+        user = get_user_by_id(session["uid"])
+        ctx = user_ctx(user)
+    else:
+        ctx = dict(
+            username=None, plan="free", plan_label="Free",
+            is_admin=False, uploads_used=0, uploads_total=2,
+            uploads_left=2, uploads_remaining=2, bar_pct=0,
+            validity_end=None, contact_email=CONTACT_EMAIL,
+            contact_upi=CONTACT_UPI,
+        )
+    return render_template_string(DASHBOARD_T, **ctx)
 
 @app.route("/tool/converter")
 @login_required
@@ -2067,10 +2711,49 @@ def tool_converter():
     return render_template_string(CONVERTER_T, **user_ctx(user))
 
 @app.route("/tool/tax-calculator")
-@login_required
 def tool_tax_calculator():
-    user = get_user_by_id(session["uid"])
-    return render_template_string(TAX_CALC_T, **user_ctx(user))
+    if "uid" in session:
+        user = get_user_by_id(session["uid"])
+        ctx = user_ctx(user)
+    else:
+        ctx = dict(
+            username=None, plan="free", plan_label="Free",
+            is_admin=False, uploads_used=0, uploads_total=2,
+            uploads_left=2, uploads_remaining=2, bar_pct=0,
+            validity_end=None, contact_email=CONTACT_EMAIL,
+            contact_upi=CONTACT_UPI,
+        )
+    return render_template_string(TAX_CALC_T, **ctx)
+
+@app.route("/tool/tds-calculator")
+def tool_tds_calculator():
+    if "uid" in session:
+        user = get_user_by_id(session["uid"])
+        ctx = user_ctx(user)
+    else:
+        ctx = dict(
+            username=None, plan="free", plan_label="Free",
+            is_admin=False, uploads_used=0, uploads_total=2,
+            uploads_left=2, uploads_remaining=2, bar_pct=0,
+            validity_end=None, contact_email=CONTACT_EMAIL,
+            contact_upi=CONTACT_UPI,
+        )
+    return render_template_string(TDS_CALC_T, **ctx)
+
+@app.route("/tool/depreciation-calculator")
+def tool_depreciation_calculator():
+    if "uid" in session:
+        user = get_user_by_id(session["uid"])
+        ctx = user_ctx(user)
+    else:
+        ctx = dict(
+            username=None, plan="free", plan_label="Free",
+            is_admin=False, uploads_used=0, uploads_total=2,
+            uploads_left=2, uploads_remaining=2, bar_pct=0,
+            validity_end=None, contact_email=CONTACT_EMAIL,
+            contact_upi=CONTACT_UPI,
+        )
+    return render_template_string(DEP_CALC_T, **ctx)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ROUTES — PROCESS & DOWNLOAD
