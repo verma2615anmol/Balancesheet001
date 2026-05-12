@@ -35,10 +35,10 @@ CONTACT_UPI    = "sumit2615verma@okhdfcbank"
 
 PLANS = {
     "free":     {"label": "Free",         "uploads": 2,   "price": 0},
-    "starter":  {"label": "Starter",      "uploads": 10,  "price": 399},
-    "standard": {"label": "Standard",     "uploads": 25,  "price": 899},
-    "pro":      {"label": "Professional", "uploads": 60,  "price": 1799},
-    "firm":     {"label": "Firm",         "uploads": 150, "price": 3499},
+    "starter":  {"label": "Starter",      "uploads": 10,  "price": 60},
+    "standard": {"label": "Standard",     "uploads": 25,  "price": 130},
+    "pro":      {"label": "Professional", "uploads": 60,  "price": 270},
+    "firm":     {"label": "Firm",         "uploads": 150, "price": 600},
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
