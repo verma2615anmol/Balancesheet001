@@ -864,10 +864,10 @@ tr:hover td{background:#F9FAFB}
           <div class="field"><label>Plan</label>
             <select name="plan">
               <option value="free">Free (2 uploads)</option>
-              <option value="starter">Starter (10 uploads · ₹399)</option>
-              <option value="standard" selected>Standard (25 uploads · ₹899)</option>
-              <option value="pro">Professional (60 uploads · ₹1,799)</option>
-              <option value="firm">Firm (150 uploads · ₹3,499)</option>
+              <option value="starter">Starter (10 uploads · ₹60)</option>
+              <option value="standard" selected>Standard (25 uploads · ₹130)</option>
+              <option value="pro">Professional (60 uploads · ₹270)</option>
+              <option value="firm">Firm (150 uploads · ₹600)</option>
             </select></div>
           <div class="field"><label>&nbsp;</label>
             <button class="btn" type="submit">Create User</button></div>
