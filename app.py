@@ -694,12 +694,12 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
         </div>
       </div>
       <div class="field">
-        <label>Upload Excel File (.xlsx or .xls)</label>
+        <label>Upload Excel File (.xlsx)</label>
         <div class="dropzone" id="dropzone">
-          <input type="file" id="xlFile" accept=".xlsx,.xls" {{ 'disabled' if uploads_left==0 else '' }}/>
+          <input type="file" id="xlFile" accept=".xlsx" {{ 'disabled' if uploads_left==0 else '' }}/>
           <div class="dz-icon">📁</div>
           <div class="dz-text"><strong>Click to browse</strong> or drag &amp; drop</div>
-          <div class="dz-text" style="margin-top:3px">Only .xlsx and .xls · Max 20 MB</div>
+          <div class="dz-text" style="margin-top:3px">Only .xlsx · Max 20 MB</div>
           <div class="dz-file" id="dzFile"></div>
         </div>
       </div>
@@ -829,7 +829,7 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
 <section class="faq-section" id="faq">
   <h2>Frequently Asked Questions</h2>
   <details><summary>Which Excel formats are supported?</summary>
-    <p>.xlsx and .xls files are both supported. Max 20 MB.</p></details>
+    <p>.xlsx only (Excel 2007+). Save .xls files as .xlsx first.</p></details>
   <details><summary>Will it work with my firm's custom template?</summary>
     <p>Yes. Auto-detects CY/PY columns by scanning date headers like "31.03.2025". Works with any Indian CA template.</p></details>
   <details><summary>Are my formulas and formatting safe?</summary>
@@ -897,6 +897,7 @@ async function processFile(){
       dl.href='/download/'+data.file_id;dl.download=data.filename;
       dl.textContent='⬇  Download — '+data.filename;dl.style.display='block';
       toast('Processed successfully!');
+      setTimeout(()=>location.reload(),3000);
     }else{showStatus('error','✗ '+data.message);}
   }catch(e){showStatus('error','✗ Network error: '+e.message);}
   finally{btn.disabled=false;sp.style.display='none';bt.textContent='⚡ Process & Download';}
@@ -3249,63 +3250,37 @@ def tool_depreciation_calculator():
 @app.route("/process", methods=["POST"])
 @login_required
 def process_file():
-    # Always return JSON — wrap everything so HTML error pages never leak out
+    user = get_user_by_id(session["uid"])
+    if not user["is_admin"] and uploads_remaining(user) <= 0:
+        return jsonify({"status": "error",
+            "message": f"No uploads remaining. Contact {CONTACT_EMAIL} to recharge."})
+    if "file" not in request.files:
+        return jsonify({"status": "error", "message": "No file uploaded."})
+    f = request.files["file"]
+    if not f.filename.endswith(".xlsx"):
+        return jsonify({"status": "error", "message": "Only .xlsx files are supported."})
     try:
-        user = get_user_by_id(session["uid"])
-        if not user["is_admin"] and uploads_remaining(user) <= 0:
-            return jsonify({"status": "error",
-                "message": f"No uploads remaining. Contact {CONTACT_EMAIL} to recharge."})
-        if "file" not in request.files:
-            return jsonify({"status": "error", "message": "No file uploaded."})
-        f = request.files["file"]
-
-        # FIX 3: Accept both .xlsx and .xls
-        fname_lower = f.filename.lower()
-        if not (fname_lower.endswith(".xlsx") or fname_lower.endswith(".xls")):
-            return jsonify({"status": "error",
-                "message": "Only .xlsx and .xls files are supported."})
-
-        try:
-            cy = int(request.form.get("closing_year", 0))
-            ny = int(request.form.get("new_year", cy + 1))
-            on = request.form.get("output_name", "").strip()
-        except ValueError:
-            return jsonify({"status": "error", "message": "Invalid year values."})
-        if ny != cy + 1:
-            return jsonify({"status": "error",
-                "message": "New year must be closing year + 1."})
-
-        h   = uuid.uuid4().hex
-        # FIX 3: Preserve original extension so processor can detect .xls
-        ext = ".xls" if fname_lower.endswith(".xls") else ".xlsx"
-        ip  = os.path.join(UPLOAD_DIR, f"{h}_in{ext}")
-        op  = os.path.join(OUTPUT_DIR, f"{h}_out.xlsx")
-
-        # FIX 2: Save input file BEFORE try so it persists if processing fails
-        f.save(ip)
-        fname = f"{on or os.path.splitext(f.filename)[0]}_{ny}.xlsx"
-
-        try:
-            result = process(ip, op, cy, ny)
-        except Exception as e:
-            # Clean up input on failure, return JSON (not HTML)
-            try: os.remove(ip)
-            except: pass
-            return jsonify({"status": "error", "message": str(e)})
-
-        # FIX 2: Delete input ONLY after successful processing
-        # Output file stays in /tmp for user to download at any time
+        cy = int(request.form.get("closing_year", 0))
+        ny = int(request.form.get("new_year", cy + 1))
+        on = request.form.get("output_name", "").strip()
+    except ValueError:
+        return jsonify({"status": "error", "message": "Invalid year values."})
+    if ny != cy + 1:
+        return jsonify({"status": "error", "message": "New year must be closing year + 1."})
+    h  = uuid.uuid4().hex
+    ip = os.path.join(UPLOAD_DIR, f"{h}_in.xlsx")
+    op = os.path.join(OUTPUT_DIR, f"{h}_out.xlsx")
+    f.save(ip)
+    fname = f"{on or os.path.splitext(f.filename)[0]}_{ny}.xlsx"
+    try:
+        result = process(ip, op, cy, ny)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+    finally:
         try: os.remove(ip)
         except: pass
-
-        log_usage(user["id"], fname)
-        return jsonify({"status": "success", "log": result["log"],
-                        "file_id": h, "filename": fname})
-
-    except Exception as e:
-        # FIX 1: Catch-all — ensures we ALWAYS return JSON, never HTML
-        return jsonify({"status": "error",
-                        "message": f"Server error: {str(e)}"})
+    log_usage(user["id"], fname)
+    return jsonify({"status": "success", "log": result["log"], "file_id": h, "filename": fname})
 
 @app.route("/download/<fid>")
 @login_required
