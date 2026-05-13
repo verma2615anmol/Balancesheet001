@@ -6,7 +6,6 @@ Auth + Upload-Based Plans + Admin Panel
 import re
 import os
 import uuid
-import sqlite3
 import hashlib
 import secrets
 from datetime import datetime, timedelta
@@ -14,6 +13,18 @@ from functools import wraps
 from flask import (Flask, request, send_file, jsonify,
                    render_template_string, session, redirect, url_for, g)
 from processor import process
+
+# ── Database driver selection ────────────────────────────────────────────────
+# If DATABASE_URL is set (Supabase/PostgreSQL), use psycopg2.
+# Otherwise, fall back to SQLite for local development.
+DATABASE_URL = os.environ.get("DATABASE_URL")
+USE_POSTGRES = bool(DATABASE_URL)
+
+if USE_POSTGRES:
+    import psycopg2
+    import psycopg2.extras
+else:
+    import sqlite3
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
@@ -42,56 +53,132 @@ PLANS = {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  DATABASE
+#  DATABASE — PostgreSQL (Supabase) with SQLite fallback for local dev
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
-        g.db.row_factory = sqlite3.Row
+        if USE_POSTGRES:
+            g.db = psycopg2.connect(DATABASE_URL)
+            g.db.autocommit = False
+        else:
+            g.db = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+            g.db.row_factory = sqlite3.Row
     return g.db
 
 @app.teardown_appcontext
 def close_db(e=None):
     db = g.pop("db", None)
-    if db: db.close()
+    if db:
+        try: db.close()
+        except: pass
+
+def _db_fetchone(sql, params=()):
+    db = get_db()
+    if USE_POSTGRES:
+        cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql, params)
+        row = cur.fetchone()
+        cur.close()
+        return row
+    else:
+        return db.execute(sql, params).fetchone()
+
+def _db_fetchall(sql, params=()):
+    db = get_db()
+    if USE_POSTGRES:
+        cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    else:
+        return db.execute(sql, params).fetchall()
+
+def _db_execute(sql, params=()):
+    db = get_db()
+    if USE_POSTGRES:
+        cur = db.cursor()
+        cur.execute(sql, params)
+        cur.close()
+        db.commit()
+    else:
+        db.execute(sql, params)
+        db.commit()
+
+def _placeholder(n=1):
+    """Return the correct placeholder for the DB driver: %s for PG, ? for SQLite."""
+    return "%s" if USE_POSTGRES else "?"
+
+def _ph(sql_with_qmarks):
+    """Convert ? placeholders to %s for PostgreSQL."""
+    if USE_POSTGRES:
+        return sql_with_qmarks.replace("?", "%s")
+    return sql_with_qmarks
 
 def init_db():
-    db = sqlite3.connect(DB_PATH)
-    db.execute("""CREATE TABLE IF NOT EXISTS users (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        username      TEXT    UNIQUE NOT NULL,
-        password      TEXT    NOT NULL,
-        plan          TEXT    NOT NULL DEFAULT 'free',
-        is_admin      INTEGER NOT NULL DEFAULT 0,
-        uploads_total INTEGER NOT NULL DEFAULT 2,
-        uploads_used  INTEGER NOT NULL DEFAULT 0,
-        validity_end  TEXT,
-        created_at    TEXT    NOT NULL)""")
-    db.execute("""CREATE TABLE IF NOT EXISTS usage_log (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id      INTEGER NOT NULL,
-        filename     TEXT,
-        processed_at TEXT    NOT NULL,
-        FOREIGN KEY(user_id) REFERENCES users(id))""")
-    db.execute("""INSERT OR IGNORE INTO users
-        (username,password,plan,is_admin,uploads_total,uploads_used,created_at)
-        VALUES (?,?,'firm',1,999999,0,?)""",
-        (ADMIN_USERNAME, _hash(ADMIN_PASSWORD), datetime.utcnow().isoformat()))
-    db.commit()
-    db.close()
+    if USE_POSTGRES:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("""CREATE TABLE IF NOT EXISTS users (
+            id            SERIAL PRIMARY KEY,
+            username      TEXT    UNIQUE NOT NULL,
+            password      TEXT    NOT NULL,
+            plan          TEXT    NOT NULL DEFAULT 'free',
+            is_admin      INTEGER NOT NULL DEFAULT 0,
+            uploads_total INTEGER NOT NULL DEFAULT 2,
+            uploads_used  INTEGER NOT NULL DEFAULT 0,
+            validity_end  TEXT,
+            created_at    TEXT    NOT NULL)""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS usage_log (
+            id           SERIAL PRIMARY KEY,
+            user_id      INTEGER NOT NULL REFERENCES users(id),
+            filename     TEXT,
+            processed_at TEXT    NOT NULL)""")
+        # Insert admin if not exists
+        cur.execute("SELECT id FROM users WHERE username=%s", (ADMIN_USERNAME,))
+        if not cur.fetchone():
+            cur.execute("""INSERT INTO users
+                (username,password,plan,is_admin,uploads_total,uploads_used,created_at)
+                VALUES (%s,%s,'firm',1,999999,0,%s)""",
+                (ADMIN_USERNAME, _hash(ADMIN_PASSWORD), datetime.utcnow().isoformat()))
+        conn.commit()
+        cur.close()
+        conn.close()
+    else:
+        db = sqlite3.connect(DB_PATH)
+        db.execute("""CREATE TABLE IF NOT EXISTS users (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            username      TEXT    UNIQUE NOT NULL,
+            password      TEXT    NOT NULL,
+            plan          TEXT    NOT NULL DEFAULT 'free',
+            is_admin      INTEGER NOT NULL DEFAULT 0,
+            uploads_total INTEGER NOT NULL DEFAULT 2,
+            uploads_used  INTEGER NOT NULL DEFAULT 0,
+            validity_end  TEXT,
+            created_at    TEXT    NOT NULL)""")
+        db.execute("""CREATE TABLE IF NOT EXISTS usage_log (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id      INTEGER NOT NULL,
+            filename     TEXT,
+            processed_at TEXT    NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id))""")
+        db.execute("""INSERT OR IGNORE INTO users
+            (username,password,plan,is_admin,uploads_total,uploads_used,created_at)
+            VALUES (?,?,'firm',1,999999,0,?)""",
+            (ADMIN_USERNAME, _hash(ADMIN_PASSWORD), datetime.utcnow().isoformat()))
+        db.commit()
+        db.close()
 
 def _hash(p): return hashlib.sha256(p.encode("utf-8")).hexdigest()
-def get_user_by_name(u): return get_db().execute("SELECT * FROM users WHERE username=?", (u,)).fetchone()
-def get_user_by_id(i):   return get_db().execute("SELECT * FROM users WHERE id=?", (i,)).fetchone()
+def get_user_by_name(u): return _db_fetchone(_ph("SELECT * FROM users WHERE username=?"), (u,))
+def get_user_by_id(i):   return _db_fetchone(_ph("SELECT * FROM users WHERE id=?"), (i,))
 def uploads_remaining(user): return max(0, user["uploads_total"] - user["uploads_used"])
 
 def log_usage(user_id, filename):
-    db = get_db()
-    db.execute("UPDATE users SET uploads_used=uploads_used+1 WHERE id=?", (user_id,))
-    db.execute("INSERT INTO usage_log (user_id,filename,processed_at) VALUES (?,?,?)",
+    _db_execute(_ph("UPDATE users SET uploads_used=uploads_used+1 WHERE id=?"), (user_id,))
+    _db_execute(_ph("INSERT INTO usage_log (user_id,filename,processed_at) VALUES (?,?,?)"),
                (user_id, filename, datetime.utcnow().isoformat()))
-    db.commit()
 
 def add_uploads(user_id, plan_key):
     user    = get_user_by_id(user_id)
@@ -99,28 +186,22 @@ def add_uploads(user_id, plan_key):
     rem     = uploads_remaining(user)
     new_tot = user["uploads_used"] + rem + extra
     validity = (datetime.utcnow() + timedelta(days=UPLOAD_VALIDITY_DAYS)).isoformat()
-    db = get_db()
-    db.execute("UPDATE users SET plan=?,uploads_total=?,validity_end=? WHERE id=?",
+    _db_execute(_ph("UPDATE users SET plan=?,uploads_total=?,validity_end=? WHERE id=?"),
                (plan_key, new_tot, validity, user_id))
-    db.commit()
 
 def create_user(username, password, plan_key):
     uploads  = PLANS[plan_key]["uploads"]
     validity = None if plan_key == "free" else (datetime.utcnow() + timedelta(days=UPLOAD_VALIDITY_DAYS)).isoformat()
-    db = get_db()
-    db.execute("""INSERT INTO users
+    _db_execute(_ph("""INSERT INTO users
         (username,password,plan,is_admin,uploads_total,uploads_used,validity_end,created_at)
-        VALUES (?,?,?,0,?,0,?,?)""",
+        VALUES (?,?,?,0,?,0,?,?)"""),
         (username, _hash(password), plan_key, uploads, validity, datetime.utcnow().isoformat()))
-    db.commit()
 
 def del_user(uid):
-    db = get_db()
-    db.execute("DELETE FROM usage_log WHERE user_id=?", (uid,))
-    db.execute("DELETE FROM users WHERE id=?", (uid,))
-    db.commit()
+    _db_execute(_ph("DELETE FROM usage_log WHERE user_id=?"), (uid,))
+    _db_execute(_ph("DELETE FROM users WHERE id=?"), (uid,))
 
-def all_users(): return get_db().execute("SELECT * FROM users ORDER BY id").fetchall()
+def all_users(): return _db_fetchall("SELECT * FROM users ORDER BY id")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  AUTH DECORATORS
@@ -1090,9 +1171,40 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
         </div>
 
         <div class="section-title">📈 4. Capital Gains</div>
+        <!-- Transitional notice for PY 2024-25 -->
+        <div id="transitionalNotice" style="display:none;margin-bottom:12px;padding:10px 14px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;font-size:11px;color:#92400E;line-height:1.6">
+          <strong>⚠️ PY 2024-25 Transitional Year:</strong> Budget 2024 changed capital gains rates from 23 July 2024. Enter gains sold <strong>before 23 July</strong> separately from gains sold <strong>on/after 23 July</strong> for accurate tax computation. If all gains are post-July, leave the pre-July fields as 0.
+        </div>
+
+        <!-- PRE-JULY 2024 FIELDS (only shown for PY 2024-25) -->
+        <div id="preJulyFields" style="display:none">
+          <div style="font-size:11px;font-weight:700;color:#92400E;text-transform:uppercase;letter-spacing:.05em;margin:8px 0 8px;padding:4px 10px;background:#FFFBEB;border-radius:6px;display:inline-block">📅 Pre-23 July 2024 (Old Rates)</div>
+          <div class="row2">
+            <div class="field">
+              <label>STCG 111A — Pre-July (equity) @ 15%</label>
+              <input type="number" id="stcg111aPreJuly" placeholder="0" min="0"/>
+              <p class="hint">Equity gains sold before 23 July 2024</p>
+            </div>
+            <div class="field">
+              <label>LTCG 112A — Pre-July (equity) @ 10%</label>
+              <input type="number" id="ltcg112aPreJuly" placeholder="0" min="0"/>
+              <p class="hint">Exempt up to ₹1 lakh (old limit)</p>
+            </div>
+          </div>
+          <div class="row2">
+            <div class="field">
+              <label>LTCG Other — Pre-July @ 20%</label>
+              <input type="number" id="ltcgOtherPreJuly" placeholder="0" min="0"/>
+              <p class="hint">With indexation benefit (pre-July rule)</p>
+            </div>
+            <div class="field"></div>
+          </div>
+          <div style="font-size:11px;font-weight:700;color:var(--brand);text-transform:uppercase;letter-spacing:.05em;margin:12px 0 8px;padding:4px 10px;background:#EFF6FF;border-radius:6px;display:inline-block">📅 Post-23 July 2024 (New Rates)</div>
+        </div>
+
         <div class="row2">
           <div class="field">
-            <label>STCG u/s 111A (equity, STT paid)</label>
+            <label id="stcg111aLabel">STCG u/s 111A (equity, STT paid)</label>
             <input type="number" id="stcg111a" placeholder="0" min="0"/>
             <p class="hint" id="stcgRateHint">Rate varies by year</p>
           </div>
@@ -1104,12 +1216,12 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
         </div>
         <div class="row2">
           <div class="field">
-            <label>LTCG u/s 112A (equity, STT paid)</label>
+            <label id="ltcg112aLabel">LTCG u/s 112A (equity, STT paid)</label>
             <input type="number" id="ltcg112a" placeholder="0" min="0"/>
             <p class="hint" id="ltcgRateHint">Rate &amp; exemption varies by year</p>
           </div>
           <div class="field">
-            <label>LTCG — Other (property, debt etc.)</label>
+            <label id="ltcgOtherLabel">LTCG — Other (property, debt etc.)</label>
             <input type="number" id="ltcgOther" placeholder="0" min="0"/>
             <p class="hint" id="ltcgOtherHint">Rate varies by year</p>
           </div>
@@ -1364,6 +1476,7 @@ const YEAR_CONFIG = {
     ayLabel: 'AY 2025-26',
     isFuture: false,
     stdDeduction: 75000,
+    hasTransitional: true, // PY 2024-25 has pre/post July 23 2024 split
     newSlabs: [
       { upto: 300000,  rate: 0 },
       { upto: 700000,  rate: 0.05 },
@@ -1374,11 +1487,18 @@ const YEAR_CONFIG = {
     ],
     rebateNew: { limit: 700000, max: 25000 },
     rebateOld: { limit: 500000, max: 12500 },
-    stcg111aRate: 0.20, // changed from July 2024
-    ltcg112aRate: 0.125, // changed from July 2024
-    ltcg112aExempt: 125000, // changed from July 2024
-    ltcgOtherRate: 0.125, // changed from July 2024
-    ltcgOtherLabel: '12.5% (no indexation)',
+    // Post-23 July 2024 rates (new budget rates)
+    stcg111aRate: 0.20,
+    ltcg112aRate: 0.125,
+    ltcg112aExempt: 125000,
+    ltcgOtherRate: 0.125,
+    ltcgOtherLabel: '12.5% (post July 2024)',
+    // Pre-23 July 2024 rates (old rates)
+    stcg111aRateOld: 0.15,
+    ltcg112aRateOld: 0.10,
+    ltcg112aExemptOld: 100000,
+    ltcgOtherRateOld: 0.20,
+    ltcgOtherLabelOld: '20% with indexation (pre July 2024)',
     maxSurchargeNew: 0.25,
   },
   '2025-26': {
@@ -1469,15 +1589,39 @@ function setYear(yr) {
   document.getElementById('stdDedHint').textContent =
     c.stdDeduction === 50000 ? '₹50,000 for PY 2023-24' : '₹75,000 for PY 2024-25 onwards';
 
+  // Show/hide transitional pre-July 2024 fields
+  const isTrans = c.hasTransitional || false;
+  document.getElementById('transitionalNotice').style.display = isTrans ? 'block' : 'none';
+  document.getElementById('preJulyFields').style.display = isTrans ? 'block' : 'none';
+
+  // Update labels for main CG fields based on whether transitional
+  if (isTrans) {
+    document.getElementById('stcg111aLabel').textContent = 'STCG 111A — Post-July (equity) @ 20%';
+    document.getElementById('ltcg112aLabel').textContent = 'LTCG 112A — Post-July (equity) @ 12.5%';
+    document.getElementById('ltcgOtherLabel').textContent = 'LTCG Other — Post-July @ 12.5%';
+  } else {
+    document.getElementById('stcg111aLabel').textContent = 'STCG u/s 111A (equity, STT paid)';
+    document.getElementById('ltcg112aLabel').textContent = 'LTCG u/s 112A (equity, STT paid)';
+    document.getElementById('ltcgOtherLabel').textContent = 'LTCG — Other (property, debt etc.)';
+  }
+
   // Update hints for capital gains rates
   document.getElementById('stcgRateHint').textContent =
-    'Taxed at ' + (c.stcg111aRate * 100) + '%' + (currentYear === '2024-25' ? ' (post July 2024 budget)' : '');
+    'Taxed at ' + (c.stcg111aRate * 100) + '%' + (isTrans ? ' (post 23 July 2024)' : '');
   document.getElementById('ltcgRateHint').textContent =
     (c.ltcg112aRate * 100) + '% above ₹' + (c.ltcg112aExempt / 100000).toFixed(2).replace('.00','') + ' lakh exemption';
   document.getElementById('ltcgOtherHint').textContent = c.ltcgOtherLabel;
 
   // Future year note
   document.getElementById('futureYearNote').style.display = c.isFuture ? 'block' : 'none';
+
+  // Clear pre-July fields when switching away
+  if (!isTrans) {
+    ['stcg111aPreJuly','ltcg112aPreJuly','ltcgOtherPreJuly'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+  }
 
   // Update reference slab tables
   updateRefSlabs();
@@ -1614,11 +1758,17 @@ function computeForRegime(isNew) {
   // Head 3: Business
   const businessIncome = v('businessIncome');
 
-  // Head 4: Capital Gains
+  // Head 4: Capital Gains — with PY 2024-25 transitional support
   const stcg111a = v('stcg111a');
   const stcgOther = v('stcgOther');
   const ltcg112a = v('ltcg112a');
   const ltcgOther = v('ltcgOther');
+
+  // Pre-July 2024 gains (only relevant for PY 2024-25)
+  const isTrans = c.hasTransitional || false;
+  const stcg111aPreJuly = isTrans ? v('stcg111aPreJuly') : 0;
+  const ltcg112aPreJuly = isTrans ? v('ltcg112aPreJuly') : 0;
+  const ltcgOtherPreJuly = isTrans ? v('ltcgOtherPreJuly') : 0;
 
   // Head 5: Other Sources
   const otherIncome = v('otherIncome');
@@ -1655,15 +1805,34 @@ function computeForRegime(isNew) {
   }
   normalTax = Math.max(0, normalTax - rebate87a);
 
-  // Special rate taxes (year-specific rates)
+  // ── Special rate taxes ──────────────────────────────────────────
+  // POST-July (or full year for non-transitional years)
   const taxSTCG111A = stcg111a * c.stcg111aRate;
-  const ltcg112aExempt = Math.min(ltcg112a, c.ltcg112aExempt);
+  const ltcg112aExemptAmt = Math.min(ltcg112a, c.ltcg112aExempt);
   const taxLTCG112A = Math.max(0, ltcg112a - c.ltcg112aExempt) * c.ltcg112aRate;
   const taxLTCGOther = ltcgOther * c.ltcgOtherRate;
   const taxWinnings = winnings * 0.30;
-  const totalSpecialTax = taxSTCG111A + taxLTCG112A + taxLTCGOther + taxWinnings;
 
-  const totalIncome = normalTaxable + stcg111a + ltcg112a + ltcgOther + winnings;
+  // PRE-July (transitional — PY 2024-25 only)
+  let taxSTCG111APreJuly = 0, taxLTCG112APreJuly = 0, taxLTCGOtherPreJuly = 0;
+  let ltcg112aPreJulyExemptAmt = 0;
+  if (isTrans) {
+    taxSTCG111APreJuly = stcg111aPreJuly * c.stcg111aRateOld;
+    // Pre-July LTCG 112A: exempt up to ₹1L (old limit), but combined with post-July exemption
+    // Total 112A exemption is shared: first apply old exempt on pre-July, remaining on post-July
+    const totalLtcg112a = ltcg112aPreJuly + ltcg112a;
+    const totalExemptUsed = Math.min(totalLtcg112a, c.ltcg112aExempt);
+    // Allocate exemption to pre-July first (up to old limit), then post-July gets remainder
+    ltcg112aPreJulyExemptAmt = Math.min(ltcg112aPreJuly, c.ltcg112aExemptOld);
+    taxLTCG112APreJuly = Math.max(0, ltcg112aPreJuly - ltcg112aPreJulyExemptAmt) * c.ltcg112aRateOld;
+    taxLTCGOtherPreJuly = ltcgOtherPreJuly * c.ltcgOtherRateOld;
+  }
+
+  const totalSpecialTax = taxSTCG111A + taxLTCG112A + taxLTCGOther + taxWinnings +
+                          taxSTCG111APreJuly + taxLTCG112APreJuly + taxLTCGOtherPreJuly;
+
+  const totalIncome = normalTaxable + stcg111a + stcg111aPreJuly + ltcg112a + ltcg112aPreJuly +
+                      ltcgOther + ltcgOtherPreJuly + winnings;
 
   // Surcharge
   const surchargeNormal = calcSurcharge(normalTax, totalIncome, isNew);
@@ -1683,18 +1852,21 @@ function computeForRegime(isNew) {
   const netPayable = totalTax - totalPrepaid;
 
   return {
-    yearLabel: c.label, ayLabel: c.ayLabel, isFuture: c.isFuture,
+    yearLabel: c.label, ayLabel: c.ayLabel, isFuture: c.isFuture, isTrans,
     name, isNew, isResident, c,
     grossSalary, exemptAllow, stdDed, salaryIncome,
     houseRaw, loanInt, houseIncome, houseLossCapped,
     businessIncome,
-    stcg111a, stcgOther, ltcg112a, ltcg112aExempt, ltcgOther,
+    stcg111a, stcgOther, ltcg112a, ltcg112aExemptAmt, ltcgOther,
+    stcg111aPreJuly, ltcg112aPreJuly, ltcg112aPreJulyExemptAmt, ltcgOtherPreJuly,
     otherIncome, winnings,
     normalIncome: normalAfterLoss, totalDeductions, normalTaxable,
     slabResult,
     normalTax: normalTax + rebate87a, rebate87a,
     normalTaxAfterRebate: normalTax,
-    taxSTCG111A, taxLTCG112A, taxLTCGOther, taxWinnings, totalSpecialTax,
+    taxSTCG111A, taxLTCG112A, taxLTCGOther, taxWinnings,
+    taxSTCG111APreJuly, taxLTCG112APreJuly, taxLTCGOtherPreJuly,
+    totalSpecialTax,
     totalIncome, surchargeNormal, surchargeSpecial, totalSurcharge,
     cess, totalTax,
     tdsPaid, tcsPaid, advTax, totalPrepaid, netPayable,
@@ -1718,18 +1890,28 @@ function renderResult(r) {
   if (r.houseLossCapped < 0) h += row('Loss set-off (max ₹2L)', fmt(r.houseLossCapped), 'sub');
   h += row('Business Income (Head 3)', fmt(r.businessIncome));
 
-  if (r.stcg111a || r.stcgOther || r.ltcg112a || r.ltcgOther)
-    h += row('Capital Gains (Head 4)', fmt(r.stcg111a + r.stcgOther + r.ltcg112a + r.ltcgOther));
-  if (r.stcg111a) h += row('STCG u/s 111A @ '+(c.stcg111aRate*100)+'%', fmt(r.stcg111a), 'sub');
+  if (r.stcg111a || r.stcgOther || r.ltcg112a || r.ltcgOther || r.stcg111aPreJuly || r.ltcg112aPreJuly || r.ltcgOtherPreJuly) {
+    const totalCG = r.stcg111a + r.stcgOther + r.ltcg112a + r.ltcgOther + r.stcg111aPreJuly + r.ltcg112aPreJuly + r.ltcgOtherPreJuly;
+    h += row('Capital Gains (Head 4)', fmt(totalCG));
+  }
+  // Pre-July gains (transitional PY 2024-25)
+  if (r.isTrans && (r.stcg111aPreJuly || r.ltcg112aPreJuly || r.ltcgOtherPreJuly)) {
+    if (r.stcg111aPreJuly) h += row('STCG 111A pre-July @ '+(c.stcg111aRateOld*100)+'%', fmt(r.stcg111aPreJuly), 'sub');
+    if (r.ltcg112aPreJuly) h += row('LTCG 112A pre-July (exempt ₹'+(c.ltcg112aExemptOld/100000)+'L) @ '+(c.ltcg112aRateOld*100)+'%', fmt(r.ltcg112aPreJuly), 'sub');
+    if (r.ltcgOtherPreJuly) h += row('LTCG Other pre-July @ '+c.ltcgOtherLabelOld, fmt(r.ltcgOtherPreJuly), 'sub');
+  }
+  // Post-July / standard gains
+  if (r.stcg111a) h += row((r.isTrans?'STCG 111A post-July':'STCG u/s 111A')+' @ '+(c.stcg111aRate*100)+'%', fmt(r.stcg111a), 'sub');
   if (r.stcgOther) h += row('STCG — Other (slab rate)', fmt(r.stcgOther), 'sub');
-  if (r.ltcg112a) h += row('LTCG u/s 112A (exempt ₹'+(c.ltcg112aExempt/100000)+'L)', fmt(r.ltcg112a), 'sub');
-  if (r.ltcgOther) h += row('LTCG — Other @ '+c.ltcgOtherLabel, fmt(r.ltcgOther), 'sub');
+  if (r.ltcg112a) h += row((r.isTrans?'LTCG 112A post-July':'LTCG u/s 112A')+' (exempt ₹'+(c.ltcg112aExempt/100000)+'L)', fmt(r.ltcg112a), 'sub');
+  if (r.ltcgOther) h += row((r.isTrans?'LTCG Other post-July':'LTCG — Other')+' @ '+c.ltcgOtherLabel, fmt(r.ltcgOther), 'sub');
 
   h += row('Other Sources (Head 5)', fmt(r.otherIncome + r.winnings));
   if (r.winnings) h += row('Winnings @ 30%', fmt(r.winnings), 'sub');
 
   h += '<div style="height:4px;border-top:2px solid var(--border);margin:10px 0"></div>';
-  h += row('Gross Total Income', fmt(r.normalIncome + r.stcg111a + r.ltcg112a + r.ltcgOther + r.winnings), 'total');
+  const gtiTotal = r.normalIncome + r.stcg111a + r.ltcg112a + r.ltcgOther + r.winnings + r.stcg111aPreJuly + r.ltcg112aPreJuly + r.ltcgOtherPreJuly;
+  h += row('Gross Total Income', fmt(gtiTotal), 'total');
   if (r.totalDeductions > 0) h += row('Less: Deductions Ch VI-A', fmt(-r.totalDeductions));
   h += row('Total Taxable Income (Normal)', fmt(r.normalTaxable), 'total');
 
@@ -1740,9 +1922,14 @@ function renderResult(r) {
 
   if (r.totalSpecialTax > 0) {
     h += '<div style="height:6px"></div>';
-    if (r.taxSTCG111A) h += row('Tax on STCG 111A @ '+(c.stcg111aRate*100)+'%', fmt(r.taxSTCG111A), 'sub');
-    if (r.taxLTCG112A) h += row('Tax on LTCG 112A @ '+(c.ltcg112aRate*100)+'%', fmt(r.taxLTCG112A), 'sub');
-    if (r.taxLTCGOther) h += row('Tax on LTCG Other @ '+c.ltcgOtherLabel, fmt(r.taxLTCGOther), 'sub');
+    // Pre-July tax lines
+    if (r.taxSTCG111APreJuly) h += row('Tax STCG 111A pre-July @ '+(c.stcg111aRateOld*100)+'%', fmt(r.taxSTCG111APreJuly), 'sub');
+    if (r.taxLTCG112APreJuly) h += row('Tax LTCG 112A pre-July @ '+(c.ltcg112aRateOld*100)+'%', fmt(r.taxLTCG112APreJuly), 'sub');
+    if (r.taxLTCGOtherPreJuly) h += row('Tax LTCG Other pre-July @ '+(c.ltcgOtherRateOld*100)+'%', fmt(r.taxLTCGOtherPreJuly), 'sub');
+    // Post-July / standard tax lines
+    if (r.taxSTCG111A) h += row('Tax '+(r.isTrans?'STCG 111A post-July':'STCG 111A')+' @ '+(c.stcg111aRate*100)+'%', fmt(r.taxSTCG111A), 'sub');
+    if (r.taxLTCG112A) h += row('Tax '+(r.isTrans?'LTCG 112A post-July':'LTCG 112A')+' @ '+(c.ltcg112aRate*100)+'%', fmt(r.taxLTCG112A), 'sub');
+    if (r.taxLTCGOther) h += row('Tax '+(r.isTrans?'LTCG Other post-July':'LTCG Other')+' @ '+c.ltcgOtherLabel, fmt(r.taxLTCGOther), 'sub');
     if (r.taxWinnings) h += row('Tax on Winnings @ 30%', fmt(r.taxWinnings), 'sub');
     h += row('Total Special Rate Tax', fmt(r.totalSpecialTax));
   }
@@ -2145,17 +2332,17 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
         <table class="rate-table">
           <thead><tr><th>Code</th><th>Old Sec</th><th>Nature of Goods/Transaction</th><th>Rate</th><th>Threshold</th></tr></thead>
           <tbody>
-            <tr><td><span class="tcs-code">2001</span></td><td>206C(1)</td><td>Alcoholic Liquor for Human Consumption</td><td>1%</td><td>Nil</td></tr>
-            <tr><td><span class="tcs-code">2002</span></td><td>206C(1)</td><td>Tendu Leaves</td><td>5%</td><td>Nil</td></tr>
-            <tr><td><span class="tcs-code">2003</span></td><td>206C(1)</td><td>Timber (forest lease)</td><td>2.5%</td><td>Nil</td></tr>
-            <tr><td><span class="tcs-code">2004</span></td><td>206C(1)</td><td>Timber (other than forest lease)</td><td>2.5%</td><td>Nil</td></tr>
-            <tr><td><span class="tcs-code">2005</span></td><td>206C(1)</td><td>Any other forest produce</td><td>2.5%</td><td>Nil</td></tr>
-            <tr><td><span class="tcs-code">2006</span></td><td>206C(1)</td><td>Scrap</td><td>1%</td><td>Nil</td></tr>
-            <tr><td><span class="tcs-code">2007</span></td><td>206C(1)</td><td>Minerals (coal/lignite/iron ore)</td><td>1%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2001</span></td><td>206C(1)</td><td>Alcoholic Liquor for Human Consumption</td><td>2%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2002</span></td><td>206C(1)</td><td>Tendu Leaves</td><td>2%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2003</span></td><td>206C(1)</td><td>Timber (forest lease)</td><td>2%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2004</span></td><td>206C(1)</td><td>Timber (other than forest lease)</td><td>2%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2005</span></td><td>206C(1)</td><td>Any other forest produce</td><td>2%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2006</span></td><td>206C(1)</td><td>Scrap</td><td>2%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2007</span></td><td>206C(1)</td><td>Minerals (coal/lignite/iron ore)</td><td>2%</td><td>Nil</td></tr>
             <tr><td><span class="tcs-code">2009</span></td><td>206C(1F)</td><td>Motor Vehicle &gt; ₹10L</td><td>1%</td><td>₹10L</td></tr>
-            <tr><td><span class="tcs-code">2010</span></td><td>206C(1G)</td><td>Foreign Remittance (LRS) — Education loan</td><td>0.5%</td><td>₹7L</td></tr>
-            <tr><td><span class="tcs-code">2011</span></td><td>206C(1G)</td><td>Foreign Remittance (LRS) — Other purposes</td><td>5%</td><td>₹7L</td></tr>
-            <tr><td><span class="tcs-code">2012</span></td><td>206C(1G)</td><td>Overseas Tour Package</td><td>5%</td><td>₹7L</td></tr>
+            <tr><td><span class="tcs-code">2010</span></td><td>206C(1G)</td><td>Foreign Remittance (LRS) — Education/Medical</td><td>2%</td><td>₹10L</td></tr>
+            <tr><td><span class="tcs-code">2011</span></td><td>206C(1G)</td><td>Foreign Remittance (LRS) — Other purposes</td><td>20%</td><td>₹10L</td></tr>
+            <tr><td><span class="tcs-code">2012</span></td><td>206C(1G)</td><td>Overseas Tour Package</td><td>2%</td><td>Nil</td></tr>
             <tr><td><span class="tcs-code">2013</span></td><td>206C(1H)</td><td>Sale of Goods &gt; ₹50L</td><td>0.1%</td><td>₹50L pa</td></tr>
             <tr><td><span class="tcs-code">2014</span></td><td>206C(1)</td><td>Parking lot / Toll Plaza / Mining &amp; Quarrying</td><td>2%</td><td>Nil</td></tr>
           </tbody>
@@ -2203,7 +2390,7 @@ const TDS_DATA = {
   "1006":{rate:2,    thresh:20000,   label:"Commission/Brokerage",          newSec:"Sec 393(1) Sl.1(ii)",        oldSec:"Sec 194H",    note:""},
   "1008":{rate:2,    thresh:50000,   label:"Rent – Machinery/Plant",        newSec:"Sec 393(1) Sl.2(ii).D(a)",  oldSec:"Sec 194I(a)", note:"Monthly threshold"},
   "1009":{rate:10,   thresh:50000,   label:"Rent – Land/Building",          newSec:"Sec 393(1) Sl.2(ii).D(b)",  oldSec:"Sec 194I(b)", note:"Monthly threshold"},
-  "1010":{rate:5,    thresh:50000,   label:"Rent by Ind/HUF",               newSec:"Sec 393(1) Sl.2(i)",         oldSec:"Sec 194IB",   note:"Per month"},
+  "1010":{rate:2,    thresh:50000,   label:"Rent by Ind/HUF",               newSec:"Sec 393(1) Sl.2(i)",         oldSec:"Sec 194IB",   note:"Per month. Reduced from 5% to 2%"},
   "1011":{rate:10,   thresh:0,       label:"JDA Consideration",             newSec:"Sec 393(1) Sl.3(ii)",        oldSec:"Sec 194IC",   note:""},
   "1012":{rate:10,   thresh:500000,  label:"Land Acquisition Comp.",        newSec:"Sec 393(1) Sl.3(iii)",       oldSec:"Sec 194LA",   note:"Threshold ₹5L"},
   "1013":{rate:10,   thresh:10000,   label:"Mutual Fund Units",             newSec:"Sec 393(1) Sl.4(i)",         oldSec:"Sec 194K",    note:""},
@@ -2233,17 +2420,17 @@ const TDS_DATA = {
 };
 
 const TCS_DATA = {
-  "2001":{rate:1,    thresh:0,        label:"Alcoholic Liquor for Human Consumption", newSec:"Sec 394(1)(i)",   oldSec:"Sec 206C(1)(a)",  note:""},
-  "2002":{rate:5,    thresh:0,        label:"Tendu Leaves",                           newSec:"Sec 394(1)(ii)",  oldSec:"Sec 206C(1)(b)",  note:""},
-  "2003":{rate:2.5,  thresh:0,        label:"Timber – Forest Lease",                  newSec:"Sec 394(1)(iii)", oldSec:"Sec 206C(1)(c)",  note:""},
-  "2004":{rate:2.5,  thresh:0,        label:"Timber – Other than Forest Lease",       newSec:"Sec 394(1)(iv)",  oldSec:"Sec 206C(1)(d)",  note:""},
-  "2005":{rate:2.5,  thresh:0,        label:"Any Other Forest Produce",               newSec:"Sec 394(1)(v)",   oldSec:"Sec 206C(1)(e)",  note:""},
-  "2006":{rate:1,    thresh:0,        label:"Scrap",                                  newSec:"Sec 394(1)(vi)",  oldSec:"Sec 206C(1)(f)",  note:""},
-  "2007":{rate:1,    thresh:0,        label:"Minerals (Coal/Lignite/Iron Ore)",        newSec:"Sec 394(1)(vii)","oldSec":"Sec 206C(1)(g)", note:""},
+  "2001":{rate:2,    thresh:0,        label:"Alcoholic Liquor for Human Consumption", newSec:"Sec 394(1)(i)",   oldSec:"Sec 206C(1)(a)",  note:"Increased from 1% to 2% w.e.f. 01.04.2026"},
+  "2002":{rate:2,    thresh:0,        label:"Tendu Leaves",                           newSec:"Sec 394(1)(ii)",  oldSec:"Sec 206C(1)(b)",  note:"Reduced from 5% to 2% w.e.f. 01.04.2026"},
+  "2003":{rate:2,    thresh:0,        label:"Timber – Forest Lease",                  newSec:"Sec 394(1)(iii)", oldSec:"Sec 206C(1)(c)",  note:"Reduced from 2.5% to 2% w.e.f. 01.04.2026"},
+  "2004":{rate:2,    thresh:0,        label:"Timber – Other than Forest Lease",       newSec:"Sec 394(1)(iv)",  oldSec:"Sec 206C(1)(d)",  note:"Reduced from 2.5% to 2% w.e.f. 01.04.2026"},
+  "2005":{rate:2,    thresh:0,        label:"Any Other Forest Produce",               newSec:"Sec 394(1)(v)",   oldSec:"Sec 206C(1)(e)",  note:"Reduced from 2.5% to 2% w.e.f. 01.04.2026"},
+  "2006":{rate:2,    thresh:0,        label:"Scrap",                                  newSec:"Sec 394(1)(vi)",  oldSec:"Sec 206C(1)(f)",  note:"Increased from 1% to 2% w.e.f. 01.04.2026"},
+  "2007":{rate:2,    thresh:0,        label:"Minerals (Coal/Lignite/Iron Ore)",       newSec:"Sec 394(1)(vii)", oldSec:"Sec 206C(1)(g)",  note:"Increased from 1% to 2% w.e.f. 01.04.2026"},
   "2009":{rate:1,    thresh:1000000,  label:"Motor Vehicle > ₹10L",                   newSec:"Sec 394(1F)",     oldSec:"Sec 206C(1F)",    note:"On sale consideration"},
-  "2010":{rate:0.5,  thresh:700000,   label:"Foreign Remittance (LRS) – Education loan",newSec:"Sec 394(1G)(i)",oldSec:"Sec 206C(1G)",   note:"0.5% if education loan from bank"},
-  "2011":{rate:5,    thresh:700000,   label:"Foreign Remittance (LRS) – Other",       newSec:"Sec 394(1G)(ii)", oldSec:"Sec 206C(1G)",    note:"20% if no PAN/Aadhaar"},
-  "2012":{rate:5,    thresh:700000,   label:"Overseas Tour Package",                  newSec:"Sec 394(1G)(iii)",oldSec:"Sec 206C(1G)",    note:""},
+  "2010":{rate:2,    thresh:1000000,  label:"Foreign Remittance (LRS) – Education/Medical > ₹10L",newSec:"Sec 394(1G)(i)",oldSec:"Sec 206C(1G)",   note:"Reduced from 5% to 2%. Nil if loan from bank. Threshold now ₹10L"},
+  "2011":{rate:20,   thresh:1000000,  label:"Foreign Remittance (LRS) – Other > ₹10L",newSec:"Sec 394(1G)(ii)", oldSec:"Sec 206C(1G)",    note:"20% above ₹10L. Threshold changed from ₹7L to ₹10L"},
+  "2012":{rate:2,    thresh:0,        label:"Overseas Tour Package",                  newSec:"Sec 394(1G)(iii)",oldSec:"Sec 206C(1G)",    note:"Flat 2% (was 5%/20%). Threshold removed w.e.f. 01.04.2026"},
   "2013":{rate:0.1,  thresh:5000000,  label:"Sale of Goods > ₹50L",                   newSec:"Sec 394(1H)",     oldSec:"Sec 206C(1H)",    note:"Annual turnover > ₹10Cr"},
   "2014":{rate:2,    thresh:0,        label:"Parking Lot / Toll Plaza / Mining",       newSec:"Sec 394(1)(viii)",oldSec:"Sec 206C(1)(h)",  note:""},
 };
@@ -2267,7 +2454,7 @@ function buildTDSOptions(){
     <optgroup label="── Rent ──">
       <option value="1008">Rent – Machinery/Plant (Old: 194I(a)) — 2%</option>
       <option value="1009">Rent – Land/Building (Old: 194I(b)) — 10%</option>
-      <option value="1010">Rent by Individual/HUF (Old: 194IB) — 5%</option>
+      <option value="1010">Rent by Individual/HUF (Old: 194IB) — 2%</option>
     </optgroup>
     <optgroup label="── Property ──">
       <option value="1011">JDA Consideration (Old: 194IC) — 10%</option>
@@ -2307,14 +2494,14 @@ function buildTDSOptions(){
 
 function buildTCSOptions(){
   return `<option value="">— Select Nature of Goods/Transaction —</option>
-    <optgroup label="── Goods ──">
-      <option value="2001">Alcoholic Liquor for Human Consumption — 1%</option>
-      <option value="2002">Tendu Leaves — 5%</option>
-      <option value="2003">Timber – Forest Lease — 2.5%</option>
-      <option value="2004">Timber – Other than Forest Lease — 2.5%</option>
-      <option value="2005">Any Other Forest Produce — 2.5%</option>
-      <option value="2006">Scrap — 1%</option>
-      <option value="2007">Minerals (Coal/Lignite/Iron Ore) — 1%</option>
+    <optgroup label="── Goods (All rationalised to 2%) ──">
+      <option value="2001">Alcoholic Liquor for Human Consumption — 2%</option>
+      <option value="2002">Tendu Leaves — 2%</option>
+      <option value="2003">Timber – Forest Lease — 2%</option>
+      <option value="2004">Timber – Other than Forest Lease — 2%</option>
+      <option value="2005">Any Other Forest Produce — 2%</option>
+      <option value="2006">Scrap — 2%</option>
+      <option value="2007">Minerals (Coal/Lignite/Iron Ore) — 2%</option>
       <option value="2014">Parking Lot / Toll Plaza / Mining &amp; Quarrying — 2%</option>
     </optgroup>
     <optgroup label="── High Value Transactions ──">
@@ -2322,9 +2509,9 @@ function buildTCSOptions(){
       <option value="2013">Sale of Goods &gt; ₹50L (Annual) — 0.1%</option>
     </optgroup>
     <optgroup label="── Foreign Remittance (LRS) ──">
-      <option value="2010">Foreign Remittance – Education (via bank loan) — 0.5%</option>
-      <option value="2011">Foreign Remittance – Other Purposes — 5%</option>
-      <option value="2012">Overseas Tour Package — 5%</option>
+      <option value="2010">Foreign Remittance – Education/Medical &gt; ₹10L — 2%</option>
+      <option value="2011">Foreign Remittance – Other Purposes &gt; ₹10L — 20%</option>
+      <option value="2012">Overseas Tour Package — 2% (flat)</option>
     </optgroup>`;
 }
 
