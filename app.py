@@ -384,7 +384,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <div class="hero">
   <div class="hero-badge">🇮🇳 Made for Indian CAs &amp; Accountants</div>
   <h1>Your Complete <em>CA Toolkit</em></h1>
-  <p>Professional tools built by CA Articles of GD Singla &amp; Co. — designed to save hours of manual work every year.</p>
+  <p>Professional tools built by CA Article — designed to save hours of manual work every year.</p>
 </div>
 
 {% if username %}
@@ -494,7 +494,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <footer>
   <p class="footer-brand">CA Toolkit</p>
   <p>Built for Indian Chartered Accountants · Saves hours every year</p>
-  <p style="margin-top:6px">Created by CA Articles of GD Singla &amp; Co.</p>
+  <p style="margin-top:6px">Created by CA Article</p>
   <p style="margin-top:12px;font-size:11px">© 2026 CA Toolkit · Your data is never stored · <span style="color:#EF4444">No refund after first upload is used</span></p>
 </footer>
 </body></html>"""
@@ -881,7 +881,7 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
 <footer>
   <p class="footer-brand">CA Toolkit</p>
   <p>Built for Indian Chartered Accountants · Saves hours every year</p>
-  <p style="margin-top:6px">Created by CA Articles of GD Singla &amp; Co.</p>
+  <p style="margin-top:6px">Created by CA Article</p>
   <p style="margin-top:12px;font-size:11px">© 2026 CA Toolkit · Your data is never stored · <span style="color:#EF4444">No refund after first upload is used</span></p>
 </footer>
 <div class="toast" id="toast"></div>
@@ -1454,7 +1454,7 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
 <footer>
   <p class="footer-brand">CA Toolkit</p>
   <p>Built for Indian Chartered Accountants · Saves hours every year</p>
-  <p style="margin-top:6px">Created by CA Articles of GD Singla &amp; Co.</p>
+  <p style="margin-top:6px">Created by CA Article</p>
   <p style="margin-top:12px;font-size:11px">© 2026 CA Toolkit · <span style="color:var(--accent)">Income Tax Calculator — PY 2023-24 to PY 2026-27</span></p>
 </footer>
 <div class="toast" id="toast"></div>
@@ -2397,7 +2397,7 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
 
 <footer>
   <p class="footer-brand">CA Toolkit</p>
-  <p>Built for Indian CAs · Created by CA Articles of GD Singla &amp; Co.</p>
+  <p>Built for Indian CAs · Created by CA Article</p>
   <p style="margin-top:8px;font-size:11px">© 2026 CA Toolkit · For reference only — verify with latest CBDT circulars</p>
 </footer>
 
@@ -2891,7 +2891,7 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
 
 <footer>
   <p class="footer-brand">CA Toolkit</p>
-  <p>Built for Indian Chartered Accountants · Created by CA Articles of GD Singla &amp; Co.</p>
+  <p>Built for Indian Chartered Accountants · Created by CA Article</p>
   <p style="margin-top:10px;font-size:11px">© 2026 CA Toolkit · For reference only — verify with latest MCA/CBDT notifications</p>
 </footer>
 
@@ -3175,7 +3175,7 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
 
 <footer>
   <p class="footer-brand">CA Toolkit</p>
-  <p>Built for Indian CAs · Created by CA Articles of GD Singla &amp; Co.</p>
+  <p>Built for Indian CAs · Created by CA Article</p>
   <p style="margin-top:8px;font-size:11px">© 2026 CA Toolkit · For reference only · Verify with actual books of accounts</p>
 </footer>
 
@@ -3646,7 +3646,7 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
 
 <footer>
   <p class="footer-brand">CA Toolkit</p>
-  <p>Built for Indian CAs · Created by CA Articles of GD Singla &amp; Co.</p>
+  <p>Built for Indian CAs · Created by CA Article</p>
   <p style="margin-top:8px;font-size:11px">© 2026 CA Toolkit · For reference only — consult a CA before making decisions</p>
 </footer>
 
@@ -4002,7 +4002,7 @@ tr:hover td{background:#F9FAFB}
 </div>
 <footer>
   <p class="footer-brand">CA Toolkit — Admin</p>
-  <p>Created by CA Articles of GD Singla &amp; Co.</p>
+  <p>Created by CA Article</p>
 </footer>
 </body></html>"""
 
