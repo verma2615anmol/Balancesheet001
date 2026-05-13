@@ -212,8 +212,15 @@ input:focus{border-color:var(--brand)}
 <div class="auth-card">
   <div class="auth-logo">CA<span>Toolkit</span></div>
   <div class="auth-sub">Professional tools for Indian CAs &amp; Accountants</div>
+
+  {% if msg %}
+  <div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:12px 14px;margin-bottom:20px;font-size:13px;color:#92400E">
+    🔒 <strong>{{ msg }}</strong>
+  </div>
+  {% endif %}
+
   <h2>Sign in</h2>
-  <p style="font-size:13px;color:var(--muted);margin-bottom:24px">Enter your credentials to continue</p>
+  <p style="font-size:13px;color:var(--muted);margin-bottom:20px">Enter your credentials to continue</p>
   {% if error %}<div class="alert ae">{{ error }}</div>{% endif %}
   <form method="POST" action="/login">
     <div class="field"><label>Username</label>
@@ -222,7 +229,15 @@ input:focus{border-color:var(--brand)}
       <input type="password" name="password" placeholder="Enter password" required autocomplete="current-password"/></div>
     <button class="btn" type="submit">Sign In →</button>
   </form>
-  <div class="lr">Need access? <a href="mailto:{{ email }}">Contact admin</a></div>
+
+  <div style="background:#F0FDF4;border:1px solid #A7F3D0;border-radius:8px;padding:14px 16px;margin-top:20px">
+    <p style="font-size:12px;font-weight:700;color:#065F46;margin-bottom:6px">Don't have an account?</p>
+    <p style="font-size:12px;color:#374151;line-height:1.7">
+      Contact us to get access:<br/>
+      📧 <a href="mailto:{{ email }}" style="color:var(--brand);font-weight:600">{{ email }}</a><br/>
+      💳 UPI: <strong style="color:var(--ink)">{{ upi }}</strong>
+    </p>
+  </div>
 </div></body></html>"""
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1896,53 +1911,36 @@ TDS_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 h1{font-size:clamp(20px,4vw,32px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:8px}
 h1 em{font-style:normal;color:var(--brand)}
 .hero p{font-size:13px;color:var(--muted);line-height:1.7;max-width:520px;margin:0 auto}
-.act-note{max-width:1100px;margin:0 auto;padding:0 24px 12px}
+.act-note{max-width:920px;margin:0 auto;padding:0 24px 12px}
 .act-box{background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:10px 14px;
          font-size:12px;color:#1e40af;display:flex;align-items:flex-start;gap:6px}
-.main{max-width:1100px;margin:0 auto;padding:12px 24px 48px;
-      display:grid;grid-template-columns:1.1fr 1fr;gap:20px;align-items:start}
-@media(max-width:800px){.main{grid-template-columns:1fr}}
+.main{max-width:920px;margin:0 auto;padding:12px 24px 48px;
+      display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
+@media(max-width:700px){.main{grid-template-columns:1fr}}
 .card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
-      box-shadow:var(--shadow);overflow:hidden;margin-bottom:16px}
-.card:last-child{margin-bottom:0}
+      box-shadow:var(--shadow);overflow:hidden}
 .card-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
 .card-head .icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px}
 .card-head h2{font-size:14px;font-weight:700}
 .card-head p{font-size:12px;color:var(--muted);margin-top:1px}
 .card-body{padding:16px}
 .field{margin-bottom:13px}
-.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:4px}
 .hint{font-size:11px;color:var(--muted);margin-top:3px}
-select,input[type=number],input[type=date]{width:100%;border:1.5px solid var(--border);border-radius:8px;
+select,input[type=number]{width:100%;border:1.5px solid var(--border);border-radius:8px;
   padding:8px 11px;font-family:inherit;font-size:13px;color:var(--ink);background:var(--white);
   transition:border-color .2s;outline:none}
 select:focus,input:focus{border-color:var(--brand)}
 .btn{width:100%;background:var(--brand);color:#fff;border:none;border-radius:8px;
      padding:11px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;transition:background .2s}
 .btn:hover{background:var(--brand-d)}
-.result-section{display:none;margin-top:14px}
-.rboxes{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
-.rbox{border-radius:10px;padding:14px 16px}
-.rbox-tds  {background:#EFF6FF;border:1.5px solid #BFDBFE}
-.rbox-int  {background:#FFFBEB;border:1.5px solid #FDE68A}
-.rbox-total{background:#1D4ED8;border:1.5px solid #1D4ED8;grid-column:1/-1}
-.rbox .val {font-size:22px;font-weight:800;margin-bottom:2px}
-.rbox .lbl {font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;opacity:.75}
-.rbox .sub {font-size:11px;margin-top:5px;opacity:.8}
-.rbox-tds   .val{color:#1D4ED8}.rbox-tds   .lbl{color:#1D4ED8}
-.rbox-int   .val{color:#92400E}.rbox-int   .lbl{color:#92400E}
-.rbox-total .val{color:#fff;font-size:26px}
-.rbox-total .lbl{color:rgba(255,255,255,.75)}
-.rbox-total .sub{color:rgba(255,255,255,.8);font-size:12px}
-.detail-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
-.detail-table td{padding:7px 2px;border-bottom:1px solid var(--border)}
-.detail-table tr:last-child td{border:none;font-weight:700;font-size:13px}
-.detail-table td:last-child{text-align:right;font-weight:600}
-.ontime-box{background:#ECFDF5;border:1.5px solid #A7F3D0;border-radius:8px;
-            padding:12px 14px;font-size:13px;color:#065F46;font-weight:600;margin-top:14px;text-align:center}
-.note-box{background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;
-          padding:10px 12px;font-size:11px;color:#92400E;margin-top:10px;line-height:1.6}
+.result-box{display:none;margin-top:12px;background:#F0FDF4;border:1px solid #A7F3D0;border-radius:8px;padding:14px}
+.result-main{font-size:24px;font-weight:800;color:#065F46;margin-bottom:2px}
+.result-sub{font-size:11px;color:var(--muted);margin-bottom:12px}
+.rtable{width:100%;border-collapse:collapse;font-size:12px}
+.rtable td{padding:6px 0;border-bottom:1px solid #D1FAE5}
+.rtable tr:last-child td{border:none}
+.rtable td:last-child{text-align:right;font-weight:600;color:var(--ink);padding-left:8px}
 .rate-table{width:100%;border-collapse:collapse;font-size:11px}
 .rate-table th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;
                color:var(--muted);border-bottom:1.5px solid var(--border);padding:5px 6px}
@@ -1969,408 +1967,256 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
 <section class="hero">
   <div class="hero-badge">🆓 Free · No Login Required</div>
   <h1>TDS Calculator — <em>New IT Act 2025</em></h1>
-  <p>Updated for <strong>Section 393 / Section 392</strong> of IT Act 2025 (Tax Year 2026-27). Calculate TDS liability, late deposit interest and total payable amount.</p>
+  <p>All sections updated to <strong>Section 393 / Section 392</strong> of Income Tax Act 2025, effective Tax Year 2026-27. Shows new section reference, payment code, rate and deposit due date.</p>
 </section>
 
 <div class="act-note">
-  <div class="act-box">ℹ️ <span><strong>IT Act 2025 (w.e.f. 1 Apr 2026):</strong> TDS consolidated into Section 393 (non-salary) and Section 392 (salary). Numeric payment codes replace old section numbers in returns. Rates &amp; thresholds unchanged.</span></div>
+  <div class="act-box">ℹ️ <span><strong>IT Act 2025 (w.e.f. 1 Apr 2026):</strong> TDS provisions consolidated into Section 393 (non-salary) and Section 392 (salary). Numeric payment codes replace old section numbers in TDS returns. Rates &amp; thresholds unchanged.</span></div>
 </div>
 
 <div class="main">
-
-  <!-- LEFT: INPUT FORM -->
-  <div>
-    <div class="card">
-      <div class="card-head">
-        <div class="icon" style="background:#EFF6FF">📑</div>
-        <div><h2>TDS Liability Calculator</h2><p>IT Act 2025 · Tax Year 2026-27</p></div>
+  <div class="card">
+    <div class="card-head">
+      <div class="icon" style="background:#EFF6FF">📑</div>
+      <div><h2>Calculate TDS</h2><p>Tax Year 2026-27 · IT Act 2025</p></div>
+    </div>
+    <div class="card-body">
+      <div class="field">
+        <label>Nature of Payment</label>
+        <select id="tdsSection" onchange="updateHint()">
+          <option value="">— Select Payment Type —</option>
+          <optgroup label="── Salary ──">
+            <option value="1001">Salary (Sec 392) — Slab rate</option>
+            <option value="1004">PF Accumulated Balance (Sec 392(7)) — 10%</option>
+          </optgroup>
+          <optgroup label="── Commission &amp; Brokerage ──">
+            <option value="1005">Insurance Commission — 2%/10% (Old: 194D)</option>
+            <option value="1006">Commission/Brokerage – Others — 2% (Old: 194H)</option>
+          </optgroup>
+          <optgroup label="── Rent ──">
+            <option value="1008">Rent – Machinery/Plant/Equipment — 2% (Old: 194I(a))</option>
+            <option value="1009">Rent – Land/Building/Furniture — 10% (Old: 194I(b))</option>
+            <option value="1010">Rent by Individual/HUF — 2%/10% (Old: 194IB)</option>
+          </optgroup>
+          <optgroup label="── Property ──">
+            <option value="1011">JDA Consideration (Old: 194IC) — 10%</option>
+            <option value="1012">Compensation – Immovable Property Acquisition (Old: 194LA) — 10%</option>
+            <option value="1036">Purchase of Immovable Property (Old: 194IA) — 1%</option>
+          </optgroup>
+          <optgroup label="── Interest ──">
+            <option value="1019">Interest on Securities (Old: 193) — 10%</option>
+            <option value="1020">Interest – Senior Citizen (Old: 194A) — 10%</option>
+            <option value="1021">Interest – Others, Bank/Post Office (Old: 194A) — 10%</option>
+            <option value="1022">Interest – Others (Old: 194A) — 10%</option>
+          </optgroup>
+          <optgroup label="── Investment Income ──">
+            <option value="1013">Mutual Fund Units Income (Old: 194K) — 10%</option>
+            <option value="1014">Business Trust – Interest (Old: 194LBA) — 10%</option>
+            <option value="1017">Investment Fund Income (Old: 194LBB) — 10%</option>
+            <option value="1018">Securitisation Trust Income (Old: 194LBC) — 10%</option>
+            <option value="1029">Dividends (Old: 194) — 10%</option>
+          </optgroup>
+          <optgroup label="── Contractor &amp; Professional ──">
+            <option value="1023">Contractor – Individual/HUF (Old: 194C) — 1%</option>
+            <option value="1024">Contractor – Others/Company (Old: 194C) — 2%</option>
+            <option value="1026">Technical Services/Royalty/Call Centre (Old: 194J(a)) — 2%</option>
+            <option value="1027">Professional Fees (Old: 194J(b)) — 10%</option>
+            <option value="1028">Director Remuneration (Old: 194J(b)) — 10%</option>
+            <option value="1037">Contractor/Professional by Individual/HUF (Old: 194M) — 5%</option>
+          </optgroup>
+          <optgroup label="── Insurance &amp; Life ──">
+            <option value="1030">Life Insurance Policy Proceeds (Old: 194DA) — 2%</option>
+          </optgroup>
+          <optgroup label="── Other Payments ──">
+            <option value="1031">Purchase of Goods (Old: 194Q) — 0.1%</option>
+            <option value="1033">Benefit/Perquisite – Business (Old: 194R) — 10%</option>
+            <option value="1035">E-Commerce Operator (Old: 194O) — 0.1%</option>
+            <option value="1038">Cash Withdrawal (Old: 194N) — 2%</option>
+            <option value="1039">VDA/Crypto (Old: 194S) — 1%</option>
+            <option value="1040">Lottery/Puzzle Winnings (Old: 194B) — 30%</option>
+            <option value="1041">Partner Remuneration/Salary (Old: 194T) — 10%</option>
+          </optgroup>
+        </select>
+        <p class="hint" id="sectionHint">Select a payment type to see details</p>
       </div>
-      <div class="card-body">
-
-        <div class="field">
-          <label>Nature of Payment</label>
-          <select id="tdsSection" onchange="updateHint()">
-            <option value="">— Select Payment Type —</option>
-            <optgroup label="── Salary ──">
-              <option value="1001">Salary (Sec 392) — Slab rate</option>
-              <option value="1004">PF Accumulated Balance (Sec 392(7)) — 10%</option>
-            </optgroup>
-            <optgroup label="── Commission &amp; Brokerage ──">
-              <option value="1005">Insurance Commission (Old: 194D) — 2%/10%</option>
-              <option value="1006">Commission / Brokerage (Old: 194H) — 2%</option>
-            </optgroup>
-            <optgroup label="── Rent ──">
-              <option value="1008">Rent – Machinery/Plant/Equipment (Old: 194I(a)) — 2%</option>
-              <option value="1009">Rent – Land/Building/Furniture (Old: 194I(b)) — 10%</option>
-              <option value="1010">Rent by Individual/HUF (Old: 194IB) — 5%</option>
-            </optgroup>
-            <optgroup label="── Property ──">
-              <option value="1011">JDA Consideration (Old: 194IC) — 10%</option>
-              <option value="1012">Compensation – Land Acquisition (Old: 194LA) — 10%</option>
-              <option value="1036">Purchase of Immovable Property (Old: 194IA) — 1%</option>
-            </optgroup>
-            <optgroup label="── Interest ──">
-              <option value="1019">Interest on Securities (Old: 193) — 10%</option>
-              <option value="1020">Interest – Senior Citizen (Old: 194A) — 10%</option>
-              <option value="1021">Interest – Bank/Post Office (Old: 194A) — 10%</option>
-              <option value="1022">Interest – Others (Old: 194A) — 10%</option>
-            </optgroup>
-            <optgroup label="── Investment Income ──">
-              <option value="1013">Mutual Fund Units (Old: 194K) — 10%</option>
-              <option value="1029">Dividends (Old: 194) — 10%</option>
-              <option value="1014">Business Trust – Interest (Old: 194LBA) — 10%</option>
-              <option value="1017">Investment Fund Income (Old: 194LBB) — 10%</option>
-              <option value="1018">Securitisation Trust (Old: 194LBC) — 10%</option>
-            </optgroup>
-            <optgroup label="── Contractor &amp; Professional ──">
-              <option value="1023">Contractor – Individual/HUF (Old: 194C) — 1%</option>
-              <option value="1024">Contractor – Others/Company (Old: 194C) — 2%</option>
-              <option value="1026">Technical Services/Royalty (Old: 194J(a)) — 2%</option>
-              <option value="1027">Professional Fees (Old: 194J(b)) — 10%</option>
-              <option value="1028">Director Remuneration (Old: 194J(b)) — 10%</option>
-              <option value="1037">Contractor/Prof by Individual/HUF (Old: 194M) — 5%</option>
-            </optgroup>
-            <optgroup label="── Other Payments ──">
-              <option value="1030">Life Insurance Policy Proceeds (Old: 194DA) — 2%</option>
-              <option value="1031">Purchase of Goods (Old: 194Q) — 0.1%</option>
-              <option value="1033">Benefit/Perquisite – Business (Old: 194R) — 10%</option>
-              <option value="1035">E-Commerce Operator (Old: 194O) — 0.1%</option>
-              <option value="1038">Cash Withdrawal (Old: 194N) — 2%</option>
-              <option value="1039">VDA / Crypto (Old: 194S) — 1%</option>
-              <option value="1040">Lottery/Puzzle Winnings (Old: 194B) — 30%</option>
-              <option value="1041">Partner Salary/Remuneration (Old: 194T) — 10%</option>
-            </optgroup>
-          </select>
-          <p class="hint" id="sectionHint">Select a payment type to see rate and threshold</p>
-        </div>
-
-        <div class="field">
-          <label>Payment Amount (₹)</label>
-          <input type="number" id="paymentAmt" placeholder="e.g. 100000" min="0"/>
-          <p class="hint">Gross payment amount before TDS deduction</p>
-        </div>
-
-        <hr style="border:none;border-top:1.5px dashed var(--border);margin:16px 0"/>
-        <p style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:12px">Late Deposit Interest (Optional)</p>
-
-        <div class="row2">
-          <div class="field">
-            <label>Date of Deduction</label>
-            <input type="date" id="deductionDate"/>
-            <p class="hint">When TDS was deducted</p>
-          </div>
-          <div class="field">
-            <label>Date of Actual Deposit</label>
-            <input type="date" id="depositDate"/>
-            <p class="hint">When you paid the challan</p>
-          </div>
-        </div>
-
-        <button class="btn" onclick="calcTDS()">Calculate TDS &amp; Interest →</button>
-
-        <!-- RESULT -->
-        <div class="result-section" id="resultSection">
-
-          <!-- On-time deposit -->
-          <div class="ontime-box" id="ontimeBox" style="display:none">
-            ✓ Deposit is on time — No interest applicable
-          </div>
-
-          <!-- Late deposit boxes -->
-          <div id="lateBoxes" style="display:none">
-            <div class="rboxes">
-              <div class="rbox rbox-tds">
-                <div class="lbl">TDS Amount</div>
-                <div class="val" id="r-tds"></div>
-                <div class="sub" id="r-tds-sub"></div>
-              </div>
-              <div class="rbox rbox-int">
-                <div class="lbl">Interest u/s 201(1A)</div>
-                <div class="val" id="r-int"></div>
-                <div class="sub" id="r-int-sub"></div>
-              </div>
-              <div class="rbox rbox-total">
-                <div class="lbl">Total Amount Payable</div>
-                <div class="val" id="r-total"></div>
-                <div class="sub" id="r-total-sub"></div>
-              </div>
-            </div>
-
-            <table class="detail-table">
-              <tr><td>Payment Amount</td><td id="d-payment"></td></tr>
-              <tr><td>New Section (IT Act 2025)</td><td id="d-newsec"></td></tr>
-              <tr><td>Old Section (for reference)</td><td id="d-oldsec"></td></tr>
-              <tr><td>Payment Code</td><td id="d-code"></td></tr>
-              <tr><td>TDS Rate</td><td id="d-rate"></td></tr>
-              <tr><td>TDS Amount</td><td id="d-tds"></td></tr>
-              <tr><td>Date of Deduction</td><td id="d-ddate"></td></tr>
-              <tr><td>Due Date for Deposit</td><td id="d-due"></td></tr>
-              <tr><td>Actual Deposit Date</td><td id="d-adate"></td></tr>
-              <tr><td>Delay (months for interest)</td><td id="d-months"></td></tr>
-              <tr><td>Interest Rate</td><td>1.5% per month</td></tr>
-              <tr><td>Interest Amount</td><td id="d-intamt"></td></tr>
-              <tr><td style="color:var(--brand)">Total Payable (TDS + Interest)</td><td id="d-total" style="color:var(--brand)"></td></tr>
-            </table>
-
-            <div class="note-box">
-              ⚠ As per IT Act 2025, a fractional month is counted as a full month for interest calculation. Interest runs from date of deduction to actual date of deposit.
-            </div>
-          </div>
-
-          <!-- No date entered — show basic result -->
-          <div id="basicBox" style="display:none">
-            <div class="rboxes">
-              <div class="rbox rbox-tds" style="grid-column:1/-1">
-                <div class="lbl">TDS Amount</div>
-                <div class="val" id="b-tds"></div>
-                <div class="sub" id="b-sub"></div>
-              </div>
-            </div>
-            <table class="detail-table">
-              <tr><td>Payment Amount</td><td id="b-payment"></td></tr>
-              <tr><td>New Section (IT Act 2025)</td><td id="b-newsec"></td></tr>
-              <tr><td>Old Section (for reference)</td><td id="b-oldsec"></td></tr>
-              <tr><td>Payment Code</td><td id="b-code"></td></tr>
-              <tr><td>TDS Rate</td><td id="b-rate"></td></tr>
-              <tr><td>TDS Amount</td><td id="b-tds2"></td></tr>
-              <tr><td>Net Payment to Payee</td><td id="b-net"></td></tr>
-            </table>
-            <div class="note-box">
-              ℹ Enter deduction and deposit dates above to also calculate late deposit interest.
-            </div>
-          </div>
-
-        </div>
+      <div class="field">
+        <label>Payment Amount (₹)</label>
+        <input type="number" id="paymentAmt" placeholder="e.g. 100000" min="0"/>
+      </div>
+      <div class="field">
+        <label>Payment Month</label>
+        <select id="paymentMonth">
+          <option value="4">April</option>
+          <option value="5">May</option>
+          <option value="6">June</option>
+          <option value="7">July</option>
+          <option value="8">August</option>
+          <option value="9">September</option>
+          <option value="10">October</option>
+          <option value="11">November</option>
+          <option value="12">December</option>
+          <option value="1">January</option>
+          <option value="2">February</option>
+          <option value="3">March</option>
+        </select>
+      </div>
+      <button class="btn" onclick="calcTDS()">Calculate TDS →</button>
+      <div class="result-box" id="resultBox">
+        <div class="result-main" id="tdsAmt"></div>
+        <div class="result-sub" id="tdsSub"></div>
+        <table class="rtable">
+          <tr><td>Payment Amount</td><td id="rPayment"></td></tr>
+          <tr><td>New Section (IT Act 2025)</td><td id="rNewSec"></td></tr>
+          <tr><td>Old Section (IT Act 1961)</td><td id="rOldSec"></td></tr>
+          <tr><td>Payment Code (for returns)</td><td id="rCode"></td></tr>
+          <tr><td>TDS Rate</td><td id="rRate"></td></tr>
+          <tr><td>TDS Amount</td><td id="rTDS"></td></tr>
+          <tr><td>Net Payment to Payee</td><td id="rNet"></td></tr>
+          <tr><td>Deposit Due Date</td><td id="rDue"></td></tr>
+        </table>
       </div>
     </div>
   </div>
 
-  <!-- RIGHT: RATE CHART + DUE DATE RULES -->
   <div>
-    <div class="card">
+    <div class="card" style="margin-bottom:16px">
       <div class="card-head">
         <div class="icon" style="background:#FFFBEB">📋</div>
-        <div><h2>Quick Rate Chart</h2><p>Section 393 — IT Act 2025</p></div>
+        <div><h2>Quick Rate Chart</h2><p>New IT Act 2025 — Section 393</p></div>
       </div>
       <div class="card-body" style="padding:0;overflow-x:auto">
         <table class="rate-table">
-          <thead><tr><th>Code</th><th>Old Sec</th><th>Nature</th><th>Rate</th><th>Threshold</th></tr></thead>
+          <thead><tr><th>Code</th><th>Old Sec</th><th>Nature of Payment</th><th>Rate</th><th>Threshold</th></tr></thead>
           <tbody>
             <tr><td><span class="code">1001</span></td><td>192</td><td>Salary</td><td>Slab</td><td>Basic exemption</td></tr>
-            <tr><td><span class="code">1021</span></td><td>194A</td><td>Interest (Bank/PO)</td><td>10%</td><td>₹50,000</td></tr>
+            <tr><td><span class="code">1021</span></td><td>194A</td><td>Interest (Bank/PO)</td><td>10%</td><td>₹50,000 (₹1L sr.)</td></tr>
             <tr><td><span class="code">1022</span></td><td>194A</td><td>Interest (Others)</td><td>10%</td><td>₹10,000</td></tr>
-            <tr><td><span class="code">1023</span></td><td>194C</td><td>Contractor (Ind)</td><td>1%</td><td>₹30K/₹1L pa</td></tr>
-            <tr><td><span class="code">1024</span></td><td>194C</td><td>Contractor (Others)</td><td>2%</td><td>₹30K/₹1L pa</td></tr>
+            <tr><td><span class="code">1023</span></td><td>194C</td><td>Contractor (Ind/HUF)</td><td>1%</td><td>₹30K / ₹1L p.a.</td></tr>
+            <tr><td><span class="code">1024</span></td><td>194C</td><td>Contractor (Others)</td><td>2%</td><td>₹30K / ₹1L p.a.</td></tr>
             <tr><td><span class="code">1006</span></td><td>194H</td><td>Commission/Brokerage</td><td>2%</td><td>₹20,000</td></tr>
             <tr><td><span class="code">1008</span></td><td>194I(a)</td><td>Rent (P&amp;M)</td><td>2%</td><td>₹50,000/mo</td></tr>
             <tr><td><span class="code">1009</span></td><td>194I(b)</td><td>Rent (Land/Bldg)</td><td>10%</td><td>₹50,000/mo</td></tr>
             <tr><td><span class="code">1036</span></td><td>194IA</td><td>Immovable Property</td><td>1%</td><td>₹50L</td></tr>
             <tr><td><span class="code">1027</span></td><td>194J(b)</td><td>Professional Fees</td><td>10%</td><td>₹50,000</td></tr>
             <tr><td><span class="code">1026</span></td><td>194J(a)</td><td>Technical Services</td><td>2%</td><td>₹50,000</td></tr>
-            <tr><td><span class="code">1031</span></td><td>194Q</td><td>Purchase of Goods</td><td>0.1%</td><td>₹50L pa</td></tr>
+            <tr><td><span class="code">1031</span></td><td>194Q</td><td>Purchase of Goods</td><td>0.1%</td><td>₹50L p.a.</td></tr>
             <tr><td><span class="code">1039</span></td><td>194S</td><td>VDA/Crypto</td><td>1%</td><td>₹10,000</td></tr>
-            <tr><td><span class="code">1041</span></td><td>194T</td><td>Partner Salary</td><td>10%</td><td>₹20,000</td></tr>
+            <tr><td><span class="code">1041</span></td><td>194T</td><td>Partner Salary/Rem.</td><td>10%</td><td>₹20,000</td></tr>
           </tbody>
         </table>
       </div>
     </div>
-
     <div class="card">
       <div class="card-head">
         <div class="icon" style="background:#F0FDF4">📅</div>
-        <div><h2>Deposit Due Dates</h2><p>Rule 218 — IT Rules 2026</p></div>
+        <div><h2>Due Date Rules</h2><p>Rule 218 — IT Rules 2026</p></div>
       </div>
       <div class="card-body">
         <div style="font-size:12px;line-height:2;color:var(--muted)">
-          <p><strong style="color:var(--ink)">April – February:</strong> 7th of the following month</p>
+          <p><strong style="color:var(--ink)">April – February deductions:</strong> 7th of the following month</p>
           <p><strong style="color:var(--ink)">March deductions:</strong> 30th April</p>
-          <p><strong style="color:var(--ink)">Sec 194IA / 194IB / 194M / 194S:</strong> 30 days from end of deduction month</p>
-          <p style="margin-top:8px;color:var(--red)"><strong>Late interest:</strong> 1.5% per month · Fractional month = full month</p>
+          <p><strong style="color:var(--ink)">Government deductors (challan):</strong> 7th of next month</p>
+          <p><strong style="color:var(--ink)">194IA / 194IB / 194M / 194S cases:</strong> 30 days from end of month of deduction</p>
+          <p style="margin-top:8px;color:#EF4444"><strong>Late deposit interest:</strong> 1.5% per month from date of deduction</p>
         </div>
       </div>
     </div>
   </div>
-
 </div>
 
 <footer>
   <p class="footer-brand">CA Toolkit</p>
   <p>Built for Indian CAs · Created by CA Articles of GD Singla &amp; Co.</p>
-  <p style="margin-top:8px;font-size:11px">© 2026 CA Toolkit · For reference only — verify with latest CBDT circulars</p>
+  <p style="margin-top:8px;font-size:11px">© 2026 CA Toolkit · For reference only — verify with latest CBDT circulars · IT Act 2025 effective 1 Apr 2026</p>
 </footer>
 
 <script>
 const TDS = {
-  "1001":{rate:0,    thresh:0,       label:"Salary",                      newSec:"Sec 392",                    oldSec:"Sec 192",    note:"Slab rate"},
-  "1004":{rate:10,   thresh:50000,   label:"PF Accumulated Balance",       newSec:"Sec 392(7)",                 oldSec:"Sec 192A",   note:"No PAN: 20%"},
-  "1005":{rate:2,    thresh:20000,   label:"Insurance Commission",         newSec:"Sec 393(1) Sl.1(i)",         oldSec:"Sec 194D",   note:"Ind: 2%, Others: 10%"},
-  "1006":{rate:2,    thresh:20000,   label:"Commission/Brokerage",         newSec:"Sec 393(1) Sl.1(ii)",        oldSec:"Sec 194H",   note:""},
-  "1008":{rate:2,    thresh:50000,   label:"Rent – Machinery/Plant",       newSec:"Sec 393(1) Sl.2(ii).D(a)",  oldSec:"Sec 194I(a)",note:"Monthly threshold"},
-  "1009":{rate:10,   thresh:50000,   label:"Rent – Land/Building",         newSec:"Sec 393(1) Sl.2(ii).D(b)",  oldSec:"Sec 194I(b)",note:"Monthly threshold"},
-  "1010":{rate:5,    thresh:50000,   label:"Rent by Ind/HUF",              newSec:"Sec 393(1) Sl.2(i)",         oldSec:"Sec 194IB",  note:"Per month"},
-  "1011":{rate:10,   thresh:0,       label:"JDA Consideration",            newSec:"Sec 393(1) Sl.3(ii)",        oldSec:"Sec 194IC",  note:""},
-  "1012":{rate:10,   thresh:500000,  label:"Land Acquisition Comp.",       newSec:"Sec 393(1) Sl.3(iii)",       oldSec:"Sec 194LA",  note:"Threshold ₹5L"},
-  "1013":{rate:10,   thresh:10000,   label:"Mutual Fund Units",            newSec:"Sec 393(1) Sl.4(i)",         oldSec:"Sec 194K",   note:""},
-  "1014":{rate:10,   thresh:0,       label:"Business Trust – Interest",    newSec:"Sec 393(1) Sl.4(ii)",        oldSec:"Sec 194LBA", note:""},
-  "1017":{rate:10,   thresh:0,       label:"Investment Fund Income",       newSec:"Sec 393(1) Sl.4(iii)",       oldSec:"Sec 194LBB", note:""},
-  "1018":{rate:10,   thresh:0,       label:"Securitisation Trust",         newSec:"Sec 393(1) Sl.4(iv)",        oldSec:"Sec 194LBC", note:""},
-  "1019":{rate:10,   thresh:10000,   label:"Interest on Securities",       newSec:"Sec 393(1) Sl.5(i)",         oldSec:"Sec 193",    note:""},
-  "1020":{rate:10,   thresh:100000,  label:"Interest – Senior Citizen",    newSec:"Sec 393(1) Sl.5(ii).D(a)",  oldSec:"Sec 194A",   note:"Threshold ₹1L"},
-  "1021":{rate:10,   thresh:50000,   label:"Interest – Bank/Post Office",  newSec:"Sec 393(1) Sl.5(ii).D(b)",  oldSec:"Sec 194A",   note:"Threshold ₹50K"},
-  "1022":{rate:10,   thresh:10000,   label:"Interest – Others",            newSec:"Sec 393(1) Sl.5(iii)",       oldSec:"Sec 194A",   note:"Threshold ₹10K"},
-  "1023":{rate:1,    thresh:30000,   label:"Contractor – Ind/HUF",         newSec:"Sec 393(1) Sl.6(i).D(a)",   oldSec:"Sec 194C",   note:"Single ₹30K / Annual ₹1L"},
-  "1024":{rate:2,    thresh:30000,   label:"Contractor – Others",          newSec:"Sec 393(1) Sl.6(i).D(b)",   oldSec:"Sec 194C",   note:"Single ₹30K / Annual ₹1L"},
-  "1026":{rate:2,    thresh:50000,   label:"Technical Services/Royalty",   newSec:"Sec 393(1) Sl.6(iii).D(a)", oldSec:"Sec 194J(a)",note:""},
-  "1027":{rate:10,   thresh:50000,   label:"Professional Fees",            newSec:"Sec 393(1) Sl.6(iii).D(b)", oldSec:"Sec 194J(b)",note:""},
-  "1028":{rate:10,   thresh:0,       label:"Director Remuneration",        newSec:"Sec 393(1) Sl.6(iii).D(b)", oldSec:"Sec 194J(b)",note:"No threshold"},
-  "1029":{rate:10,   thresh:10000,   label:"Dividends",                    newSec:"Sec 393(1) Sl.7",            oldSec:"Sec 194",    note:""},
-  "1030":{rate:2,    thresh:100000,  label:"Life Insurance Proceeds",      newSec:"Sec 393(1) Sl.8(i)",         oldSec:"Sec 194DA",  note:"On taxable portion"},
-  "1031":{rate:0.1,  thresh:5000000, label:"Purchase of Goods",            newSec:"Sec 393(1) Sl.8(ii)",        oldSec:"Sec 194Q",   note:"Annual > ₹50L"},
-  "1033":{rate:10,   thresh:20000,   label:"Benefit/Perquisite",           newSec:"Sec 393(1) Sl.8(iv)",        oldSec:"Sec 194R",   note:""},
-  "1035":{rate:0.1,  thresh:500000,  label:"E-Commerce Operator",          newSec:"Sec 393(1) Sl.8(vi)",        oldSec:"Sec 194O",   note:"Annual > ₹5L"},
-  "1036":{rate:1,    thresh:5000000, label:"Purchase of Immovable Property",newSec:"Sec 393(1) Sl.3(i)",        oldSec:"Sec 194IA",  note:"Threshold ₹50L"},
-  "1037":{rate:5,    thresh:5000000, label:"Contractor/Prof by Ind/HUF",   newSec:"Sec 393(1) Sl.6(iv)",        oldSec:"Sec 194M",   note:"Annual > ₹50L"},
-  "1038":{rate:2,    thresh:2000000, label:"Cash Withdrawal",              newSec:"Sec 393(1) Sl.8(vii)",       oldSec:"Sec 194N",   note:"3% if no ITR filed"},
-  "1039":{rate:1,    thresh:10000,   label:"VDA/Crypto",                   newSec:"Sec 393(1) Sl.8(viii)",      oldSec:"Sec 194S",   note:"₹50K for specified persons"},
-  "1040":{rate:30,   thresh:10000,   label:"Lottery/Puzzle Winnings",      newSec:"Sec 393(1) Sl.8(ix)",        oldSec:"Sec 194B",   note:""},
-  "1041":{rate:10,   thresh:20000,   label:"Partner Salary/Remuneration",  newSec:"Sec 393(1) Sl.6(v)",         oldSec:"Sec 194T",   note:"Threshold ₹20K pa"},
+  "1001":{rate:0,    thresh:0,      label:"Salary",                    newSec:"Sec 392",            oldSec:"Sec 192",     note:"Slab rate based on estimated annual income"},
+  "1004":{rate:10,   thresh:50000,  label:"PF Accumulated Balance",    newSec:"Sec 392(7)",         oldSec:"Sec 192A",    note:"No PAN: 20%"},
+  "1005":{rate:2,    thresh:20000,  label:"Insurance Commission",      newSec:"Sec 393(1) Sl.1(i)", oldSec:"Sec 194D",    note:"Individual: 2%, Others: 10%"},
+  "1006":{rate:2,    thresh:20000,  label:"Commission/Brokerage",      newSec:"Sec 393(1) Sl.1(ii)",oldSec:"Sec 194H",    note:""},
+  "1008":{rate:2,    thresh:50000,  label:"Rent – Machinery/Plant",    newSec:"Sec 393(1) Sl.2(ii).D(a)",oldSec:"Sec 194I(a)",note:"Monthly threshold ₹50,000"},
+  "1009":{rate:10,   thresh:50000,  label:"Rent – Land/Building",      newSec:"Sec 393(1) Sl.2(ii).D(b)",oldSec:"Sec 194I(b)",note:"Monthly threshold ₹50,000"},
+  "1010":{rate:5,    thresh:50000,  label:"Rent by Ind/HUF",           newSec:"Sec 393(1) Sl.2(i)", oldSec:"Sec 194IB",   note:"Per month threshold"},
+  "1011":{rate:10,   thresh:0,      label:"JDA Consideration",         newSec:"Sec 393(1) Sl.3(ii)",oldSec:"Sec 194IC",   note:""},
+  "1012":{rate:10,   thresh:500000, label:"Land Acquisition Comp.",    newSec:"Sec 393(1) Sl.3(iii)",oldSec:"Sec 194LA",  note:"Threshold ₹5 lakh"},
+  "1013":{rate:10,   thresh:10000,  label:"Mutual Fund Units",         newSec:"Sec 393(1) Sl.4(i)", oldSec:"Sec 194K",    note:""},
+  "1014":{rate:10,   thresh:0,      label:"Business Trust – Interest", newSec:"Sec 393(1) Sl.4(ii)",oldSec:"Sec 194LBA",  note:""},
+  "1017":{rate:10,   thresh:0,      label:"Investment Fund Income",    newSec:"Sec 393(1) Sl.4(iii)",oldSec:"Sec 194LBB", note:""},
+  "1018":{rate:10,   thresh:0,      label:"Securitisation Trust",      newSec:"Sec 393(1) Sl.4(iv)",oldSec:"Sec 194LBC",  note:""},
+  "1019":{rate:10,   thresh:10000,  label:"Interest on Securities",    newSec:"Sec 393(1) Sl.5(i)", oldSec:"Sec 193",     note:""},
+  "1020":{rate:10,   thresh:100000, label:"Interest – Senior Citizen", newSec:"Sec 393(1) Sl.5(ii).D(a)",oldSec:"Sec 194A",note:"Threshold ₹1,00,000"},
+  "1021":{rate:10,   thresh:50000,  label:"Interest – Bank/Post Office",newSec:"Sec 393(1) Sl.5(ii).D(b)",oldSec:"Sec 194A",note:"Threshold ₹50,000"},
+  "1022":{rate:10,   thresh:10000,  label:"Interest – Others",         newSec:"Sec 393(1) Sl.5(iii)",oldSec:"Sec 194A",   note:"Threshold ₹10,000"},
+  "1023":{rate:1,    thresh:30000,  label:"Contractor – Ind/HUF",      newSec:"Sec 393(1) Sl.6(i).D(a)",oldSec:"Sec 194C",note:"Single ₹30K or annual ₹1L"},
+  "1024":{rate:2,    thresh:30000,  label:"Contractor – Others",       newSec:"Sec 393(1) Sl.6(i).D(b)",oldSec:"Sec 194C",note:"Single ₹30K or annual ₹1L"},
+  "1026":{rate:2,    thresh:50000,  label:"Technical Services/Royalty",newSec:"Sec 393(1) Sl.6(iii).D(a)",oldSec:"Sec 194J(a)",note:"Call centre: 2%"},
+  "1027":{rate:10,   thresh:50000,  label:"Professional Fees",         newSec:"Sec 393(1) Sl.6(iii).D(b)",oldSec:"Sec 194J(b)",note:"Threshold ₹50,000"},
+  "1028":{rate:10,   thresh:0,      label:"Director Remuneration",     newSec:"Sec 393(1) Sl.6(iii).D(b)",oldSec:"Sec 194J(b)",note:"No threshold"},
+  "1029":{rate:10,   thresh:10000,  label:"Dividends",                 newSec:"Sec 393(1) Sl.7",    oldSec:"Sec 194",     note:"Individual threshold ₹10,000"},
+  "1030":{rate:2,    thresh:100000, label:"Life Insurance Proceeds",   newSec:"Sec 393(1) Sl.8(i)", oldSec:"Sec 194DA",   note:"On taxable portion. Threshold ₹1 lakh"},
+  "1031":{rate:0.1,  thresh:5000000,label:"Purchase of Goods",         newSec:"Sec 393(1) Sl.8(ii)",oldSec:"Sec 194Q",    note:"Annual aggregate > ₹50L"},
+  "1033":{rate:10,   thresh:20000,  label:"Benefit/Perquisite",        newSec:"Sec 393(1) Sl.8(iv)",oldSec:"Sec 194R",    note:"Threshold ₹20,000"},
+  "1035":{rate:0.1,  thresh:500000, label:"E-Commerce Operator",       newSec:"Sec 393(1) Sl.8(vi)",oldSec:"Sec 194O",    note:"Annual aggregate > ₹5L"},
+  "1036":{rate:1,    thresh:5000000,label:"Purchase of Immovable Property",newSec:"Sec 393(1) Sl.3(i)",oldSec:"Sec 194IA",note:"Threshold ₹50L"},
+  "1037":{rate:5,    thresh:5000000,label:"Contractor/Prof by Ind/HUF",newSec:"Sec 393(1) Sl.6(iv)",oldSec:"Sec 194M",   note:"Annual aggregate > ₹50L"},
+  "1038":{rate:2,    thresh:2000000,label:"Cash Withdrawal",           newSec:"Sec 393(1) Sl.8(vii)",oldSec:"Sec 194N",  note:"3% if no ITR in prior 3 years"},
+  "1039":{rate:1,    thresh:10000,  label:"VDA/Crypto",                newSec:"Sec 393(1) Sl.8(viii)",oldSec:"Sec 194S", note:"₹50K threshold for specified persons"},
+  "1040":{rate:30,   thresh:10000,  label:"Lottery/Puzzle Winnings",   newSec:"Sec 393(1) Sl.8(ix)",oldSec:"Sec 194B",   note:""},
+  "1041":{rate:10,   thresh:20000,  label:"Partner Salary/Remuneration",newSec:"Sec 393(1) Sl.6(v)",oldSec:"Sec 194T",  note:"Threshold ₹20,000 p.a."},
 };
 
-// Special due date sections (30 days from end of month)
-const SPECIAL_30 = ["1036","1010","1037","1039"];
-
-function fmt(n){ return "₹" + Math.round(n).toLocaleString("en-IN"); }
+function fmt(n){ return "₹"+Math.round(n).toLocaleString("en-IN"); }
 
 function updateHint(){
   const code = document.getElementById("tdsSection").value;
   const el   = document.getElementById("sectionHint");
-  if(!code){ el.textContent="Select a payment type to see rate and threshold"; return; }
+  if(!code){ el.textContent="Select a payment type to see details"; return; }
   const d = TDS[code];
-  if(!d) return;
-  el.textContent = (d.rate===0?"Rate: Slab rate":"Rate: "+d.rate+"%")
+  if(!d){ return; }
+  el.textContent = (d.rate===0?"Rate: Slab":"Rate: "+d.rate+"%")
     + (d.thresh?" · Threshold: "+fmt(d.thresh):" · No threshold")
     + (d.note?" · "+d.note:"");
 }
 
-function getDueDate(deductionDate, code){
-  const d = new Date(deductionDate);
-  const month = d.getMonth(); // 0-indexed
-  const year  = d.getFullYear();
-
-  if(SPECIAL_30.includes(code)){
-    // 30 days from end of deduction month
-    const endOfMonth = new Date(year, month+1, 0);
-    return new Date(endOfMonth.getTime() + 30*24*60*60*1000);
-  }
-  // March → 30 April
-  if(month === 2){
-    return new Date(year, 3, 30); // April 30
-  }
-  // Otherwise → 7th of next month
-  return new Date(year, month+1, 7);
-}
-
-function calcMonthsLate(dueDate, depositDate){
-  // Count months (fractional = full month)
-  const due     = new Date(dueDate);
-  const deposit = new Date(depositDate);
-  if(deposit <= due) return 0;
-
-  // From date of deduction to deposit date (as per sec 201(1A))
-  // months = ceil of difference in days / 30 approximately
-  // Exact: count month boundaries crossed
-  let months = 0;
-  let cur = new Date(due);
-  while(cur < deposit){
-    cur.setMonth(cur.getMonth()+1);
-    months++;
-  }
-  return months;
-}
-
 function calcTDS(){
-  const code    = document.getElementById("tdsSection").value;
-  const amt     = parseFloat(document.getElementById("paymentAmt").value);
-  const dDate   = document.getElementById("deductionDate").value;
-  const aDate   = document.getElementById("depositDate").value;
-
+  const code  = document.getElementById("tdsSection").value;
+  const amt   = parseFloat(document.getElementById("paymentAmt").value);
+  const month = parseInt(document.getElementById("paymentMonth").value);
   if(!code){ alert("Please select a payment type."); return; }
-  if(!amt || amt<=0){ alert("Please enter a valid payment amount."); return; }
-
+  if(!amt||amt<=0){ alert("Please enter a valid amount."); return; }
   const d = TDS[code];
-  if(!d){ alert("Section data not found."); return; }
+  if(!d){ alert("Data not found."); return; }
 
-  // Check threshold
+  const monthNames=["","January","February","March","April","May","June","July","August","September","October","November","December"];
+  let dueStr;
+  if(month===3){ dueStr="30th April (March deductions)"; }
+  else{ const nm = month===12?1:month+1; dueStr="7th "+monthNames[nm]; }
+
   const belowThresh = d.thresh && amt < d.thresh;
-  const tds   = belowThresh ? 0 : (d.rate===0 ? 0 : Math.round(amt * d.rate / 100));
+  const tds   = belowThresh ? 0 : (d.rate===0 ? 0 : amt * d.rate / 100);
   const net   = amt - tds;
 
-  document.getElementById("resultSection").style.display = "block";
-
-  // No dates entered — show basic result only
-  if(!dDate || !aDate){
-    document.getElementById("ontimeBox").style.display  = "none";
-    document.getElementById("lateBoxes").style.display  = "none";
-    document.getElementById("basicBox").style.display   = "block";
-
-    document.getElementById("b-tds").textContent     = belowThresh?"No TDS":d.rate===0?"Slab Rate":fmt(tds);
-    document.getElementById("b-sub").textContent     = belowThresh?"Below threshold of "+fmt(d.thresh):d.rate===0?"Compute at applicable slab":d.rate+"% on "+fmt(amt);
-    document.getElementById("b-payment").textContent  = fmt(amt);
-    document.getElementById("b-newsec").textContent   = d.newSec;
-    document.getElementById("b-oldsec").textContent   = d.oldSec+" (ref only)";
-    document.getElementById("b-code").textContent     = code;
-    document.getElementById("b-rate").textContent     = d.rate===0?"Slab rate":d.rate+"%";
-    document.getElementById("b-tds2").textContent     = belowThresh?"Nil (below threshold)":d.rate===0?"As per slab":fmt(tds);
-    document.getElementById("b-net").textContent      = fmt(net);
-    return;
+  document.getElementById("resultBox").style.display="block";
+  if(belowThresh){
+    document.getElementById("tdsAmt").textContent = "No TDS";
+    document.getElementById("tdsSub").textContent = "Amount below threshold of "+fmt(d.thresh);
+  } else if(d.rate===0){
+    document.getElementById("tdsAmt").textContent = "Slab Rate";
+    document.getElementById("tdsSub").textContent = "Compute based on estimated annual income";
+  } else {
+    document.getElementById("tdsAmt").textContent = fmt(tds)+" TDS";
+    document.getElementById("tdsSub").textContent = d.rate+"% on "+fmt(amt);
   }
-
-  // Both dates entered — calculate interest
-  const dueDate    = getDueDate(dDate, code);
-  const depositDt  = new Date(aDate);
-  const deductDt   = new Date(dDate);
-
-  const monthsLate = calcMonthsLate(dueDate, depositDt);
-  const interest   = Math.round(tds * 0.015 * monthsLate);
-  const total      = tds + interest;
-  const isOnTime   = monthsLate === 0;
-
-  const fmtDate = dt => dt.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"});
-  const dueDateStr = fmtDate(dueDate);
-
-  document.getElementById("basicBox").style.display = "none";
-
-  if(isOnTime || belowThresh || d.rate===0){
-    document.getElementById("ontimeBox").style.display = "block";
-    document.getElementById("lateBoxes").style.display = "none";
-    if(belowThresh) document.getElementById("ontimeBox").textContent = "No TDS applicable — Payment below threshold of "+fmt(d.thresh);
-    else if(d.rate===0) document.getElementById("ontimeBox").textContent = "Salary TDS — compute at applicable slab rate on estimated annual income";
-    else document.getElementById("ontimeBox").textContent = "✓ Deposit is on time — No interest applicable. TDS: "+fmt(tds);
-    return;
-  }
-
-  document.getElementById("ontimeBox").style.display = "none";
-  document.getElementById("lateBoxes").style.display = "block";
-
-  document.getElementById("r-tds").textContent      = fmt(tds);
-  document.getElementById("r-tds-sub").textContent  = d.rate+"% on "+fmt(amt);
-  document.getElementById("r-int").textContent      = fmt(interest);
-  document.getElementById("r-int-sub").textContent  = "1.5% × "+monthsLate+" month"+(monthsLate>1?"s":"");
-  document.getElementById("r-total").textContent    = fmt(total);
-  document.getElementById("r-total-sub").textContent= "TDS "+fmt(tds)+" + Interest "+fmt(interest);
-
-  document.getElementById("d-payment").textContent  = fmt(amt);
-  document.getElementById("d-newsec").textContent   = d.newSec;
-  document.getElementById("d-oldsec").textContent   = d.oldSec+" (ref only)";
-  document.getElementById("d-code").textContent     = code;
-  document.getElementById("d-rate").textContent     = d.rate+"%";
-  document.getElementById("d-tds").textContent      = fmt(tds);
-  document.getElementById("d-ddate").textContent    = fmtDate(deductDt);
-  document.getElementById("d-due").textContent      = dueDateStr;
-  document.getElementById("d-adate").textContent    = fmtDate(depositDt);
-  document.getElementById("d-months").textContent   = monthsLate+" month"+(monthsLate>1?"s":"")+" (fractional months counted as full)";
-  document.getElementById("d-intamt").textContent   = fmt(interest);
-  document.getElementById("d-total").textContent    = fmt(total);
+  document.getElementById("rPayment").textContent = fmt(amt);
+  document.getElementById("rNewSec").textContent  = d.newSec;
+  document.getElementById("rOldSec").textContent  = d.oldSec+" (ref only)";
+  document.getElementById("rCode").textContent    = code+(d.note?" · "+d.note:"");
+  document.getElementById("rRate").textContent    = d.rate===0?"Slab rate":d.rate+"%";
+  document.getElementById("rTDS").textContent     = belowThresh?"Nil (below threshold)":d.rate===0?"As per slab":fmt(tds);
+  document.getElementById("rNet").textContent     = d.rate===0?fmt(amt)+" (gross)":fmt(net);
+  document.getElementById("rDue").textContent     = belowThresh?"—":dueStr;
 }
 </script>
 </body></html>"""
@@ -2822,7 +2668,9 @@ tr:hover td{background:#F9FAFB}
 @app.route("/login", methods=["GET"])
 def login_page():
     if "uid" in session: return redirect(url_for("dashboard"))
-    return render_template_string(LOGIN_T, error=None, email=CONTACT_EMAIL)
+    msg = request.args.get("msg", "")
+    return render_template_string(LOGIN_T, error=None, msg=msg,
+                                  email=CONTACT_EMAIL, upi=CONTACT_UPI)
 
 @app.route("/login", methods=["POST"])
 def login_post():
@@ -2830,7 +2678,8 @@ def login_post():
     p = request.form.get("password", "")
     user = get_user_by_name(u)
     if not user or user["password"] != _hash(p):
-        return render_template_string(LOGIN_T, error="Invalid username or password.", email=CONTACT_EMAIL)
+        return render_template_string(LOGIN_T, error="Invalid username or password.",
+                                      msg="", email=CONTACT_EMAIL, upi=CONTACT_UPI)
     session.clear()
     session["uid"] = user["id"]
     return redirect(url_for("dashboard"))
@@ -2881,8 +2730,10 @@ def dashboard():
     return render_template_string(DASHBOARD_T, **ctx)
 
 @app.route("/tool/converter")
-@login_required
 def tool_converter():
+    if "uid" not in session:
+        return redirect(url_for("login_page",
+            msg="Balance Sheet Year-Shift is a premium tool. Login or contact us to get access."))
     user = get_user_by_id(session["uid"])
     return render_template_string(CONVERTER_T, **user_ctx(user))
 
