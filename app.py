@@ -461,6 +461,26 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <div class="arrow">→</div>
   </a>
 
+  <!-- FREE: No login needed -->
+  <a href="/tool/msme-calculator" class="tool-card" style="position:relative">
+    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
+    <div class="tool-icon" style="background:#FEF2F2">📄</div>
+    <h2>MSME Disallowance Calculator</h2>
+    <p>Upload creditors list and check MSME payment compliance under Sec 43B(h). Overdue payments highlighted with total disallowance amount.</p>
+    <span class="tool-tag tag-live">✓ Live · Free</span>
+    <div class="arrow">→</div>
+  </a>
+
+  <!-- FREE: No login needed -->
+  <a href="/tool/capital-gains-calculator" class="tool-card" style="position:relative">
+    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
+    <div class="tool-icon" style="background:#F5F3FF">💰</div>
+    <h2>Capital Gains Calculator</h2>
+    <p>Calculate LTCG/STCG on property, shares, MF and more. Compare old vs new regime, indexation benefit, and find zero-tax sale price with reverse calculator.</p>
+    <span class="tool-tag tag-live">✓ Live · Free</span>
+    <div class="arrow">→</div>
+  </a>
+
   <div class="tool-card disabled">
     <div class="tool-icon" style="background:#FEF2F2">🚀</div>
     <h2>More Tools Coming Soon</h2>
@@ -2967,6 +2987,864 @@ function calcDep(){
 #  ADMIN PANEL
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  MSME DISALLOWANCE CALCULATOR
+# ══════════════════════════════════════════════════════════════════════════════
+
+MSME_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MSME Disallowance Calculator – CA Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+<style>
+""" + BASE_CSS + """
+.hero{text-align:center;padding:32px 24px 16px;max-width:760px;margin:0 auto}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#ECFDF5;color:#065F46;
+            border:1px solid #A7F3D0;border-radius:99px;padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:12px}
+h1{font-size:clamp(20px,4vw,32px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:8px}
+h1 em{font-style:normal;color:var(--brand)}
+.hero p{font-size:13px;color:var(--muted);line-height:1.7;max-width:560px;margin:0 auto}
+.wrap{max-width:1100px;margin:0 auto;padding:16px 24px 48px}
+.card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
+      box-shadow:var(--shadow);overflow:hidden;margin-bottom:20px}
+.card-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.card-head .icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px}
+.card-head h2{font-size:14px;font-weight:700}
+.card-head p{font-size:12px;color:var(--muted);margin-top:1px}
+.card-body{padding:18px}
+.field{margin-bottom:14px}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:4px}
+.hint{font-size:11px;color:var(--muted);margin-top:3px}
+input[type=file],input[type=number],input[type=date]{width:100%;border:1.5px solid var(--border);border-radius:8px;
+  padding:8px 11px;font-family:inherit;font-size:13px;color:var(--ink);background:var(--white);
+  transition:border-color .2s;outline:none}
+input:focus{border-color:var(--brand)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.btn{background:var(--brand);color:#fff;border:none;border-radius:8px;padding:10px 20px;
+     font-family:inherit;font-size:13px;font-weight:700;cursor:pointer;transition:background .2s}
+.btn:hover{background:var(--brand-d)}
+.btn-full{width:100%;padding:12px;font-size:14px}
+/* Format table */
+.fmt-table{width:100%;border-collapse:collapse;font-size:12px}
+.fmt-table th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+              color:var(--muted);border-bottom:1.5px solid var(--border);padding:6px 10px;background:#F9FAFB}
+.fmt-table td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.fmt-table tr:last-child td{border:none}
+.col-req{background:#EFF6FF;color:var(--brand);font-size:10px;font-weight:700;
+         padding:1px 6px;border-radius:4px;font-family:monospace}
+/* Results */
+.summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+@media(max-width:700px){.summary-grid{grid-template-columns:1fr 1fr}}
+.sbox{background:var(--white);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.sbox.red{background:#FEF2F2;border-color:#FECACA}
+.sbox.green{background:#ECFDF5;border-color:#A7F3D0}
+.sbox.yellow{background:#FFFBEB;border-color:#FDE68A}
+.sbox .val{font-size:20px;font-weight:800;margin-bottom:3px}
+.sbox .lbl{font-size:11px;color:var(--muted);font-weight:500}
+.sbox.red .val{color:#991B1B}
+.sbox.green .val{color:#065F46}
+.sbox.yellow .val{color:#92400E}
+/* Result table */
+.res-table{width:100%;border-collapse:collapse;font-size:12px}
+.res-table th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+              color:var(--muted);border-bottom:1.5px solid var(--border);padding:7px 8px;
+              background:#F9FAFB;position:sticky;top:0}
+.res-table td{padding:8px;border-bottom:1px solid var(--border);vertical-align:middle}
+.res-table tr:hover td{background:#F9FAFB}
+.row-ok{background:#F0FDF4}
+.row-warn{background:#FFFBEB}
+.row-over{background:#FEF2F2}
+.badge-ok{background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px}
+.badge-warn{background:#FFFBEB;color:#92400E;font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px}
+.badge-over{background:#FEF2F2;color:#991B1B;font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px}
+.badge-na{background:#F3F4F6;color:var(--muted);font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px}
+.note-box{background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;padding:10px 14px;
+          font-size:12px;color:#991B1B;margin-top:12px;line-height:1.7}
+.info-box{background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:10px 14px;
+          font-size:12px;color:#1e40af;margin-bottom:16px;line-height:1.7}
+.dl-btn{background:var(--green);color:#fff;border:none;border-radius:8px;padding:8px 16px;
+        font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;margin-left:8px}
+footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-size:12px}
+.footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:4px}
+</style></head><body>
+
+<nav>
+  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <div class="nav-right">
+    {% if username %}<span class="nav-user">👤 <strong>{{ username }}</strong></span>
+    {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
+    <a href="/logout" class="nav-link">Sign out</a>
+    {% else %}<a href="/login" class="nav-btn">Sign In</a>{% endif %}
+    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-badge">🆓 Free · No Login Required</div>
+  <h1>MSME Disallowance Calculator</h1>
+  <p>Check creditor payments against MSME time limits under <strong>Section 43B(h)</strong>. Upload your creditors list and instantly see which payments are overdue and the total disallowance amount.</p>
+</section>
+
+<div class="wrap">
+
+  <div class="info-box">
+    ℹ️ <strong>Section 43B(h) — IT Act:</strong> Payments to MSME suppliers must be made within 15 days (no agreement) or 45 days (written agreement) from date of invoice. Any unpaid amount beyond the limit is <strong>disallowed</strong> as a deduction in the year of computation and allowed only in the year of actual payment.
+  </div>
+
+  <!-- FORMAT GUIDE -->
+  <div class="card">
+    <div class="card-head">
+      <div class="icon" style="background:#FFFBEB">📋</div>
+      <div><h2>Required Excel Format</h2><p>Your upload must follow this column structure exactly</p></div>
+    </div>
+    <div class="card-body" style="padding:0;overflow-x:auto">
+      <table class="fmt-table">
+        <thead><tr><th>#</th><th>Column Name</th><th>Format</th><th>Example</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>A</td><td><span class="col-req">Creditor Name</span></td><td>Text</td><td>ABC Enterprises</td><td>Name of the MSME supplier</td></tr>
+          <tr><td>B</td><td><span class="col-req">Invoice Date</span></td><td>DD/MM/YYYY</td><td>01/04/2025</td><td>Date of invoice / bill received</td></tr>
+          <tr><td>C</td><td><span class="col-req">Invoice Amount</span></td><td>Number</td><td>50000</td><td>Total invoice amount (₹)</td></tr>
+          <tr><td>D</td><td><span class="col-req">Payment Date</span></td><td>DD/MM/YYYY or blank</td><td>20/05/2025</td><td>Leave blank if payment not yet made</td></tr>
+          <tr><td>E</td><td><span class="col-req">Amount Paid</span></td><td>Number or 0</td><td>50000</td><td>Amount actually paid (0 if unpaid)</td></tr>
+          <tr><td>F</td><td><span class="col-req">Written Agreement</span></td><td>Yes / No</td><td>No</td><td>Yes = 45 day limit, No = 15 day limit</td></tr>
+          <tr><td>G</td><td><span class="col-req">MSME Category</span></td><td>Micro / Small / Medium</td><td>Small</td><td>MSME registration category of supplier</td></tr>
+        </tbody>
+      </table>
+      <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span style="font-size:12px;color:var(--muted)">Download blank template to fill in your data:</span>
+        <button class="btn" onclick="downloadTemplate()" style="padding:7px 14px;font-size:12px">⬇ Download Template (.xlsx)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- UPLOAD -->
+  <div class="card">
+    <div class="card-head">
+      <div class="icon" style="background:#EFF6FF">📁</div>
+      <div><h2>Upload Creditors List</h2><p>Excel file (.xlsx) following the format above</p></div>
+    </div>
+    <div class="card-body">
+      <div class="row2">
+        <div class="field">
+          <label>Upload Excel File (.xlsx)</label>
+          <input type="file" id="msmeFile" accept=".xlsx"/>
+          <p class="hint">Must follow the format shown above</p>
+        </div>
+        <div class="field">
+          <label>Assessment Year</label>
+          <input type="number" id="assessYear" value="2026" min="2020" max="2030"/>
+          <p class="hint">Year for which disallowance is computed</p>
+        </div>
+      </div>
+      <button class="btn btn-full" onclick="processMSME()">Analyse &amp; Calculate Disallowance →</button>
+      <div id="msmeError" style="display:none;margin-top:10px;background:#FEF2F2;border:1px solid #FECACA;
+           border-radius:8px;padding:10px 14px;font-size:13px;color:#991B1B"></div>
+    </div>
+  </div>
+
+  <!-- RESULTS -->
+  <div id="msmeResults" style="display:none">
+    <div class="summary-grid" id="summaryGrid"></div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#FEF2F2">📊</div>
+        <div>
+          <h2>Creditor-wise Analysis</h2>
+          <p>Overdue payments highlighted in red · Near-due in yellow · On time in green</p>
+        </div>
+        <div style="margin-left:auto">
+          <button class="dl-btn" onclick="exportResults()">⬇ Export Results</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="res-table" id="resultsTable">
+          <thead><tr>
+            <th>Creditor</th><th>Category</th><th>Invoice Date</th><th>Invoice Amt</th>
+            <th>Paid Amt</th><th>Payment Date</th><th>Limit</th><th>Due Date</th>
+            <th>Days Overdue</th><th>Unpaid Amt</th><th>Status</th>
+          </tr></thead>
+          <tbody id="resultsBody"></tbody>
+        </table>
+      </div>
+      <div class="note-box" id="disallowNote"></div>
+    </div>
+  </div>
+
+</div>
+
+<footer>
+  <p class="footer-brand">CA Toolkit</p>
+  <p>Built for Indian CAs · Created by CA Articles of GD Singla &amp; Co.</p>
+  <p style="margin-top:8px;font-size:11px">© 2026 CA Toolkit · For reference only · Verify with actual books of accounts</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+const fmt = n => "₹" + Math.round(n).toLocaleString("en-IN");
+
+function parseDate(val){
+  if(!val) return null;
+  if(val instanceof Date) return val;
+  // Try DD/MM/YYYY
+  const s = String(val).trim();
+  const parts = s.split("/");
+  if(parts.length===3) return new Date(parts[2], parts[1]-1, parts[0]);
+  // Try Excel serial
+  if(!isNaN(val)){
+    const d = new Date((val - 25569) * 86400 * 1000);
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+  return new Date(val);
+}
+
+function daysBetween(d1, d2){
+  return Math.round((d2 - d1) / (1000*60*60*24));
+}
+
+function fmtDate(d){
+  if(!d) return "—";
+  return d.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"});
+}
+
+let processedRows = [];
+
+function processMSME(){
+  const file = document.getElementById("msmeFile").files[0];
+  const errEl = document.getElementById("msmeError");
+  errEl.style.display = "none";
+
+  if(!file){ showErr("Please select an Excel file."); return; }
+
+  const reader = new FileReader();
+  reader.onload = function(e){
+    try{
+      const wb   = XLSX.read(e.target.result, {type:"binary", cellDates:true});
+      const ws   = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:false});
+
+      if(rows.length < 2){ showErr("File appears empty. Please check the format."); return; }
+
+      // Skip header row
+      const data = rows.slice(1).filter(r => r && r[0]);
+      if(data.length === 0){ showErr("No data rows found. Please check the format."); return; }
+
+      processedRows = [];
+      let totalInvoice=0, totalPaid=0, totalDisallow=0, totalOverdue=0;
+      const today = new Date();
+
+      const tbody = document.getElementById("resultsBody");
+      tbody.innerHTML = "";
+
+      data.forEach((row, i) => {
+        const name        = String(row[0]||"").trim();
+        const invoiceDate = parseDate(row[1]);
+        const invoiceAmt  = parseFloat(String(row[2]||"0").replace(/,/g,""))||0;
+        const paymentDate = parseDate(row[3]);
+        const paidAmt     = parseFloat(String(row[4]||"0").replace(/,/g,""))||0;
+        const hasAgreement= String(row[5]||"No").trim().toLowerCase()==="yes";
+        const category    = String(row[6]||"MSME").trim();
+
+        if(!name||!invoiceDate) return;
+
+        const limitDays = hasAgreement ? 45 : 15;
+        const dueDate   = new Date(invoiceDate);
+        dueDate.setDate(dueDate.getDate() + limitDays);
+
+        const refDate  = paymentDate || today;
+        const daysDiff = daysBetween(dueDate, refDate);
+        const unpaid   = Math.max(0, invoiceAmt - paidAmt);
+        const isOverdue = daysDiff > 0;
+        const isNearDue = !isOverdue && daysDiff > -7;
+
+        let status, rowClass, badge;
+        if(!isOverdue && paidAmt >= invoiceAmt){
+          status="✓ Paid on time"; rowClass="row-ok"; badge=`<span class="badge-ok">Paid On Time</span>`;
+        } else if(isOverdue && unpaid > 0){
+          status="⚠ Overdue"; rowClass="row-over"; badge=`<span class="badge-over">Overdue</span>`;
+          totalDisallow += unpaid;
+          totalOverdue++;
+        } else if(!isOverdue && unpaid > 0){
+          status="Near due"; rowClass="row-warn"; badge=`<span class="badge-warn">Pending</span>`;
+        } else if(isOverdue && paidAmt >= invoiceAmt){
+          status="Paid late"; rowClass="row-warn"; badge=`<span class="badge-warn">Paid Late</span>`;
+        } else {
+          status="—"; rowClass=""; badge=`<span class="badge-na">N/A</span>`;
+        }
+
+        totalInvoice += invoiceAmt;
+        totalPaid    += paidAmt;
+
+        processedRows.push({name,category,invoiceDate,invoiceAmt,paidAmt,paymentDate,
+          limitDays,dueDate,daysDiff,unpaid,status,isOverdue});
+
+        const tr = document.createElement("tr");
+        tr.className = rowClass;
+        tr.innerHTML = `
+          <td><strong>${name}</strong></td>
+          <td>${category}</td>
+          <td>${fmtDate(invoiceDate)}</td>
+          <td>${fmt(invoiceAmt)}</td>
+          <td>${fmt(paidAmt)}</td>
+          <td>${fmtDate(paymentDate)}</td>
+          <td>${limitDays} days</td>
+          <td>${fmtDate(dueDate)}</td>
+          <td style="font-weight:700;color:${isOverdue&&unpaid>0?"#991B1B":daysDiff>-7?"#92400E":"#065F46"}">${isOverdue?"+"+daysDiff+" days":daysDiff===0?"Today":Math.abs(daysDiff)+" days left"}</td>
+          <td style="font-weight:700;color:${unpaid>0?"#991B1B":"#065F46"}">${fmt(unpaid)}</td>
+          <td>${badge}</td>`;
+        tbody.appendChild(tr);
+      });
+
+      // Summary
+      const ayear = document.getElementById("assessYear").value;
+      document.getElementById("summaryGrid").innerHTML = `
+        <div class="sbox"><div class="val">${processedRows.length}</div><div class="lbl">Total Creditors</div></div>
+        <div class="sbox yellow"><div class="val">${fmt(totalInvoice)}</div><div class="lbl">Total Invoice Value</div></div>
+        <div class="sbox ${totalOverdue>0?"red":"green"}"><div class="val">${totalOverdue}</div><div class="lbl">Overdue Creditors</div></div>
+        <div class="sbox ${totalDisallow>0?"red":"green"}"><div class="val">${fmt(totalDisallow)}</div><div class="lbl">Disallowance u/s 43B(h)</div></div>`;
+
+      document.getElementById("disallowNote").innerHTML = totalDisallow > 0
+        ? `⚠ <strong>Total disallowance u/s 43B(h) for AY ${ayear}-${parseInt(ayear)+1}: ${fmt(totalDisallow)}</strong><br>
+           This amount will be added back to income and disallowed as a deduction. It will be allowed only in the year when actual payment is made to the MSME supplier.`
+        : `✓ No disallowance applicable. All MSME payments are within the prescribed time limits.`;
+
+      document.getElementById("msmeResults").style.display = "block";
+      document.getElementById("msmeResults").scrollIntoView({behavior:"smooth"});
+
+    } catch(err){
+      showErr("Error reading file: "+err.message+". Please ensure file follows the required format.");
+    }
+  };
+  reader.readAsBinaryString(file);
+}
+
+function showErr(msg){
+  const el = document.getElementById("msmeError");
+  el.textContent = msg; el.style.display = "block";
+}
+
+function downloadTemplate(){
+  const wb = XLSX.utils.book_new();
+  const data = [
+    ["Creditor Name","Invoice Date","Invoice Amount","Payment Date","Amount Paid","Written Agreement","MSME Category"],
+    ["ABC Enterprises","01/04/2025","50000","20/04/2025","50000","No","Small"],
+    ["XYZ Traders","15/04/2025","120000","","0","Yes","Micro"],
+    ["PQR Industries","01/05/2025","80000","20/06/2025","80000","No","Medium"],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  ws["!cols"] = [{wch:20},{wch:14},{wch:16},{wch:14},{wch:12},{wch:18},{wch:16}];
+  XLSX.utils.book_append_sheet(wb, ws, "Creditors");
+  XLSX.writeFile(wb, "MSME_Creditors_Template.xlsx");
+}
+
+function exportResults(){
+  if(!processedRows.length) return;
+  const data = [["Creditor","Category","Invoice Date","Invoice Amt","Paid Amt","Payment Date","Limit","Due Date","Days Overdue","Unpaid Amt","Status"]];
+  processedRows.forEach(r => {
+    data.push([r.name,r.category,fmtDate(r.invoiceDate),r.invoiceAmt,r.paidAmt,
+      fmtDate(r.paymentDate),r.limitDays+" days",fmtDate(r.dueDate),
+      r.isOverdue?"+"+r.daysDiff+" days":Math.abs(r.daysDiff)+" days left",r.unpaid,r.status]);
+  });
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  XLSX.utils.book_append_sheet(wb, ws, "MSME Analysis");
+  XLSX.writeFile(wb, "MSME_Disallowance_Analysis.xlsx");
+}
+</script>
+</body></html>"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  CAPITAL GAINS CALCULATOR
+# ══════════════════════════════════════════════════════════════════════════════
+
+CG_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Capital Gains Calculator – CA Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+<style>
+""" + BASE_CSS + """
+.hero{text-align:center;padding:32px 24px 16px;max-width:760px;margin:0 auto}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#ECFDF5;color:#065F46;
+            border:1px solid #A7F3D0;border-radius:99px;padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:12px}
+h1{font-size:clamp(20px,4vw,32px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:8px}
+h1 em{font-style:normal;color:var(--brand)}
+.hero p{font-size:13px;color:var(--muted);line-height:1.7;max-width:520px;margin:0 auto}
+.wrap{max-width:1100px;margin:0 auto;padding:16px 24px 48px;display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
+@media(max-width:800px){.wrap{grid-template-columns:1fr}}
+.card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
+      box-shadow:var(--shadow);overflow:hidden;margin-bottom:16px}
+.card:last-child{margin-bottom:0}
+.card-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.card-head .icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px}
+.card-head h2{font-size:14px;font-weight:700}
+.card-head p{font-size:12px;color:var(--muted);margin-top:1px}
+.card-body{padding:16px}
+.field{margin-bottom:13px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:4px}
+.hint{font-size:11px;color:var(--muted);margin-top:3px}
+select,input[type=number],input[type=text]{width:100%;border:1.5px solid var(--border);border-radius:8px;
+  padding:8px 11px;font-family:inherit;font-size:13px;color:var(--ink);background:var(--white);
+  transition:border-color .2s;outline:none}
+select:focus,input:focus{border-color:var(--brand)}
+.btn{width:100%;background:var(--brand);color:#fff;border:none;border-radius:8px;
+     padding:11px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;transition:background .2s}
+.btn:hover{background:var(--brand-d)}
+/* Tabs */
+.tabs{display:flex;gap:0;margin-bottom:16px;border-radius:8px;overflow:hidden;border:1px solid var(--border)}
+.tab{flex:1;padding:9px;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;
+     background:var(--white);color:var(--muted);border:none;transition:all .2s}
+.tab.active{background:var(--brand);color:#fff}
+/* Result boxes */
+.rboxes{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+.rbox{border-radius:10px;padding:13px 15px}
+.rbox-blue{background:#EFF6FF;border:1.5px solid #BFDBFE}
+.rbox-green{background:#ECFDF5;border:1.5px solid #A7F3D0}
+.rbox-red{background:#FEF2F2;border:1.5px solid #FECACA}
+.rbox-total{background:#1D4ED8;border:1.5px solid #1D4ED8;grid-column:1/-1}
+.rbox .val{font-size:20px;font-weight:800;margin-bottom:2px}
+.rbox .lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;opacity:.75}
+.rbox .sub{font-size:11px;margin-top:4px;opacity:.8}
+.rbox-blue  .val{color:#1D4ED8}.rbox-blue  .lbl{color:#1D4ED8}
+.rbox-green .val{color:#065F46}.rbox-green .lbl{color:#065F46}
+.rbox-red   .val{color:#991B1B}.rbox-red   .lbl{color:#991B1B}
+.rbox-total .val{color:#fff;font-size:22px}.rbox-total .lbl{color:rgba(255,255,255,.75)}
+.rbox-total .sub{color:rgba(255,255,255,.8);font-size:11px}
+.dtable{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+.dtable td{padding:6px 2px;border-bottom:1px solid var(--border)}
+.dtable tr:last-child td{border:none;font-weight:700}
+.dtable td:last-child{text-align:right;font-weight:600}
+.compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.cbox{border-radius:10px;padding:13px 15px;border:1.5px solid var(--border);background:var(--white)}
+.cbox.winner{border-color:var(--green);background:#ECFDF5}
+.cbox h3{font-size:12px;font-weight:700;margin-bottom:8px;color:var(--ink)}
+.cbox .ctax{font-size:20px;font-weight:800;color:var(--brand);margin-bottom:3px}
+.cbox.winner .ctax{color:#065F46}
+.cbox .csub{font-size:11px;color:var(--muted)}
+.winner-badge{background:var(--green);color:#fff;font-size:10px;font-weight:700;
+              padding:2px 8px;border-radius:99px;display:inline-block;margin-bottom:6px}
+.reverse-box{background:#F5F3FF;border:1.5px solid #DDD6FE;border-radius:10px;padding:14px 16px;margin-top:12px}
+.reverse-box h3{font-size:12px;font-weight:700;color:#5B21B6;margin-bottom:8px}
+.reverse-box .rval{font-size:22px;font-weight:800;color:#5B21B6;margin-bottom:3px}
+.reverse-box .rsub{font-size:11px;color:var(--muted)}
+.info-box{background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:10px 14px;
+          font-size:12px;color:#1e40af;margin-bottom:14px;line-height:1.7}
+.note-box{background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;
+          padding:10px 12px;font-size:11px;color:#92400E;margin-top:10px;line-height:1.6}
+/* CII table */
+.cii-table{width:100%;border-collapse:collapse;font-size:11px}
+.cii-table th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+              color:var(--muted);border-bottom:1.5px solid var(--border);padding:5px 6px}
+.cii-table td{padding:5px 6px;border-bottom:1px solid var(--border)}
+.cii-table tr:last-child td{border:none}
+.cii-table tr:hover td{background:#F9FAFB}
+.cii-table .highlight{background:#EFF6FF;font-weight:700}
+footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-size:12px}
+.footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:4px}
+</style></head><body>
+
+<nav>
+  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <div class="nav-right">
+    {% if username %}<span class="nav-user">👤 <strong>{{ username }}</strong></span>
+    {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
+    <a href="/logout" class="nav-link">Sign out</a>
+    {% else %}<a href="/login" class="nav-btn">Sign In</a>{% endif %}
+    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-badge">🆓 Free · No Login Required</div>
+  <h1>Capital Gains Tax Calculator</h1>
+  <p>Calculate LTCG / STCG on property, shares, mutual funds and more. Compare old regime (with indexation) vs new regime. Includes reverse calculator — find the <strong>sale price for zero tax</strong>.</p>
+</section>
+
+<div class="wrap">
+  <!-- LEFT: INPUT -->
+  <div>
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#EFF6FF">💰</div>
+        <div><h2>Capital Gains Calculator</h2><p>IT Act 2025 · Tax Year 2026-27</p></div>
+      </div>
+      <div class="card-body">
+
+        <div class="info-box">ℹ️ Under IT Act 2025: LTCG on property is <strong>12.5% without indexation</strong>. Old regime (20% with indexation) applicable for assets purchased before 23 Jul 2023. Choose as applicable.</div>
+
+        <div class="field">
+          <label>Asset Type</label>
+          <select id="assetType" onchange="updateAssetUI()">
+            <option value="property">Immovable Property (Land/Building)</option>
+            <option value="equity">Listed Equity Shares / Equity MF</option>
+            <option value="debt">Debt Mutual Funds / Bonds</option>
+            <option value="gold">Gold / Gold ETF / Sovereign Gold Bond</option>
+            <option value="unlisted">Unlisted Shares</option>
+            <option value="other">Other Capital Assets</option>
+          </select>
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label>Date of Purchase</label>
+            <input type="text" id="purchaseDate" placeholder="DD/MM/YYYY"/>
+            <p class="hint">Original acquisition date</p>
+          </div>
+          <div class="field">
+            <label>Date of Sale</label>
+            <input type="text" id="saleDate" placeholder="DD/MM/YYYY"/>
+            <p class="hint">Date of transfer/sale</p>
+          </div>
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label>Purchase Price (₹)</label>
+            <input type="number" id="purchasePrice" placeholder="e.g. 2000000" min="0"/>
+            <p class="hint">Cost of acquisition</p>
+          </div>
+          <div class="field">
+            <label>Sale Price (₹)</label>
+            <input type="number" id="salePrice" placeholder="e.g. 5000000" min="0"/>
+            <p class="hint">Full value of consideration</p>
+          </div>
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label>Improvement Cost (₹)</label>
+            <input type="number" id="improveCost" placeholder="0" min="0" value="0"/>
+            <p class="hint">Cost of any improvements made</p>
+          </div>
+          <div class="field">
+            <label>Transfer Expenses (₹)</label>
+            <input type="number" id="transferCost" placeholder="0" min="0" value="0"/>
+            <p class="hint">Brokerage, registration, legal fees</p>
+          </div>
+        </div>
+
+        <div class="field" id="exemptionField">
+          <label>Exemption Claimed</label>
+          <select id="exemptionType">
+            <option value="0">None</option>
+            <option value="54">Sec 54 — Residential House Property</option>
+            <option value="54B">Sec 54B — Agricultural Land</option>
+            <option value="54EC">Sec 54EC — NHAI/REC Bonds (Max ₹50L)</option>
+            <option value="54F">Sec 54F — Any LTCG → Residential House</option>
+          </select>
+        </div>
+        <div class="field" id="exemptionAmtField">
+          <label>Exemption Amount (₹)</label>
+          <input type="number" id="exemptionAmt" placeholder="0" min="0" value="0"/>
+          <p class="hint">Amount claimed under selected exemption</p>
+        </div>
+
+        <div class="field">
+          <label>Assessee Type</label>
+          <select id="assesseeType">
+            <option value="individual">Individual / HUF</option>
+            <option value="firm">Firm / LLP</option>
+            <option value="company">Company</option>
+          </select>
+        </div>
+
+        <button class="btn" onclick="calcCG()">Calculate Capital Gains →</button>
+
+        <!-- RESULTS -->
+        <div id="cgResults" style="display:none;margin-top:16px">
+          <div id="cgTypeLabel" style="font-size:13px;font-weight:700;margin-bottom:10px;color:var(--ink)"></div>
+
+          <!-- Regime comparison -->
+          <div class="compare-grid" id="compareGrid"></div>
+
+          <!-- Detail breakdown -->
+          <div id="detailBreakdown"></div>
+
+          <!-- Reverse calculator result -->
+          <div class="reverse-box" id="reverseBox" style="display:none">
+            <h3>🔄 Reverse Calculator — Zero Tax Sale Price</h3>
+            <div class="rval" id="revSalePrice"></div>
+            <div class="rsub" id="revSub"></div>
+          </div>
+
+          <div class="note-box" id="cgNote"></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: INFO PANELS -->
+  <div>
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#FFFBEB">📋</div>
+        <div><h2>Tax Rates — IT Act 2025</h2><p>LTCG &amp; STCG at a glance</p></div>
+      </div>
+      <div class="card-body" style="padding:0;overflow-x:auto">
+        <table class="cii-table">
+          <thead><tr><th>Asset</th><th>Holding</th><th>Rate</th><th>Threshold</th></tr></thead>
+          <tbody>
+            <tr><td>Immovable Property</td><td>&gt;24 months</td><td>12.5% (no idx) / 20% (with idx pre Jul-23)</td><td>₹1.25L (old ₹1L)</td></tr>
+            <tr><td>Listed Equity / Eq MF</td><td>&gt;12 months</td><td>12.5%</td><td>₹1.25L exempt</td></tr>
+            <tr><td>Listed Equity / Eq MF</td><td>≤12 months</td><td>20% (STCG)</td><td>Nil</td></tr>
+            <tr><td>Debt MF / Bonds</td><td>Any</td><td>Slab rate</td><td>Nil</td></tr>
+            <tr><td>Gold / Gold ETF</td><td>&gt;24 months</td><td>12.5%</td><td>Nil</td></tr>
+            <tr><td>Unlisted Shares</td><td>&gt;24 months</td><td>12.5%</td><td>Nil</td></tr>
+            <tr><td>Unlisted Shares</td><td>≤24 months</td><td>Slab rate</td><td>Nil</td></tr>
+            <tr><td>Any STCG (others)</td><td>≤24/36 months</td><td>Slab rate</td><td>Nil</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#F5F3FF">📈</div>
+        <div><h2>Cost Inflation Index (CII)</h2><p>As notified by CBDT</p></div>
+      </div>
+      <div class="card-body" style="padding:0;max-height:260px;overflow-y:auto">
+        <table class="cii-table">
+          <thead><tr><th>FY</th><th>CII</th><th>FY</th><th>CII</th></tr></thead>
+          <tbody>
+            <tr><td>2001-02</td><td>100</td><td>2014-15</td><td>240</td></tr>
+            <tr><td>2002-03</td><td>105</td><td>2015-16</td><td>254</td></tr>
+            <tr><td>2003-04</td><td>109</td><td>2016-17</td><td>264</td></tr>
+            <tr><td>2004-05</td><td>113</td><td>2017-18</td><td>272</td></tr>
+            <tr><td>2005-06</td><td>117</td><td>2018-19</td><td>280</td></tr>
+            <tr><td>2006-07</td><td>122</td><td>2019-20</td><td>289</td></tr>
+            <tr><td>2007-08</td><td>129</td><td>2020-21</td><td>301</td></tr>
+            <tr><td>2008-09</td><td>137</td><td>2021-22</td><td>317</td></tr>
+            <tr><td>2009-10</td><td>148</td><td>2022-23</td><td>331</td></tr>
+            <tr><td>2010-11</td><td>167</td><td>2023-24</td><td>348</td></tr>
+            <tr><td>2011-12</td><td>184</td><td>2024-25</td><td>363</td></tr>
+            <tr><td>2012-13</td><td>200</td><td>2025-26</td><td>380</td></tr>
+            <tr><td>2013-14</td><td>220</td><td>2026-27</td><td>TBA</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#F0FDF4">🏠</div>
+        <div><h2>Key Exemptions</h2><p>Reduce your capital gains tax</p></div>
+      </div>
+      <div class="card-body">
+        <div style="font-size:12px;line-height:2;color:var(--muted)">
+          <p><strong style="color:var(--ink)">Sec 54</strong> — LTCG on residential property → invest in new house (within 2yr purchase / 3yr construct)</p>
+          <p><strong style="color:var(--ink)">Sec 54B</strong> — LTCG on agricultural land → invest in new agricultural land</p>
+          <p><strong style="color:var(--ink)">Sec 54EC</strong> — Any LTCG → NHAI/REC bonds (max ₹50L, lock-in 5yr)</p>
+          <p><strong style="color:var(--ink)">Sec 54F</strong> — LTCG on any asset → invest in residential house (net consideration)</p>
+          <p style="margin-top:8px;color:var(--red)"><strong>Note:</strong> Exemptions available only on LTCG. Claim only if actually investing.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <p class="footer-brand">CA Toolkit</p>
+  <p>Built for Indian CAs · Created by CA Articles of GD Singla &amp; Co.</p>
+  <p style="margin-top:8px;font-size:11px">© 2026 CA Toolkit · For reference only — consult a CA before making decisions</p>
+</footer>
+
+<script>
+// CII table
+const CII = {2001:100,2002:105,2003:109,2004:113,2005:117,2006:122,2007:129,2008:137,
+             2009:148,2010:167,2011:184,2012:200,2013:220,2014:240,2015:254,2016:264,
+             2017:272,2018:280,2019:289,2020:301,2021:317,2022:331,2023:348,2024:363,2025:380,2026:380};
+
+const fmt   = n => "₹"+Math.round(n).toLocaleString("en-IN");
+const fmtPct= n => n.toFixed(2)+"%";
+
+function parseMyDate(s){
+  if(!s) return null;
+  const p=String(s).trim().split("/");
+  if(p.length===3) return new Date(parseInt(p[2]),parseInt(p[1])-1,parseInt(p[0]));
+  return new Date(s);
+}
+
+function getFY(d){ return d.getMonth()>=3 ? d.getFullYear() : d.getFullYear()-1; }
+
+function holdingMonths(d1,d2){
+  return (d2.getFullYear()-d1.getFullYear())*12 + (d2.getMonth()-d1.getMonth());
+}
+
+function getCII(fy){ return CII[fy] || 380; }
+
+function updateAssetUI(){
+  const t = document.getElementById("assetType").value;
+  const showExemption = ["property","equity","other","gold","unlisted"].includes(t);
+  document.getElementById("exemptionField").style.display    = showExemption?"block":"none";
+  document.getElementById("exemptionAmtField").style.display = showExemption?"block":"none";
+}
+
+function calcCG(){
+  const asset     = document.getElementById("assetType").value;
+  const pd        = parseMyDate(document.getElementById("purchaseDate").value);
+  const sd        = parseMyDate(document.getElementById("saleDate").value);
+  const pp        = parseFloat(document.getElementById("purchasePrice").value)||0;
+  const sp        = parseFloat(document.getElementById("salePrice").value)||0;
+  const ic        = parseFloat(document.getElementById("improveCost").value)||0;
+  const tc        = parseFloat(document.getElementById("transferCost").value)||0;
+  const exemAmt   = parseFloat(document.getElementById("exemptionAmt").value)||0;
+  const exemType  = document.getElementById("exemptionType").value;
+  const assessee  = document.getElementById("assesseeType").value;
+
+  if(!pd||!sd){ alert("Please enter both purchase and sale dates."); return; }
+  if(!pp||!sp){ alert("Please enter purchase price and sale price."); return; }
+  if(sd<=pd){ alert("Sale date must be after purchase date."); return; }
+
+  const months = holdingMonths(pd,sd);
+  const pyFY   = getFY(pd);
+  const syFY   = getFY(sd);
+
+  // Determine LTCG/STCG threshold
+  let ltcgMonths = 24;
+  if(asset==="equity") ltcgMonths = 12;
+  const isLTCG = months >= ltcgMonths;
+  const cgType = isLTCG ? "Long-Term Capital Gain (LTCG)" : "Short-Term Capital Gain (STCG)";
+
+  // Net sale consideration
+  const netSale = sp - tc;
+
+  // ── New Regime (no indexation) ────────────────────────────────────────────
+  let newCOA = pp + ic;
+  let newCG  = Math.max(0, netSale - newCOA - exemAmt);
+  let newRate, newExempt=0, newTax=0;
+
+  if(!isLTCG){
+    // STCG
+    if(asset==="equity") newRate=20;
+    else newRate=0; // slab
+  } else {
+    if(asset==="equity"){ newRate=12.5; newExempt=125000; }
+    else if(asset==="debt") newRate=0; // slab
+    else newRate=12.5;
+  }
+  if(newRate>0){
+    const taxableNew = Math.max(0, newCG - newExempt);
+    newTax = Math.round(taxableNew * newRate / 100);
+  }
+
+  // ── Old Regime (with indexation) — only for LTCG on property purchased pre Jul 2023 ──
+  const preJul23 = pd < new Date(2023,6,23);
+  const showOldRegime = isLTCG && (asset==="property"||asset==="other"||asset==="gold") && preJul23;
+  let oldCOA=0, oldCG=0, oldRate=0, oldExempt=0, oldTax=0;
+
+  if(showOldRegime){
+    const ciiPurchase = getCII(pyFY);
+    const ciiSale     = getCII(syFY);
+    oldCOA  = Math.round((pp + ic) * ciiSale / ciiPurchase);
+    oldCG   = Math.max(0, netSale - oldCOA - exemAmt);
+    oldRate = 20;
+    const taxableOld = Math.max(0, oldCG - oldExempt);
+    oldTax  = Math.round(taxableOld * oldRate / 100);
+  }
+
+  // ── Reverse calculator ─────────────────────────────────────────────────────
+  // Min sale price for zero tax (new regime)
+  let zeroTaxSale = null;
+  if(newRate>0 && isLTCG){
+    zeroTaxSale = newCOA + tc + newExempt + exemAmt;
+    if(asset==="equity") zeroTaxSale += 125000;
+  }
+
+  // ── Render results ─────────────────────────────────────────────────────────
+  document.getElementById("cgTypeLabel").innerHTML =
+    `<span style="background:${isLTCG?"#EFF6FF":"#FFFBEB"};color:${isLTCG?"var(--brand)":"#92400E"};
+     padding:4px 12px;border-radius:99px;font-size:12px">${cgType} · ${months} months holding</span>`;
+
+  // Compare grid
+  let compareHTML = "";
+  const winner = (showOldRegime && oldTax < newTax) ? "old" : "new";
+
+  compareHTML += `<div class="cbox ${winner==="new"?"winner":""}">
+    ${winner==="new"?'<span class="winner-badge">✓ Lower Tax</span><br>':""}
+    <h3>New Regime (No Indexation)</h3>
+    <div class="ctax">${newRate===0?"Slab Rate":fmt(newTax)}</div>
+    <div class="csub">${newRate===0?"Tax at applicable slab rate":newRate+"% on "+fmt(Math.max(0,newCG-newExempt))}</div>
+  </div>`;
+
+  if(showOldRegime){
+    compareHTML += `<div class="cbox ${winner==="old"?"winner":""}">
+      ${winner==="old"?'<span class="winner-badge">✓ Lower Tax</span><br>':""}
+      <h3>Old Regime (With Indexation)</h3>
+      <div class="ctax">${fmt(oldTax)}</div>
+      <div class="csub">20% on ${fmt(Math.max(0,oldCG))} (Indexed COA: ${fmt(oldCOA)})</div>
+    </div>`;
+  } else {
+    compareHTML += `<div class="cbox" style="background:#F9FAFB;border-style:dashed">
+      <h3 style="color:var(--muted)">Old Regime (Indexation)</h3>
+      <div class="ctax" style="color:var(--muted);font-size:14px">Not Applicable</div>
+      <div class="csub">${!isLTCG?"STCG — no indexation benefit":!preJul23?"Asset purchased after 23 Jul 2023":"Not applicable for this asset type"}</div>
+    </div>`;
+  }
+  document.getElementById("compareGrid").innerHTML = compareHTML;
+
+  // Detail breakdown (new regime)
+  let detailHTML = `<div class="card" style="margin-top:12px">
+    <div class="card-head"><div class="icon" style="background:#EFF6FF">🧮</div>
+    <div><h2>Computation (New Regime)</h2><p>Step-by-step breakdown</p></div></div>
+    <div class="card-body" style="padding:12px 16px">
+    <table class="dtable">
+      <tr><td>Full Value of Consideration (Sale Price)</td><td>${fmt(sp)}</td></tr>
+      <tr><td>Less: Transfer Expenses</td><td>(${fmt(tc)})</td></tr>
+      <tr><td>Net Sale Consideration</td><td>${fmt(netSale)}</td></tr>
+      <tr><td>Less: Cost of Acquisition</td><td>(${fmt(pp)})</td></tr>
+      <tr><td>Less: Cost of Improvement</td><td>(${fmt(ic)})</td></tr>
+      <tr><td>Capital Gain (Before Exemption)</td><td>${fmt(Math.max(0,netSale-pp-ic))}</td></tr>
+      ${exemAmt>0?`<tr><td>Less: Exemption u/s ${exemType}</td><td>(${fmt(exemAmt)})</td></tr>`:""}
+      <tr><td>Taxable Capital Gain</td><td>${fmt(newCG)}</td></tr>
+      ${newExempt>0?`<tr><td>Less: Basic Exemption (₹1.25L)</td><td>(${fmt(Math.min(newExempt,newCG))})</td></tr>`:""}
+      <tr><td>Tax @ ${newRate===0?"Slab":newRate+"%"}</td><td><strong>${newRate===0?"As per slab":fmt(newTax)}</strong></td></tr>
+    </table></div></div>`;
+
+  if(showOldRegime){
+    const ciiP = getCII(pyFY), ciiS = getCII(syFY);
+    detailHTML += `<div class="card" style="margin-top:12px">
+      <div class="card-head"><div class="icon" style="background:#F5F3FF">📊</div>
+      <div><h2>Computation (Old Regime with Indexation)</h2><p>CII ${pyFY}-${pyFY+1}: ${ciiP} → ${syFY}-${syFY+1}: ${ciiS}</p></div></div>
+      <div class="card-body" style="padding:12px 16px">
+      <table class="dtable">
+        <tr><td>Net Sale Consideration</td><td>${fmt(netSale)}</td></tr>
+        <tr><td>Indexed Cost of Acquisition (${pp} × ${ciiS}/${ciiP})</td><td>(${fmt(oldCOA)})</td></tr>
+        <tr><td>Capital Gain (After Indexation)</td><td>${fmt(oldCG)}</td></tr>
+        ${exemAmt>0?`<tr><td>Less: Exemption u/s ${exemType}</td><td>(${fmt(exemAmt)})</td></tr>`:""}
+        <tr><td>Tax @ 20%</td><td><strong>${fmt(oldTax)}</strong></td></tr>
+      </table></div></div>`;
+  }
+
+  document.getElementById("detailBreakdown").innerHTML = detailHTML;
+
+  // Reverse calculator
+  if(zeroTaxSale!==null && zeroTaxSale>0){
+    document.getElementById("reverseBox").style.display = "block";
+    document.getElementById("revSalePrice").textContent = fmt(zeroTaxSale);
+    document.getElementById("revSub").textContent =
+      `Sell at or below ${fmt(zeroTaxSale)} to have zero capital gains tax liability (new regime, excluding transfer expenses in computation)`;
+  } else {
+    document.getElementById("reverseBox").style.display = "none";
+  }
+
+  // Note
+  let note = "";
+  if(newRate===0) note = "Tax at applicable slab rate. Add capital gain to total income and apply applicable tax slab.";
+  else if(!isLTCG) note = "Short-term capital gain — taxed at "+newRate+"% (equity) or slab rate (others).";
+  else note = `LTCG taxed at ${newRate}%. ${showOldRegime?"Both regimes shown — choose the one with lower tax.":""}`;
+  if(exemAmt>0) note += ` Exemption of ${fmt(exemAmt)} claimed u/s ${exemType}.`;
+  document.getElementById("cgNote").textContent = "⚠ " + note + " This is an estimate — verify with actual CII and consult your CA.";
+
+  document.getElementById("cgResults").style.display = "block";
+  document.getElementById("cgResults").scrollIntoView({behavior:"smooth"});
+}
+
+updateAssetUI();
+</script>
+</body></html>"""
+
+
 ADMIN_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Admin – CA Toolkit</title>
@@ -3353,6 +4231,34 @@ def admin_delete():
     name = user["username"]
     del_user(uid)
     return redirect(url_for("admin_panel", msg=f"✓ User '{name}' deleted."))
+
+@app.route("/tool/msme-calculator")
+def tool_msme_calculator():
+    if "uid" in session:
+        user = get_user_by_id(session["uid"]); ctx = user_ctx(user)
+    else:
+        ctx = dict(
+            username=None, plan="free", plan_label="Free",
+            is_admin=False, uploads_used=0, uploads_total=2,
+            uploads_left=2, uploads_remaining=2, bar_pct=0,
+            validity_end=None, contact_email=CONTACT_EMAIL,
+            contact_upi=CONTACT_UPI,
+        )
+    return render_template_string(MSME_T, **ctx)
+
+@app.route("/tool/capital-gains-calculator")
+def tool_cg_calculator():
+    if "uid" in session:
+        user = get_user_by_id(session["uid"]); ctx = user_ctx(user)
+    else:
+        ctx = dict(
+            username=None, plan="free", plan_label="Free",
+            is_admin=False, uploads_used=0, uploads_total=2,
+            uploads_left=2, uploads_remaining=2, bar_pct=0,
+            validity_end=None, contact_email=CONTACT_EMAIL,
+            contact_upi=CONTACT_UPI,
+        )
+    return render_template_string(CG_CALC_T, **ctx)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  STARTUP
