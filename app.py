@@ -324,23 +324,24 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .hero h1 em{font-style:normal;color:var(--brand)}
 .hero p{font-size:15px;color:var(--muted);line-height:1.7}
 
-.tools-grid{max-width:960px;margin:0 auto;padding:0 24px 56px;
-            display:grid;grid-template-columns:repeat(2,1fr);gap:20px}
-@media(max-width:600px){.tools-grid{grid-template-columns:1fr}}
+.tools-grid{max-width:1200px;margin:0 auto;padding:0 24px 56px;
+            display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+@media(max-width:900px){.tools-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:540px){.tools-grid{grid-template-columns:1fr}}
 
 .tool-card{background:var(--white);border:1.5px solid var(--border);
-           border-radius:var(--radius);padding:28px 24px;
+           border-radius:var(--radius);padding:22px 20px;
            text-decoration:none;color:var(--ink);
            transition:all .2s;position:relative;overflow:hidden;display:block}
 .tool-card:hover{border-color:var(--brand);box-shadow:0 8px 32px rgba(29,78,216,.12);transform:translateY(-2px)}
 .tool-card.disabled{cursor:default;opacity:.7}
 .tool-card.disabled:hover{border-color:var(--border);box-shadow:none;transform:none}
 
-.tool-icon{width:52px;height:52px;border-radius:12px;display:flex;
-           align-items:center;justify-content:center;font-size:26px;
-           margin-bottom:16px}
-.tool-card h2{font-size:16px;font-weight:700;margin-bottom:6px}
-.tool-card p{font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:16px}
+.tool-icon{width:44px;height:44px;border-radius:10px;display:flex;
+           align-items:center;justify-content:center;font-size:22px;
+           margin-bottom:12px}
+.tool-card h2{font-size:14px;font-weight:700;margin-bottom:5px}
+.tool-card p{font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:14px}
 
 .tool-tag{display:inline-flex;align-items:center;gap:5px;font-size:11px;
           font-weight:600;padding:3px 10px;border-radius:99px}
