@@ -4158,57 +4158,61 @@ def _convert_xls_to_xlsx(xls_path, xlsx_path):
 @app.route("/process", methods=["POST"])
 @login_required
 def process_file():
-    user = get_user_by_id(session["uid"])
-    if not user["is_admin"] and uploads_remaining(user) <= 0:
-        return jsonify({"status": "error",
-            "message": f"No uploads remaining. Contact {CONTACT_EMAIL} to recharge."})
-    if "file" not in request.files:
-        return jsonify({"status": "error", "message": "No file uploaded."})
-    f = request.files["file"]
-    orig_name = f.filename.lower()
-    if not (orig_name.endswith(".xlsx") or orig_name.endswith(".xls")):
-        return jsonify({"status": "error", "message": "Only .xlsx and .xls files are supported."})
     try:
-        cy = int(request.form.get("closing_year", 0))
-        ny = int(request.form.get("new_year", cy + 1))
-        on = request.form.get("output_name", "").strip()
-    except ValueError:
-        return jsonify({"status": "error", "message": "Invalid year values."})
-    if ny != cy + 1:
-        return jsonify({"status": "error", "message": "New year must be closing year + 1."})
-    h  = uuid.uuid4().hex
-    ip = os.path.join(UPLOAD_DIR, f"{h}_in.xlsx")
-    op = os.path.join(OUTPUT_DIR, f"{h}_out.xlsx")
-    xls_tmp = None
-    try:
-        if orig_name.endswith(".xls"):
-            # Save .xls first, then convert to .xlsx via xlrd + openpyxl
-            xls_tmp = os.path.join(UPLOAD_DIR, f"{h}_in.xls")
-            f.save(xls_tmp)
-            _convert_xls_to_xlsx(xls_tmp, ip)
-        else:
-            f.save(ip)
-    except Exception as e:
-        # Cleanup temp files on conversion failure
-        for p in (xls_tmp, ip):
-            if p:
-                try: os.remove(p)
+        user = get_user_by_id(session["uid"])
+        if not user["is_admin"] and uploads_remaining(user) <= 0:
+            return jsonify({"status": "error",
+                "message": f"No uploads remaining. Contact {CONTACT_EMAIL} to recharge."})
+        if "file" not in request.files:
+            return jsonify({"status": "error", "message": "No file uploaded."})
+        f = request.files["file"]
+        orig_name = f.filename.lower()
+        is_xls = orig_name.endswith(".xls") and not orig_name.endswith(".xlsx")
+        if not (orig_name.endswith(".xlsx") or is_xls):
+            return jsonify({"status": "error", "message": "Only .xlsx and .xls files are supported."})
+        try:
+            cy = int(request.form.get("closing_year", 0))
+            ny = int(request.form.get("new_year", cy + 1))
+            on = request.form.get("output_name", "").strip()
+        except ValueError:
+            return jsonify({"status": "error", "message": "Invalid year values."})
+        if ny != cy + 1:
+            return jsonify({"status": "error", "message": "New year must be closing year + 1."})
+        h  = uuid.uuid4().hex
+        ip = os.path.join(UPLOAD_DIR, f"{h}_in.xlsx")
+        op = os.path.join(OUTPUT_DIR, f"{h}_out.xlsx")
+        xls_tmp = None
+        try:
+            if is_xls:
+                # Save .xls first, then convert to .xlsx via xlrd + openpyxl
+                xls_tmp = os.path.join(UPLOAD_DIR, f"{h}_in.xls")
+                f.save(xls_tmp)
+                _convert_xls_to_xlsx(xls_tmp, ip)
+            else:
+                f.save(ip)
+        except Exception as e:
+            for p in (xls_tmp, ip):
+                if p:
+                    try: os.remove(p)
+                    except: pass
+            return jsonify({"status": "error", "message": f"File conversion error: {e}"})
+        finally:
+            if xls_tmp:
+                try: os.remove(xls_tmp)
                 except: pass
-        return jsonify({"status": "error", "message": f"File conversion error: {e}"})
-    finally:
-        if xls_tmp:
-            try: os.remove(xls_tmp)
+        fname = f"{on or os.path.splitext(f.filename)[0]}_{ny}.xlsx"
+        try:
+            result = process(ip, op, cy, ny)
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+        finally:
+            try: os.remove(ip)
             except: pass
-    fname = f"{on or os.path.splitext(f.filename)[0]}_{ny}.xlsx"
-    try:
-        result = process(ip, op, cy, ny)
+        log_usage(user["id"], fname)
+        return jsonify({"status": "success", "log": result["log"], "file_id": h, "filename": fname})
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
-    finally:
-        try: os.remove(ip)
-        except: pass
-    log_usage(user["id"], fname)
-    return jsonify({"status": "success", "log": result["log"], "file_id": h, "filename": fname})
+        # Master catch — ensures we ALWAYS return JSON, never an HTML error page
+        return jsonify({"status": "error", "message": f"Unexpected error: {e}"}), 500
 
 @app.route("/download/<fid>")
 @login_required
