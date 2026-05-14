@@ -715,12 +715,12 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
         </div>
       </div>
       <div class="field">
-        <label>Upload Excel File (.xlsx)</label>
+        <label>Upload Excel File (.xlsx / .xls)</label>
         <div class="dropzone" id="dropzone">
-          <input type="file" id="xlFile" accept=".xlsx" {{ 'disabled' if uploads_left==0 else '' }}/>
+          <input type="file" id="xlFile" accept=".xlsx,.xls" {{ 'disabled' if uploads_left==0 else '' }}/>
           <div class="dz-icon">📁</div>
           <div class="dz-text"><strong>Click to browse</strong> or drag &amp; drop</div>
-          <div class="dz-text" style="margin-top:3px">Only .xlsx · Max 20 MB</div>
+          <div class="dz-text" style="margin-top:3px">.xlsx or .xls · Max 20 MB</div>
           <div class="dz-file" id="dzFile"></div>
         </div>
       </div>
@@ -850,7 +850,7 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
 <section class="faq-section" id="faq">
   <h2>Frequently Asked Questions</h2>
   <details><summary>Which Excel formats are supported?</summary>
-    <p>.xlsx only (Excel 2007+). Save .xls files as .xlsx first.</p></details>
+    <p>.xlsx (Excel 2007+) and .xls (legacy Excel). Both are fully supported — .xls files are automatically converted before processing.</p></details>
   <details><summary>Will it work with my firm's custom template?</summary>
     <p>Yes. Auto-detects CY/PY columns by scanning date headers like "31.03.2025". Works with any Indian CA template.</p></details>
   <details><summary>Are my formulas and formatting safe?</summary>
@@ -911,14 +911,18 @@ async function processFile(){
   const fd=new FormData();
   fd.append('file',f);fd.append('closing_year',cYr);fd.append('new_year',nYr);fd.append('output_name',oNm);
   try{
-    const res=await fetch('/process',{method:'POST',body:fd}),data=await res.json();
+    const res=await fetch('/process',{method:'POST',body:fd});
+    const ct=res.headers.get('content-type')||'';
+    if(!ct.includes('application/json')){
+      showStatus('error','✗ Server error (non-JSON response). Please try again or contact support.');return;
+    }
+    const data=await res.json();
     if(data.status==='success'){
       const logHtml='<ul class="log-list">'+data.log.map(l=>`<li>${l}</li>`).join('')+'</ul>';
       showStatus('success','✓ Done! Your file is ready.'+logHtml);
       dl.href='/download/'+data.file_id;dl.download=data.filename;
       dl.textContent='⬇  Download — '+data.filename;dl.style.display='block';
       toast('Processed successfully!');
-      setTimeout(()=>location.reload(),3000);
     }else{showStatus('error','✗ '+data.message);}
   }catch(e){showStatus('error','✗ Network error: '+e.message);}
   finally{btn.disabled=false;sp.style.display='none';bt.textContent='⚡ Process & Download';}
@@ -4126,6 +4130,31 @@ def tool_depreciation_calculator():
 #  ROUTES — PROCESS & DOWNLOAD
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _convert_xls_to_xlsx(xls_path, xlsx_path):
+    """Convert legacy .xls to .xlsx using xlrd + openpyxl."""
+    import xlrd
+    from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
+
+    xls_wb = xlrd.open_workbook(xls_path, formatting_info=False)
+    xlsx_wb = Workbook()
+    # Remove default sheet created by Workbook()
+    xlsx_wb.remove(xlsx_wb.active)
+
+    for sheet_name in xls_wb.sheet_names():
+        xls_ws = xls_wb.sheet_by_name(sheet_name)
+        xlsx_ws = xlsx_wb.create_sheet(title=sheet_name)
+        for row_idx in range(xls_ws.nrows):
+            for col_idx in range(xls_ws.ncols):
+                cell = xls_ws.cell(row_idx, col_idx)
+                val = cell.value
+                # xlrd returns floats for all numbers; convert whole floats to int
+                if cell.ctype == xlrd.XL_CELL_NUMBER and val == int(val):
+                    val = int(val)
+                xlsx_ws.cell(row=row_idx + 1, column=col_idx + 1, value=val)
+
+    xlsx_wb.save(xlsx_path)
+
 @app.route("/process", methods=["POST"])
 @login_required
 def process_file():
@@ -4136,8 +4165,9 @@ def process_file():
     if "file" not in request.files:
         return jsonify({"status": "error", "message": "No file uploaded."})
     f = request.files["file"]
-    if not f.filename.endswith(".xlsx"):
-        return jsonify({"status": "error", "message": "Only .xlsx files are supported."})
+    orig_name = f.filename.lower()
+    if not (orig_name.endswith(".xlsx") or orig_name.endswith(".xls")):
+        return jsonify({"status": "error", "message": "Only .xlsx and .xls files are supported."})
     try:
         cy = int(request.form.get("closing_year", 0))
         ny = int(request.form.get("new_year", cy + 1))
@@ -4149,7 +4179,26 @@ def process_file():
     h  = uuid.uuid4().hex
     ip = os.path.join(UPLOAD_DIR, f"{h}_in.xlsx")
     op = os.path.join(OUTPUT_DIR, f"{h}_out.xlsx")
-    f.save(ip)
+    xls_tmp = None
+    try:
+        if orig_name.endswith(".xls"):
+            # Save .xls first, then convert to .xlsx via xlrd + openpyxl
+            xls_tmp = os.path.join(UPLOAD_DIR, f"{h}_in.xls")
+            f.save(xls_tmp)
+            _convert_xls_to_xlsx(xls_tmp, ip)
+        else:
+            f.save(ip)
+    except Exception as e:
+        # Cleanup temp files on conversion failure
+        for p in (xls_tmp, ip):
+            if p:
+                try: os.remove(p)
+                except: pass
+        return jsonify({"status": "error", "message": f"File conversion error: {e}"})
+    finally:
+        if xls_tmp:
+            try: os.remove(xls_tmp)
+            except: pass
     fname = f"{on or os.path.splitext(f.filename)[0]}_{ny}.xlsx"
     try:
         result = process(ip, op, cy, ny)
