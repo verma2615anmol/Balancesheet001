@@ -30,6 +30,19 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
+# ── Global error handlers — ensure /process NEVER returns HTML ────────────
+@app.errorhandler(500)
+def handle_500(e):
+    if request.path == "/process":
+        return jsonify({"status": "error", "message": f"Server error: {e}"}), 500
+    return "Internal Server Error", 500
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    if request.path == "/process":
+        return jsonify({"status": "error", "message": f"Server error: {e}"}), 500
+    raise e
+
 UPLOAD_DIR = "/tmp/bs_uploads"
 OUTPUT_DIR = "/tmp/bs_outputs"
 DB_PATH    = os.environ.get("DB_PATH", "users.db")
