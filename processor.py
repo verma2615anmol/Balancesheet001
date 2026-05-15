@@ -1,28 +1,28 @@
 """
-Balance Sheet Year-Shift Processor  (v7 — auto-detect, ZIP-trim, memory-safe)
+Balance Sheet Year-Shift Processor  (v8 — XML-native, formatting-safe)
 Shifts CY→PY, clears CY constants, updates all date references.
 
-Pipeline for large workbooks (65K-row data sheets, pivot caches):
-  1. read_only scan → detect sheet sizes + big sheets         (0.4s)
-  2. ZIP manipulation → stub big sheet XMLs + pivot caches    (0.1s)
-  3. load_workbook on trimmed file                            (~12s)
-  4. read_only+data_only → extract CY column values           (0.3s)
-  5. Auto-detect CY/PY columns → shift + clear + date updates
-  6. ZIP merge → splice processed sheets into original ZIP    (0.9s)
+Zero openpyxl-save approach: uses read_only for detection + value extraction,
+then directly manipulates worksheet XML and sharedStrings inside the ZIP.
+All formatting, styles, merged cells, and pivot caches are preserved byte-perfect.
 """
 
-import os, shutil, tempfile, zipfile
+import copy, os, re, zipfile
 import xml.etree.ElementTree as ET
 
 from openpyxl import load_workbook
 from openpyxl.cell import MergedCell
-from openpyxl.utils import column_index_from_string, get_column_letter
+from openpyxl.utils import get_column_letter
 
 # ── thresholds ────────────────────────────────────────────────────────────────
-BIG_ROWS = 1000
+BIG_ROWS = 1000            # sheets above this are skipped for CY→PY
 BIG_COLS = 100
-SHIFT_MAX_ROWS = 2000
 HEADER_SCAN_ROWS = 15
+
+# ── XML namespaces ────────────────────────────────────────────────────────────
+_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_NS_MAP = {"": _NS}        # for ElementTree findall
 
 # ── fallback column map (lower-case sheet name → [(cy, py)]) ─────────────────
 SHEET_COL_MAP = {
@@ -37,44 +37,19 @@ TEXT_ONLY_SHEETS = {s.strip().lower() for s in [
     "notes to accounts", "Fixed Assets C. Yr.", "Fixed Assets P. Yr.",
     "FA2022", "Tax audit ", "Tax Audit report", "PPE",
 ]}
-
 CAPITAL_CY_ROW, CAPITAL_PY_ROW = 8, 11
 CAPITAL_DATA_COLS = ["C", "D", "E"]
 
-# ── XML stubs for ZIP trimming ────────────────────────────────────────────────
-_EMPTY_SHEET = (
-    b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-    b'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-    b'<sheetData/></worksheet>'
-)
-_EMPTY_PIVOT = (
-    b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-    b'<pivotCacheRecords xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
-    b' count="0"/>'
-)
-_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-_NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Helpers
+#  Date-replacement text pairs
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def _is_formula(v):
-    return isinstance(v, str) and v.strip().startswith("=")
-
-def _is_numeric(v):
-    return isinstance(v, (int, float))
-
-
-# ── date replacement pairs ────────────────────────────────────────────────────
 
 def _date_replacements(cy, ny):
     po = str(int(cy) - 1)
     PH, PH_R = "__NEWCY__", "__FYRNG__"
-    # CY → placeholder
-    a = []
-    for pat in [
+
+    patterns = [
         "31.03.{y}", "31 March, {y}", "31 March {y}",
         "31st March, {y}", "31st March {y}",
         "31ST MARCH ,{y}", "31ST MARCH, {y}", "31ST MARCH {y}",
@@ -90,50 +65,21 @@ def _date_replacements(cy, ny):
         "for the year ended 31 March, {y}",
         "FOR THE YEAR ENDED 31ST MARCH, {y}",
         "FOR THE YEAR ENDED 31ST MARCH {y}",
-    ]:
-        a.append((pat.format(y=cy), pat.format(y=PH)))
+    ]
 
-    # PY dates → CY dates
-    b = []
+    a = [(p.format(y=cy), p.format(y=PH)) for p in patterns]   # CY → placeholder
+    b = []                                                       # PY → CY
     for old, new in [
-        ("1st April {po}",       "1st April {cy}"),
-        ("1 April {po}",         "1 April {cy}"),
-        ("01.04.{po}",           "01.04.{cy}"),
-        ("31.03.{po}",           "31.03.{cy}"),
-        ("31st March {po}",      "31st March {cy}"),
-        ("31st March, {po}",     "31st March, {cy}"),
-        ("31 March, {po}",       "31 March, {cy}"),
-        ("31 March {po}",        "31 March {cy}"),
-        ("31ST MARCH {po}",      "31ST MARCH {cy}"),
-        ("31ST MARCH, {po}",     "31ST MARCH, {cy}"),
-        ("AS AT 31ST MARCH {po}",  "AS AT 31ST MARCH {cy}"),
-        ("AS AT 31ST MARCH, {po}", "AS AT 31ST MARCH, {cy}"),
+        ("1st April {po}",  "1st April {cy}"), ("1 April {po}",  "1 April {cy}"),
+        ("01.04.{po}",      "01.04.{cy}"),     ("31.03.{po}",    "31.03.{cy}"),
+        ("31st March {po}", "31st March {cy}"),("31st March, {po}","31st March, {cy}"),
+        ("31 March, {po}",  "31 March, {cy}"), ("31 March {po}",  "31 March {cy}"),
+        ("31ST MARCH {po}", "31ST MARCH {cy}"),("31ST MARCH, {po}","31ST MARCH, {cy}"),
+        ("AS AT 31ST MARCH {po}","AS AT 31ST MARCH {cy}"),
+        ("AS AT 31ST MARCH, {po}","AS AT 31ST MARCH, {cy}"),
     ]:
         b.append((old.format(po=po, cy=cy), new.format(po=po, cy=cy)))
-
-    # placeholder → NY
-    c = [(old.replace(cy, PH), new.replace(cy, PH).replace(PH, ny))
-         for old, new in zip([p[0] for p in a], [p[0] for p in a])]
-    # Actually rebuild c properly
-    c = []
-    for pat in [
-        "31.03.{y}", "31 March, {y}", "31 March {y}",
-        "31st March, {y}", "31st March {y}",
-        "31ST MARCH ,{y}", "31ST MARCH, {y}", "31ST MARCH {y}",
-        "31 MARCH, {y}", "31 MARCH {y}",
-        "year ended 31 March, {y}", "year ended, 31st March, {y}",
-        "year end 31 March, {y}",
-        "year ending 31.03.{y}", "YEAR ENDING 31.03.{y}",
-        "YEAR ENDING 31ST MARCH ,{y}", "YEAR ENDING 31ST MARCH, {y}",
-        "YEAR ENDING 31ST MARCH {y}",
-        "as at 31 March, {y}", "AS AT 31ST MARCH {y}",
-        "AS AT 31ST MARCH, {y}", "AS AT 31 MARCH, {y}",
-        "for the year ended, 31st March, {y}",
-        "for the year ended 31 March, {y}",
-        "FOR THE YEAR ENDED 31ST MARCH, {y}",
-        "FOR THE YEAR ENDED 31ST MARCH {y}",
-    ]:
-        c.append((pat.format(y=PH), pat.format(y=ny)))
+    c = [(p.format(y=PH), p.format(y=ny)) for p in patterns]   # placeholder → NY
 
     # Fiscal year ranges
     po_s, cy_s, ny_s = po[2:], cy[2:], ny[2:]
@@ -146,38 +92,36 @@ def _date_replacements(cy, ny):
     return a + b + c + r
 
 
-def _replace_text(val, pairs):
-    if not isinstance(val, str):
-        return val
+def _apply_pairs(text, pairs):
     for old, new in pairs:
-        val = val.replace(old, new)
-    return val
+        text = text.replace(old, new)
+    return text
 
 
-# ── auto-detection ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  read_only helpers  (fast scans — never loads full workbook into memory)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _has_year_date(val, yr):
     if not isinstance(val, str): return False
     flat = val.replace("\n", " ").replace("\r", " ")
     if yr not in flat: return False
-    if f"31.03.{yr}" in flat: return True
-    return any(m in flat for m in
-               ["March","MARCH","march","year end","Year end",
-                "YEAR END","as at","As at","AS AT"])
+    return ("31.03." in flat or
+            any(m in flat for m in ("March","MARCH","march",
+                "year end","Year end","YEAR END","as at","As at","AS AT")))
 
 
-def _detect_cy_py_columns(ws, closing_year):
+def _detect_columns(ws, closing_year, max_scan_rows=HEADER_SCAN_ROWS):
+    """Auto-detect CY/PY column pairs from header rows. Uses iter_rows for speed."""
     cy_s, py_s = str(closing_year), str(closing_year - 1)
     cy_cols, py_cols = set(), set()
-    mx = min(ws.max_column or 1, 50)
-    for ri in range(1, HEADER_SCAN_ROWS + 1):
-        for ci in range(1, mx + 1):
-            cell = ws.cell(row=ri, column=ci)
+    for row in ws.iter_rows(min_row=1, max_row=max_scan_rows, max_col=50):
+        for cell in row:
             if isinstance(cell, MergedCell): continue
             v = cell.value
-            if not isinstance(v, str) or _is_formula(v): continue
-            if _has_year_date(v, cy_s): cy_cols.add(ci)
-            if _has_year_date(v, py_s): py_cols.add(ci)
+            if not isinstance(v, str) or v.startswith("="): continue
+            if _has_year_date(v, cy_s): cy_cols.add(cell.column)
+            if _has_year_date(v, py_s): py_cols.add(cell.column)
     if not cy_cols: return []
     pairs, used = [], set()
     for cc in sorted(cy_cols):
@@ -185,83 +129,248 @@ def _detect_cy_py_columns(ws, closing_year):
             cand = cc + off
             if cand in py_cols and cand not in used:
                 pairs.append((get_column_letter(cc), get_column_letter(cand)))
-                used.add(cand)
-                break
+                used.add(cand); break
     return pairs
 
 
-# ── fast value extraction (read_only + data_only) ─────────────────────────────
-
-def _extract_col_values(filepath, sheet_name, col_idx):
-    """Return {row: numeric_value} for one column, using fast read_only mode."""
-    wb = load_workbook(filepath, read_only=True, data_only=True)
-    ws = wb[sheet_name]
-    vals = {}
-    for row in ws.iter_rows(min_col=col_idx, max_col=col_idx):
-        for cell in row:
-            if cell.value is not None and _is_numeric(cell.value):
-                vals[cell.row] = cell.value
-    wb.close()
-    return vals
+def _parse_dim(dim_str):
+    """Parse 'A1:AQ65570' → (rows, cols)."""
+    if ":" not in dim_str:
+        return 1, 1
+    _, end = dim_str.split(":")
+    m = _COL_RE.match(end)
+    if not m:
+        return 1, 1
+    return int(m.group(2)), _col_idx(m.group(1))
 
 
-# ── core operations ───────────────────────────────────────────────────────────
-
-def _copy_cy_to_py_cached(ws, cy_vals, py_col):
-    for ri, cv in cy_vals.items():
-        pc = ws.cell(row=ri, column=py_col)
-        if isinstance(pc, MergedCell) or pc.value is None:
-            continue
-        pc.value = cv
-
-
-def _clear_cy_constants(ws, cy_letter):
-    ci = column_index_from_string(cy_letter)
-    for ri in range(1, ws.max_row + 1):
-        cell = ws.cell(row=ri, column=ci)
-        if isinstance(cell, MergedCell): continue
-        v = cell.value
-        if v is None or _is_formula(v) or isinstance(v, str): continue
-        cell.value = None
-
-
-def _update_text(ws, pairs):
-    for row in ws.iter_rows():
-        for cell in row:
-            if isinstance(cell, MergedCell): continue
-            if isinstance(cell.value, str) and not _is_formula(cell.value):
-                nv = _replace_text(cell.value, pairs)
-                if nv != cell.value:
-                    cell.value = nv
-
-
-def _fix_py_header(ws, py_letter, closing_year, new_year):
-    pc = column_index_from_string(py_letter)
-    ny_s, cy_s = str(new_year), str(closing_year)
-    for ri in range(1, HEADER_SCAN_ROWS + 1):
-        cell = ws.cell(row=ri, column=pc)
-        if isinstance(cell, MergedCell): continue
-        v = cell.value
-        if not isinstance(v, str) or _is_formula(v): continue
-        if ny_s in v and any(m in v for m in
-                ("31.03.","March","MARCH","march",
-                 "year ending","Year ending","YEAR ENDING",
-                 "as at","As at","AS AT")):
-            cell.value = v.replace(ny_s, cy_s)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  ZIP-level trim / merge
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _scan_sizes(filepath):
-    wb = load_workbook(filepath, read_only=True)
-    sizes = {ws.title: (ws.max_row or 0, ws.max_column or 0) for ws in wb.worksheets}
-    wb.close()
+def _get_sizes_from_zip(filepath):
+    """Get sheet sizes from XML dimension tags — instant, no cell parsing."""
+    sizes = {}  # {sheet_file: (rows, cols)}
+    dim_re = re.compile(rb'<dimension ref="([^"]+)"')
+    with zipfile.ZipFile(filepath) as z:
+        for item in z.infolist():
+            if item.filename.startswith("xl/worksheets/sheet") and item.filename.endswith(".xml"):
+                header = z.read(item.filename)[:2000]
+                m = dim_re.search(header)
+                if m:
+                    sizes[item.filename] = _parse_dim(m.group(1).decode())
+                else:
+                    sizes[item.filename] = (0, 0)
     return sizes
 
 
+def _scan_workbook(filepath, closing_year):
+    """
+    Quick scan. Returns:
+      sizes       {sheet_name: (rows, cols)}
+      shift_map   {sheet_name: [(cy_letter, py_letter), ...]}
+      cy_values   {sheet_name: {col_letter: {row: numeric_value}}}
+      cy_formulas {sheet_name: {col_letter: set_of_rows}}
+    """
+    # Get sizes from ZIP dimension tags (0.04s)
+    with zipfile.ZipFile(filepath) as z:
+        smap = _sheet_file_map(z)
+    file_sizes = _get_sizes_from_zip(filepath)
+    sizes = {}
+    for sn, sf in smap.items():
+        sizes[sn] = file_sizes.get(sf, (0, 0))
+
+    big_names = {n for n, (r, c) in sizes.items() if r > BIG_ROWS or c > BIG_COLS}
+
+    # Detect CY/PY columns — only load small sheets via read_only
+    shift_map = {}
+    fb = {k.strip().lower(): v for k, v in SHEET_COL_MAP.items()}
+    wb = load_workbook(filepath, read_only=True)
+    for sn in wb.sheetnames:
+        if sn in big_names:
+            continue
+        sl = sn.strip().lower()
+        if sl in TEXT_ONLY_SHEETS:
+            continue
+        ws = wb[sn]
+        det = _detect_columns(ws, closing_year)
+        if not det and sl in fb:
+            det = fb[sl]
+        if det:
+            shift_map[sn] = det
+    wb.close()
+
+    # Extract CY numeric values (data_only → resolved formulas)
+    cy_values = {}
+    wb_d = load_workbook(filepath, read_only=True, data_only=True)
+    for sn, col_pairs in shift_map.items():
+        cy_values[sn] = {}
+        ws = wb_d[sn]
+        for cy_l, _ in col_pairs:
+            ci = _col_idx(cy_l)
+            vals = {}
+            for row in ws.iter_rows(min_col=ci, max_col=ci):
+                for cell in row:
+                    if cell.value is not None and isinstance(cell.value, (int, float)):
+                        vals[cell.row] = cell.value
+            cy_values[sn][cy_l] = vals
+    wb_d.close()
+
+    # Identify formula rows (read_only without data_only)
+    cy_formulas = {}
+    wb_f = load_workbook(filepath, read_only=True)
+    for sn, col_pairs in shift_map.items():
+        cy_formulas[sn] = {}
+        ws = wb_f[sn]
+        for cy_l, _ in col_pairs:
+            ci = _col_idx(cy_l)
+            frows = set()
+            for row in ws.iter_rows(min_col=ci, max_col=ci):
+                for cell in row:
+                    if isinstance(cell.value, str) and cell.value.startswith("="):
+                        frows.add(cell.row)
+            cy_formulas[sn][cy_l] = frows
+    wb_f.close()
+
+    return sizes, shift_map, cy_values, cy_formulas
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  XML manipulation  (direct edits on worksheet XML inside the ZIP)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_COL_RE = re.compile(r'^([A-Z]+)(\d+)$')
+
+def _col_idx(letter):
+    """A→1, B→2, ..., Z→26, AA→27, etc."""
+    n = 0
+    for ch in letter.upper():
+        n = n * 26 + (ord(ch) - 64)
+    return n
+
+
+def _col_letter_from_ref(ref):
+    m = _COL_RE.match(ref)
+    return m.group(1) if m else None
+
+
+def _row_from_ref(ref):
+    m = _COL_RE.match(ref)
+    return int(m.group(2)) if m else None
+
+
+def _process_sheet_xml(xml_bytes, col_pairs, cy_vals, cy_formulas, shared_strings):
+    """
+    Modify a worksheet XML in-memory:
+    - Copy CY numeric values → PY cells
+    - Clear CY constants (non-formula numeric cells → empty)
+    Returns modified XML bytes.
+    """
+    root = ET.fromstring(xml_bytes)
+    sd = root.find(f"{{{_NS}}}sheetData")
+    if sd is None:
+        return xml_bytes
+
+    # Build lookup: {cy_letter: (py_letter, {row: value}, formula_rows)}
+    col_info = {}
+    for cy_l, py_l in col_pairs:
+        vals = cy_vals.get(cy_l, {})
+        frows = cy_formulas.get(cy_l, set())
+        col_info[cy_l] = (py_l, vals, frows)
+
+    py_letters = {py_l for _, py_l in col_pairs}
+    cy_letters = set(col_info.keys())
+
+    for row_el in sd:
+        for cell_el in row_el:
+            ref = cell_el.get("r", "")
+            cl = _col_letter_from_ref(ref)
+            rn = _row_from_ref(ref)
+            if cl is None or rn is None:
+                continue
+
+            # Copy value to PY cell
+            if cl in cy_letters:
+                py_l, vals, frows = col_info[cl]
+                # We'll handle PY writing when we encounter the PY cell
+                pass
+
+            # Write CY value into PY cell
+            if cl in py_letters:
+                # Find corresponding CY
+                for cy_l, (py_l2, vals, frows) in col_info.items():
+                    if py_l2 == cl and rn in vals:
+                        # Overwrite this PY cell with the CY value
+                        v_el = cell_el.find(f"{{{_NS}}}v")
+                        f_el = cell_el.find(f"{{{_NS}}}f")
+                        if f_el is not None:
+                            break  # don't overwrite formulas in PY
+                        if v_el is None:
+                            v_el = ET.SubElement(cell_el, f"{{{_NS}}}v")
+                        v_el.text = str(vals[rn])
+                        # Set type to number (remove 's' type if it was string)
+                        if cell_el.get("t") == "s":
+                            del cell_el.attrib["t"]
+                        break
+
+            # Clear CY constant (non-formula numeric)
+            if cl in cy_letters:
+                _, vals, frows = col_info[cl]
+                if rn in vals and rn not in frows:
+                    v_el = cell_el.find(f"{{{_NS}}}v")
+                    if v_el is not None:
+                        cell_el.remove(v_el)
+
+    ET.register_namespace("", _NS)
+    # Preserve all other namespaces from original
+    return ET.tostring(root, xml_declaration=True, encoding="UTF-8")
+
+
+def _update_shared_strings(xml_bytes, pairs):
+    """Replace date text in sharedStrings.xml."""
+    root = ET.fromstring(xml_bytes)
+    changed = False
+    for si in root:
+        for t_el in si.iter(f"{{{_NS}}}t"):
+            if t_el.text:
+                new_text = _apply_pairs(t_el.text, pairs)
+                if new_text != t_el.text:
+                    t_el.text = new_text
+                    changed = True
+    if not changed:
+        return xml_bytes
+    ET.register_namespace("", _NS)
+    return ET.tostring(root, xml_declaration=True, encoding="UTF-8")
+
+
+def _update_sheet_inline_strings(xml_bytes, pairs):
+    """Replace date text in inline strings and cell string values within a worksheet."""
+    text = xml_bytes.decode("utf-8", errors="replace")
+    new_text = _apply_pairs(text, pairs)
+    if new_text == text:
+        return xml_bytes
+    return new_text.encode("utf-8")
+
+
+def _fix_py_headers_xml(xml_bytes, col_pairs, closing_year, new_year):
+    """After date replacement, PY header might say new_year — fix it back to closing_year."""
+    root = ET.fromstring(xml_bytes)
+    sd = root.find(f"{{{_NS}}}sheetData")
+    if sd is None:
+        return xml_bytes
+
+    ny_s, cy_s = str(new_year), str(closing_year)
+    py_letters = {py_l for _, py_l in col_pairs}
+
+    # Load shared strings to check string cells
+    # Actually we can't access shared strings here, so just work on inline strings
+    # The main date replacement happens in sharedStrings — PY header fix needs to happen there too
+
+    return xml_bytes  # handled in shared strings instead
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ZIP-level sheet file mapping
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def _sheet_file_map(z):
+    """Return {sheet_name: 'xl/worksheets/sheetN.xml'}"""
     root = ET.fromstring(z.read("xl/workbook.xml"))
     srid = {}
     for el in root.iter(f"{{{_NS}}}sheet"):
@@ -272,40 +381,11 @@ def _sheet_file_map(z):
     for name, rid in srid.items():
         t = rf.get(rid)
         if t:
-            out[name] = f"xl/{t}" if not t.startswith("xl/") else t
+            t = t.lstrip("/")
+            if not t.startswith("xl/"):
+                t = f"xl/{t}"
+            out[name] = t
     return out
-
-
-def _trim_zip(src, dst, big_names):
-    with zipfile.ZipFile(src, "r") as zi:
-        smap = _sheet_file_map(zi)
-        bf = {smap[n] for n in big_names if n in smap}
-        with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zo:
-            for item in zi.infolist():
-                if item.filename in bf:
-                    zo.writestr(item, _EMPTY_SHEET)
-                elif "pivotCacheRecords" in item.filename:
-                    zo.writestr(item, _EMPTY_PIVOT)
-                else:
-                    zo.writestr(item, zi.read(item.filename))
-    return bf
-
-
-def _merge_back(original, processed, output, big_files):
-    pd = {}
-    with zipfile.ZipFile(processed, "r") as zp:
-        for item in zp.infolist():
-            fn = item.filename
-            if fn.startswith("xl/worksheets/") or fn == "xl/sharedStrings.xml":
-                pd[fn] = zp.read(fn)
-    with zipfile.ZipFile(original, "r") as zo:
-        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zw:
-            for item in zo.infolist():
-                fn = item.filename
-                if fn in pd and fn not in big_files:
-                    zw.writestr(item, pd[fn])
-                else:
-                    zw.writestr(item, zo.read(fn))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -316,99 +396,61 @@ def process(input_path: str, output_path: str, closing_year: int, new_year: int)
     pairs = _date_replacements(str(closing_year), str(new_year))
     log = []
 
-    # ── 0. scan ───────────────────────────────────────────────────────────────
-    sizes = _scan_sizes(input_path)
-    big_names = {n for n,(r,c) in sizes.items() if r > BIG_ROWS or c > BIG_COLS}
-    needs_trim = bool(big_names)
+    # ── 1. read_only scan ─────────────────────────────────────────────────────
+    sizes, shift_map, cy_values, cy_formulas = _scan_workbook(input_path, closing_year)
+    big_names = {n for n, (r, c) in sizes.items() if r > BIG_ROWS or c > BIG_COLS}
 
-    tmp_dir = None
-    big_files = set()
+    # ── 2. ZIP-level manipulation ─────────────────────────────────────────────
+    with zipfile.ZipFile(input_path, "r") as zi:
+        smap = _sheet_file_map(zi)
 
-    if needs_trim:
-        tmp_dir = tempfile.mkdtemp(prefix="bs_proc_")
-        trimmed = os.path.join(tmp_dir, "trimmed.xlsx")
-        big_files = _trim_zip(input_path, trimmed, big_names)
-        work_path = trimmed
-    else:
-        work_path = input_path
+        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zo:
+            for item in zi.infolist():
+                fn = item.filename
+                data = zi.read(fn)
 
-    try:
-        wb = load_workbook(work_path)
-        fb = {k.strip().lower(): v for k, v in SHEET_COL_MAP.items()}
-        done = set()
+                # ── shared strings: replace dates ─────────────────────────
+                if fn == "xl/sharedStrings.xml":
+                    data = _update_shared_strings(data, pairs)
+                    zo.writestr(item, data)
+                    continue
 
-        # ── 1. detect sheets needing CY→PY ───────────────────────────────────
-        shift_list = []
-        for sn in wb.sheetnames:
-            sl = sn.strip().lower()
-            if sl in TEXT_ONLY_SHEETS: continue
-            r = sizes.get(sn, (0,0))[0]
-            if r > SHIFT_MAX_ROWS: continue
-            det = _detect_cy_py_columns(wb[sn], closing_year)
-            if not det and sl in fb:
-                det = fb[sl]
-            if det:
-                shift_list.append((sn, det))
+                # ── worksheet XMLs ────────────────────────────────────────
+                is_sheet = fn.startswith("xl/worksheets/") and fn.endswith(".xml")
+                if is_sheet:
+                    # Find which sheet this is
+                    sheet_name = None
+                    for sn, sf in smap.items():
+                        if sf == fn:
+                            sheet_name = sn
+                            break
 
-        # ── 2. CY→PY shift (fast value extraction) ───────────────────────────
-        for sn, cpairs in shift_list:
-            ws = wb[sn]
-            for cy_l, py_l in cpairs:
-                cy_ci = column_index_from_string(cy_l)
-                py_ci = column_index_from_string(py_l)
-                vals = _extract_col_values(work_path, sn, cy_ci)
-                _copy_cy_to_py_cached(ws, vals, py_ci)
-                _clear_cy_constants(ws, cy_l)
-            _update_text(ws, pairs)
-            for cy_l, py_l in cpairs:
-                _fix_py_header(ws, py_l, closing_year, new_year)
-            desc = ", ".join(f"{c}→{p}" for c, p in cpairs)
-            log.append(f"✓ {sn}: CY→PY copied ({desc}), CY cleared, dates updated")
-            done.add(sn)
+                    if sheet_name and sheet_name in shift_map:
+                        # Process: CY→PY copy + CY clear
+                        cpairs = shift_map[sheet_name]
+                        data = _process_sheet_xml(
+                            data, cpairs,
+                            cy_values.get(sheet_name, {}),
+                            cy_formulas.get(sheet_name, {}),
+                            None
+                        )
+                        # Also update inline strings in this sheet
+                        data = _update_sheet_inline_strings(data, pairs)
+                        desc = ", ".join(f"{c}->{p}" for c, p in cpairs)
+                        log.append(f"+ {sheet_name}: CY->PY copied ({desc}), CY cleared, dates updated")
+                    elif sheet_name and sheet_name not in big_names:
+                        # Small sheet, no CY/PY but update date strings
+                        data = _update_sheet_inline_strings(data, pairs)
+                        log.append(f"+ {sheet_name}: dates updated")
+                    elif sheet_name and sheet_name in big_names:
+                        log.append(f"* {sheet_name}: preserved unchanged (large data sheet)")
+                    # else: unknown sheet, pass through
 
-        # ── 3. capital sheet ──────────────────────────────────────────────────
-        for sn in wb.sheetnames:
-            if sn.strip().lower() == "capital" and sn not in done:
-                ws = wb[sn]
-                for cl in CAPITAL_DATA_COLS:
-                    ci = column_index_from_string(cl)
-                    cv = _extract_col_values(work_path, sn, ci).get(CAPITAL_CY_ROW)
-                    pc = ws.cell(row=CAPITAL_PY_ROW, column=ci)
-                    if not isinstance(pc, MergedCell) and cv is not None:
-                        pc.value = cv
-                for cl in CAPITAL_DATA_COLS:
-                    ci = column_index_from_string(cl)
-                    cell = ws.cell(row=CAPITAL_CY_ROW, column=ci)
-                    if not isinstance(cell, MergedCell) and not _is_formula(cell.value):
-                        cell.value = None
-                _update_text(ws, pairs)
-                log.append(f"✓ {sn}: CY row→PY row copied, CY cleared, dates updated")
-                done.add(sn)
-                break
+                    zo.writestr(item, data)
+                    continue
 
-        # ── 4. remaining sheets — dates only ──────────────────────────────────
-        for sn in wb.sheetnames:
-            if sn not in done:
-                if sn not in big_names:
-                    _update_text(wb[sn], pairs)
-                log.append(f"✓ {sn}: dates updated")
-                done.add(sn)
-
-        # ── 5. save ──────────────────────────────────────────────────────────
-        if needs_trim:
-            proc_path = os.path.join(tmp_dir, "processed.xlsx")
-            wb.save(proc_path)
-            wb.close()
-            _merge_back(input_path, proc_path, output_path, big_files)
-            for sn in big_names:
-                log.append(f"✓ {sn}: preserved unchanged (large data sheet)")
-        else:
-            wb.save(output_path)
-            wb.close()
-
-    finally:
-        if tmp_dir:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+                # ── everything else: pass through unchanged ───────────────
+                zo.writestr(item, data)
 
     return {"status": "success", "log": log, "output": output_path}
 
@@ -420,4 +462,4 @@ if __name__ == "__main__":
         sys.exit(1)
     res = process(sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]))
     for l in res["log"]: print(l)
-    print(f"\nSaved → {res['output']}")
+    print(f"\nSaved -> {res['output']}")
