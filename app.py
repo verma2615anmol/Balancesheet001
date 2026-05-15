@@ -1,3 +1,4 @@
+
 """
 BS Annual Updater — Multi-Tool CA Dashboard
 Auth + Upload-Based Plans + Admin Panel
@@ -1079,6 +1080,31 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
 .year-pill:hover{border-color:var(--brand)}
 .year-pill .future-tag{font-size:9px;background:#FDE68A;color:#92400E;padding:1px 5px;border-radius:4px;margin-left:4px;font-weight:700}
 
+.mat-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid rgba(0,0,0,.06);font-size:12px}
+.mat-row:last-child{border-bottom:none}
+.mat-row .ml{color:#78350F;font-weight:500}
+.mat-row .mv{font-weight:700;color:#92400E}
+.mat-row.mt{font-size:13px;padding:10px 0;border-top:1.5px solid #FDE68A;margin-top:4px}
+.mat-row.mt .ml{color:#451A03;font-weight:800}
+.mat-row.mt .mv{color:#B45309;font-size:14px}
+.mat-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;margin-top:10px}
+.mat-badge.normal{background:#ECFDF5;color:#065F46}
+.mat-badge.mat{background:#FEF3C7;color:#92400E}
+
+.at-table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:6px}
+.at-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:7px 10px;border-bottom:2px solid var(--border);background:#F9FAFB}
+.at-table td{padding:10px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.at-table tr:last-child td{border-bottom:none}
+.at-table .due{font-weight:700;color:var(--brand)}
+.at-table .pct{font-weight:800;font-size:14px;color:#1E40AF;text-align:center}
+.at-table .cumul{font-size:11px;color:var(--muted)}
+.at-table .amt-cell{font-weight:700;color:var(--ink);text-align:right}
+.at-table tr.overdue td{background:#FEF2F2}
+.at-table tr.upcoming td{background:#FFFBEB}
+.at-table tr.done td{background:#F0FDF4}
+
+.assessee-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;background:#EFF6FF;color:#1E40AF;margin-bottom:10px}
+
 @media print{nav,footer,.hero,.regime-toggle,.card:first-child,.btn-calc,.btn-reset,.print-btn,.toast,.year-pills{display:none!important}
              .result-panel{display:block!important}.calc-grid{display:block!important}
              .card{box-shadow:none!important;border:1px solid #ccc!important}}
@@ -1141,23 +1167,78 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
         <div class="row2">
           <div class="field">
             <label>Assessee Name <span style="font-weight:400;text-transform:none">(optional)</span></label>
-            <input type="text" id="assesseeName" placeholder="e.g. Rajesh Kumar" style="border:1.5px solid var(--border);border-radius:8px;padding:9px 12px;font-family:inherit;font-size:13px;width:100%"/>
+            <input type="text" id="assesseeName" placeholder="e.g. Rajesh Kumar / ABC Pvt Ltd" style="border:1.5px solid var(--border);border-radius:8px;padding:9px 12px;font-family:inherit;font-size:13px;width:100%"/>
           </div>
           <div class="field">
-            <label>Age Category</label>
-            <select id="ageCategory">
-              <option value="below60">Below 60 years</option>
-              <option value="senior">Senior Citizen (60-80)</option>
-              <option value="supersenior">Super Senior Citizen (80+)</option>
+            <label>Type of Assessee</label>
+            <select id="assesseeType" onchange="onAssesseeTypeChange()">
+              <optgroup label="── Individuals ──">
+                <option value="individual_below60" selected>Individual – Below 60 yrs</option>
+                <option value="individual_senior">Individual – Senior Citizen (60–80)</option>
+                <option value="individual_supersenior">Individual – Super Senior Citizen (80+)</option>
+                <option value="individual_nri">Individual – Non-Resident (NRI)</option>
+              </optgroup>
+              <optgroup label="── HUF ──">
+                <option value="huf">HUF (Hindu Undivided Family)</option>
+              </optgroup>
+              <optgroup label="── Firms / LLPs ──">
+                <option value="firm">Partnership Firm / LLP</option>
+              </optgroup>
+              <optgroup label="── Companies ──">
+                <option value="company_domestic">Domestic Company</option>
+                <option value="company_foreign">Foreign Company</option>
+                <option value="company_mfg_new">Domestic Company – New Mfg (Sec 115BAB)</option>
+                <option value="company_small">Domestic Company – Small (≤ ₹400 Cr, Sec 115BA)</option>
+              </optgroup>
+              <optgroup label="── Others ──">
+                <option value="aop_boi">AOP / BOI</option>
+                <option value="cooperative">Co-operative Society</option>
+                <option value="trust_aop">Trust / AOP (Registered)</option>
+                <option value="local_authority">Local Authority</option>
+                <option value="artificial_person">Artificial Juridical Person</option>
+              </optgroup>
             </select>
           </div>
         </div>
-        <div class="field">
-          <label>Residential Status</label>
-          <select id="residentialStatus" style="max-width:280px">
-            <option value="resident">Resident</option>
-            <option value="nri">Non-Resident</option>
-          </select>
+        <!-- Individual-only fields -->
+        <div id="individualFields">
+          <div class="field">
+            <label>Residential Status</label>
+            <select id="residentialStatus" style="max-width:280px">
+              <option value="resident">Resident</option>
+              <option value="nri">Non-Resident</option>
+            </select>
+          </div>
+        </div>
+        <!-- Company-specific fields -->
+        <div id="companyFields" style="display:none">
+          <div class="row2">
+            <div class="field">
+              <label>Turnover / Gross Receipts (₹)</label>
+              <input type="number" id="companyTurnover" placeholder="0" min="0"/>
+              <p class="hint">Required for MAT computation (book profits)</p>
+            </div>
+            <div class="field">
+              <label>Book Profit u/s 115JB (₹)</label>
+              <input type="number" id="bookProfit" placeholder="0" min="0"/>
+              <p class="hint">Net profit per P&amp;L + adjustments u/s 115JB</p>
+            </div>
+          </div>
+          <div id="matInfo" style="padding:10px 14px;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;font-size:11px;color:#1E40AF;margin-top:4px">
+            <strong>ℹ️ MAT u/s 115JB:</strong> Tax payable is higher of normal tax or 15% of Book Profit (+ surcharge + cess).
+          </div>
+        </div>
+        <!-- Firm-specific -->
+        <div id="firmFields" style="display:none">
+          <div id="firmInfo" style="padding:10px 14px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:11px;color:#065F46;margin-top:4px">
+            <strong>ℹ️ Firm / LLP Tax Rate:</strong> Flat 30% on total income + surcharge (12% if income > ₹1 Cr) + cess 4%. No slab benefit. AMT @ 18.5% of Adjusted Total Income applies.
+          </div>
+        </div>
+        <!-- Co-op / AOP / Trust -->
+        <div id="aopFields" style="display:none">
+          <div id="aopInfo" style="padding:10px 14px;background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;font-size:11px;color:#92400E;margin-top:4px">
+            <strong>ℹ️ AOP / BOI / Co-op Society:</strong> Taxed at applicable slab rates or flat rate as per specific provisions. AMT @ 18.5% may apply.
+          </div>
         </div>
       </div>
     </div>
@@ -1335,6 +1416,55 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
       </div>
     </div>
 
+    <!-- ──── MAT / AMT ──── -->
+    <div class="card" id="matAmtCard" style="display:none">
+      <div class="card-head">
+        <div class="icon" style="background:#FEF3C7">⚖️</div>
+        <div><h2 id="matAmtCardTitle">MAT / AMT Computation</h2><p id="matAmtCardSub">Minimum Alternate Tax u/s 115JB / 115JC</p></div>
+      </div>
+      <div class="card-body">
+        <!-- MAT (Companies) -->
+        <div id="matSection">
+          <div class="section-title">📋 MAT u/s 115JB — Companies</div>
+          <div class="row2">
+            <div class="field">
+              <label>Book Profit u/s 115JB (₹)</label>
+              <input type="number" id="matBookProfit" placeholder="0" min="0" oninput="computeMatAmt()"/>
+              <p class="hint">Net profit per P&amp;L + mandatory add-backs (Sch VII items)</p>
+            </div>
+            <div class="field">
+              <label>MAT Rate</label>
+              <select id="matRate" onchange="computeMatAmt()">
+                <option value="0.15" selected>15% – Domestic Company (general)</option>
+                <option value="0.09">9% – New Mfg Co. u/s 115BAB</option>
+                <option value="0.075">7.5% – Co. in IFSC u/s 115A(4)</option>
+              </select>
+            </div>
+          </div>
+          <div id="matResult" style="display:none;margin-top:12px;padding:14px;background:#FFFBEB;border:1.5px solid #FDE68A;border-radius:10px">
+            <div style="font-size:12px;font-weight:700;color:#92400E;margin-bottom:8px">MAT Computation</div>
+            <div id="matResultRows"></div>
+          </div>
+        </div>
+        <!-- AMT (Non-companies) -->
+        <div id="amtSection" style="display:none">
+          <div class="section-title">📋 AMT u/s 115JC — Firms / LLPs / Individuals / HUF / AOP</div>
+          <div class="field">
+            <label>Adjusted Total Income (ATI) for AMT (₹)</label>
+            <input type="number" id="amtAti" placeholder="0" min="0" oninput="computeMatAmt()"/>
+            <p class="hint">GTI + deductions claimed u/s 10AA / 35AD / 80H–80RRB added back (u/s 115JC)</p>
+          </div>
+          <div id="amtResult" style="display:none;margin-top:12px;padding:14px;background:#FFFBEB;border:1.5px solid #FDE68A;border-radius:10px">
+            <div style="font-size:12px;font-weight:700;color:#92400E;margin-bottom:8px">AMT Computation</div>
+            <div id="amtResultRows"></div>
+          </div>
+        </div>
+        <div style="margin-top:12px;padding:10px 14px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:11px;color:#065F46">
+          <strong>📌 Credit:</strong> If normal tax &gt; MAT/AMT, MAT/AMT credit u/s 115JAA/115JD is carried forward for up to 15 years and can be set off in future years when normal tax exceeds MAT/AMT.
+        </div>
+      </div>
+    </div>
+
     <!-- ──── TDS / TCS / ADVANCE TAX ──── -->
     <div class="card">
       <div class="card-head">
@@ -1427,6 +1557,36 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
         retained PY 2025-26 slab rates without changes. These rates are subject to any future amendments or notifications
         by the Government. Always verify with the latest Finance Act before finalizing.
       </div>
+
+      <!-- ──── MAT/AMT RESULT IN RESULTS PANEL ──── -->
+      <div id="matAmtResultCard" style="display:none;margin-top:16px">
+        <div class="card">
+          <div class="card-head">
+            <div class="icon" style="background:#FEF3C7">⚖️</div>
+            <div><h2 id="matAmtResTitle">MAT / AMT Summary</h2><p>Minimum Alternate Tax computation result</p></div>
+          </div>
+          <div class="card-body" id="matAmtResBody"></div>
+        </div>
+      </div>
+
+      <!-- ──── ADVANCE TAX SCHEDULE (PY 2026-27 only) ──── -->
+      <div id="advanceTaxCard" style="display:none;margin-top:16px">
+        <div class="card">
+          <div class="card-head">
+            <div class="icon" style="background:#EFF6FF">📅</div>
+            <div><h2>Advance Tax Schedule — PY 2026-27</h2><p>Instalment-wise liability u/s 208 &amp; 211</p></div>
+          </div>
+          <div class="card-body">
+            <div style="padding:10px 14px;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;font-size:11px;color:#1E40AF;margin-bottom:14px">
+              <strong>ℹ️ Who must pay?</strong> Every assessee whose estimated tax liability for the year is ₹10,000 or more (after TDS/TCS) must pay advance tax. Senior citizens (60+) with no business income are exempt u/s 207.
+            </div>
+            <div id="advanceTaxTable"></div>
+            <div style="margin-top:14px;padding:10px 14px;background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;font-size:11px;color:#92400E">
+              <strong>⚠️ Interest for default:</strong> u/s 234B — 1% per month on 90% of assessed tax not paid as advance tax. u/s 234C — 1% per month for 3 months on shortfall per instalment (single month for last instalment). u/s 234A — 1% per month on self-assessment tax if return filed late.
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Before calculation: show slab reference -->
@@ -1478,12 +1638,104 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
 
 <script>
 /* ═══════════════════════════════════════════════════════════════════════
-   INCOME TAX CALCULATOR — Multi-Year Engine
+   INCOME TAX CALCULATOR — Multi-Year Engine (Enhanced)
    PY 2023-24 | PY 2024-25 | PY 2025-26 | PY 2026-27 (upcoming)
+   Features: All Assessee Types · MAT/AMT · Advance Tax Schedule
    ═══════════════════════════════════════════════════════════════════════ */
 
 let currentRegime = 'new';
 let currentYear = '2025-26';
+
+/* ── ASSESSEE TYPE CONFIGURATION ──────────────────────────────────── */
+const ASSESSEE_CFG = {
+  // Individuals
+  individual_below60:    { label:'Individual – Below 60', group:'individual', age:'below60', canAmt:true },
+  individual_senior:     { label:'Individual – Senior Citizen (60–80)', group:'individual', age:'senior', canAmt:true },
+  individual_supersenior:{ label:'Individual – Super Senior (80+)', group:'individual', age:'supersenior', canAmt:true },
+  individual_nri:        { label:'Individual – NRI', group:'individual', age:'below60', isNRI:true, canAmt:true },
+  // HUF
+  huf:                   { label:'HUF', group:'individual', age:'below60', canAmt:true },
+  // Firms / LLPs
+  firm:                  { label:'Firm / LLP', group:'firm', flatRate:0.30, surchargeThreshold:1e7, surchargeRate:0.12, canAmt:true },
+  // Companies
+  company_domestic:      { label:'Domestic Company', group:'company', flatRate:0.22, surchargeThreshold:1e7, surchargeRateLow:0.07, surchargeRateHigh:0.12, canMat:true },
+  company_foreign:       { label:'Foreign Company', group:'company', flatRate:0.40, surchargeRateLow:0.02, surchargeRateHigh:0.05, surchargeThreshold:1e7, canMat:true },
+  company_mfg_new:       { label:'New Mfg Co. u/s 115BAB', group:'company', flatRate:0.15, surchargeRate:0.10, matRate:0.09, canMat:true },
+  company_small:         { label:'Domestic Co. ≤₹400Cr (Sec 115BA)', group:'company', flatRate:0.25, surchargeRateLow:0.07, surchargeRateHigh:0.12, surchargeThreshold:1e7, canMat:true },
+  // Others
+  aop_boi:               { label:'AOP / BOI', group:'individual', age:'below60', canAmt:true },
+  cooperative:           { label:'Co-operative Society', group:'coop', canAmt:true },
+  trust_aop:             { label:'Trust / AOP (Registered)', group:'individual', age:'below60', canAmt:true },
+  local_authority:       { label:'Local Authority', group:'local', flatRate:0.30, canAmt:false },
+  artificial_person:     { label:'Artificial Juridical Person', group:'individual', age:'below60', canAmt:true },
+};
+
+function getAssesseeCfg() {
+  const t = document.getElementById('assesseeType').value;
+  return ASSESSEE_CFG[t] || ASSESSEE_CFG['individual_below60'];
+}
+
+function onAssesseeTypeChange() {
+  const t = document.getElementById('assesseeType').value;
+  const ac = ASSESSEE_CFG[t];
+
+  // Show/hide individual vs company/firm fields
+  const isInd = ac.group === 'individual';
+  const isCo  = ac.group === 'company';
+  const isFirm= ac.group === 'firm';
+  const isAop = ac.group === 'aop_boi' || t === 'cooperative' || t === 'local_authority';
+
+  document.getElementById('individualFields').style.display  = isInd ? 'block' : 'none';
+  document.getElementById('companyFields').style.display     = isCo  ? 'block' : 'none';
+  document.getElementById('firmFields').style.display        = isFirm? 'block' : 'none';
+  document.getElementById('aopFields').style.display         = (isAop && !isInd && !isCo && !isFirm) ? 'block' : 'none';
+
+  // Show/hide regime toggle (not applicable for companies/firms)
+  const regimeToggle = document.querySelector('.regime-toggle');
+  if (isCo || isFirm || t === 'local_authority') {
+    regimeToggle.style.display = 'none';
+    currentRegime = 'new'; // reset
+  } else {
+    regimeToggle.style.display = 'flex';
+  }
+
+  // Deductions card
+  const dc = document.getElementById('deductions-card');
+  if (isCo || isFirm) {
+    dc.style.opacity = '0.3'; dc.style.pointerEvents = 'none';
+  } else {
+    dc.style.opacity = currentRegime === 'new' ? '0.4' : '1';
+    dc.style.pointerEvents = currentRegime === 'new' ? 'none' : 'auto';
+  }
+
+  // MAT/AMT card
+  const matCard = document.getElementById('matAmtCard');
+  if (ac.canMat) {
+    matCard.style.display = 'block';
+    document.getElementById('matSection').style.display = 'block';
+    document.getElementById('amtSection').style.display = 'none';
+    document.getElementById('matAmtCardTitle').textContent = 'MAT Computation';
+    document.getElementById('matAmtCardSub').textContent = 'Minimum Alternate Tax u/s 115JB';
+    // Set MAT rate based on company type
+    const mr = document.getElementById('matRate');
+    if (t === 'company_mfg_new') mr.value = '0.09';
+    else mr.value = '0.15';
+  } else if (ac.canAmt && !isInd && t !== 'huf') {
+    matCard.style.display = 'block';
+    document.getElementById('matSection').style.display = 'none';
+    document.getElementById('amtSection').style.display = 'block';
+    document.getElementById('matAmtCardTitle').textContent = 'AMT Computation';
+    document.getElementById('matAmtCardSub').textContent = 'Alternate Minimum Tax u/s 115JC';
+  } else {
+    // For individuals/HUF, AMT only applies when claiming certain deductions
+    matCard.style.display = 'none';
+  }
+
+  // NRI status
+  if (ac.isNRI) document.getElementById('residentialStatus').value = 'nri';
+
+  computeMatAmt();
+}
 
 /* ── YEAR-SPECIFIC TAX CONFIGURATIONS ─────────────────────────────── */
 const YEAR_CONFIG = {
@@ -1505,7 +1757,7 @@ const YEAR_CONFIG = {
     stcg111aRate: 0.15,
     ltcg112aRate: 0.10,
     ltcg112aExempt: 100000,
-    ltcgOtherRate: 0.20, // with indexation
+    ltcgOtherRate: 0.20,
     ltcgOtherLabel: '20% (with indexation)',
     maxSurchargeNew: 0.25,
   },
@@ -1514,7 +1766,7 @@ const YEAR_CONFIG = {
     ayLabel: 'AY 2025-26',
     isFuture: false,
     stdDeduction: 75000,
-    hasTransitional: true, // PY 2024-25 has pre/post July 23 2024 split
+    hasTransitional: true,
     newSlabs: [
       { upto: 300000,  rate: 0 },
       { upto: 700000,  rate: 0.05 },
@@ -1525,13 +1777,11 @@ const YEAR_CONFIG = {
     ],
     rebateNew: { limit: 700000, max: 25000 },
     rebateOld: { limit: 500000, max: 12500 },
-    // Post-23 July 2024 rates (new budget rates)
     stcg111aRate: 0.20,
     ltcg112aRate: 0.125,
     ltcg112aExempt: 125000,
     ltcgOtherRate: 0.125,
     ltcgOtherLabel: '12.5% (post July 2024)',
-    // Pre-23 July 2024 rates (old rates)
     stcg111aRateOld: 0.15,
     ltcg112aRateOld: 0.10,
     ltcg112aExemptOld: 100000,
@@ -1587,7 +1837,7 @@ const YEAR_CONFIG = {
   },
 };
 
-/* ── OLD REGIME SLABS (unchanged across all years) ────────────────── */
+/* ── OLD REGIME SLABS ─────────────────────────────────────────────── */
 const OLD_SLABS_BELOW60 = [
   { upto: 250000,  rate: 0 },
   { upto: 500000,  rate: 0.05 },
@@ -1605,9 +1855,17 @@ const OLD_SLABS_SUPERSENIOR = [
   { upto: 1000000, rate: 0.20 },
   { upto: Infinity, rate: 0.30 },
 ];
+/* Co-operative Society slabs */
+const COOP_SLABS = [
+  { upto: 10000,  rate: 0.10 },
+  { upto: 20000,  rate: 0.20 },
+  { upto: Infinity, rate: 0.30 },
+];
 
 function getOldSlabs() {
-  const age = document.getElementById('ageCategory').value;
+  const ac = getAssesseeCfg();
+  if (ac.group === 'coop') return COOP_SLABS;
+  const age = ac.age || 'below60';
   if (age === 'supersenior') return OLD_SLABS_SUPERSENIOR;
   if (age === 'senior') return OLD_SLABS_SENIOR;
   return OLD_SLABS_BELOW60;
@@ -1622,17 +1880,14 @@ function setYear(yr) {
   event.currentTarget.classList.add('active');
 
   const c = cfg();
-  // Update std deduction default
   document.getElementById('stdDeduction').value = c.stdDeduction;
   document.getElementById('stdDedHint').textContent =
     c.stdDeduction === 50000 ? '₹50,000 for PY 2023-24' : '₹75,000 for PY 2024-25 onwards';
 
-  // Show/hide transitional pre-July 2024 fields
   const isTrans = c.hasTransitional || false;
   document.getElementById('transitionalNotice').style.display = isTrans ? 'block' : 'none';
   document.getElementById('preJulyFields').style.display = isTrans ? 'block' : 'none';
 
-  // Update labels for main CG fields based on whether transitional
   if (isTrans) {
     document.getElementById('stcg111aLabel').textContent = 'STCG 111A — Post-July (equity) @ 20%';
     document.getElementById('ltcg112aLabel').textContent = 'LTCG 112A — Post-July (equity) @ 12.5%';
@@ -1643,17 +1898,14 @@ function setYear(yr) {
     document.getElementById('ltcgOtherLabel').textContent = 'LTCG — Other (property, debt etc.)';
   }
 
-  // Update hints for capital gains rates
   document.getElementById('stcgRateHint').textContent =
     'Taxed at ' + (c.stcg111aRate * 100) + '%' + (isTrans ? ' (post 23 July 2024)' : '');
   document.getElementById('ltcgRateHint').textContent =
     (c.ltcg112aRate * 100) + '% above ₹' + (c.ltcg112aExempt / 100000).toFixed(2).replace('.00','') + ' lakh exemption';
   document.getElementById('ltcgOtherHint').textContent = c.ltcgOtherLabel;
 
-  // Future year note
   document.getElementById('futureYearNote').style.display = c.isFuture ? 'block' : 'none';
 
-  // Clear pre-July fields when switching away
   if (!isTrans) {
     ['stcg111aPreJuly','ltcg112aPreJuly','ltcgOtherPreJuly'].forEach(id => {
       const el = document.getElementById(id);
@@ -1661,12 +1913,12 @@ function setYear(yr) {
     });
   }
 
-  // Update reference slab tables
   updateRefSlabs();
-
-  // Hide results on year change
   document.getElementById('resultPanel').classList.remove('show');
   document.getElementById('preCalcInfo').style.display = 'block';
+  // Hide advance tax card until recalculated
+  document.getElementById('advanceTaxCard').style.display = 'none';
+  document.getElementById('matAmtResultCard').style.display = 'none';
 }
 
 function setRegime(r) {
@@ -1699,7 +1951,6 @@ function updateRefSlabs() {
   h += '<p class="hint" style="margin-top:10px">' + rebateInfo + ' Standard deduction ₹' + c.stdDeduction.toLocaleString('en-IN') + ' for salaried.</p>';
   document.getElementById('refSlabBody').innerHTML = h;
 
-  // Special rates reference
   document.getElementById('refSpecialSub').textContent = c.label;
   let sp = '<table class="slab-table"><thead><tr><th>Type</th><th style="text-align:right">Rate</th></tr></thead><tbody>';
   sp += '<tr><td>STCG u/s 111A (equity, STT paid)</td><td class="amt">' + (c.stcg111aRate*100) + '%</td></tr>';
@@ -1749,8 +2000,6 @@ function calcSurcharge(tax, totalIncome, isNewRegime) {
     else rate = 0.37;
   }
   let surcharge = tax * rate;
-
-  // Marginal relief
   const thresholds = [5000000, 10000000, 20000000, 50000000];
   for (const th of thresholds) {
     if (totalIncome > th && totalIncome <= th * 1.2) {
@@ -1774,11 +2023,172 @@ function calcSurchargeCapped(tax, totalIncome) {
   return tax * rate;
 }
 
+/* ── Company / Firm tax computation ───────────────────────────────── */
+function computeForCompanyFirm(ac, totalIncome) {
+  const flatRate = ac.flatRate;
+  let baseTax = totalIncome * flatRate;
+
+  // Surcharge for companies
+  let surcharge = 0;
+  if (ac.group === 'company') {
+    const low = ac.surchargeRateLow || 0;
+    const high = ac.surchargeRateHigh || 0;
+    const th = ac.surchargeThreshold || 1e7;
+    if (totalIncome > th) surcharge = baseTax * high;
+    else if (totalIncome > 1e7) surcharge = baseTax * low;
+    else surcharge = baseTax * low;
+  } else if (ac.group === 'firm') {
+    if (totalIncome > 1e7) surcharge = baseTax * (ac.surchargeRate || 0.12);
+  }
+  const cess = (baseTax + surcharge) * 0.04;
+  const totalTax = baseTax + surcharge + cess;
+  return { baseTax, surcharge, cess, totalTax, flatRate };
+}
+
+/* ── MAT / AMT Computation ────────────────────────────────────────── */
+function computeMatAmt() {
+  const t = document.getElementById('assesseeType').value;
+  const ac = ASSESSEE_CFG[t];
+  if (!ac) return;
+
+  if (ac.canMat) {
+    const bookProfit = parseFloat(document.getElementById('matBookProfit').value) || 0;
+    if (!bookProfit) { document.getElementById('matResult').style.display='none'; return; }
+    const matRate = parseFloat(document.getElementById('matRate').value) || 0.15;
+    const matBase = bookProfit * matRate;
+    let surcharge = 0;
+    if (ac.surchargeRateLow) surcharge = matBase * (bookProfit > 1e7 ? (ac.surchargeRateHigh||0) : (ac.surchargeRateLow||0));
+    const matCess = (matBase + surcharge) * 0.04;
+    const matTotal = matBase + surcharge + matCess;
+    let h = '';
+    h += `<div class="mat-row"><span class="ml">Book Profit u/s 115JB</span><span class="mv">${fmt(bookProfit)}</span></div>`;
+    h += `<div class="mat-row"><span class="ml">MAT Rate</span><span class="mv">${(matRate*100).toFixed(1)}%</span></div>`;
+    h += `<div class="mat-row"><span class="ml">MAT (before surcharge/cess)</span><span class="mv">${fmt(matBase)}</span></div>`;
+    if (surcharge) h += `<div class="mat-row"><span class="ml">Surcharge</span><span class="mv">${fmt(surcharge)}</span></div>`;
+    h += `<div class="mat-row"><span class="ml">Cess @ 4%</span><span class="mv">${fmt(matCess)}</span></div>`;
+    h += `<div class="mat-row mt"><span class="ml">Total MAT Payable</span><span class="mv">${fmt(matTotal)}</span></div>`;
+    h += `<p style="font-size:11px;margin-top:8px;color:#78350F">Tax payable = <strong>MAX(Normal Tax, MAT)</strong>. If MAT &gt; Normal Tax, excess = MAT Credit u/s 115JAA (carry fwd 15 yrs).</p>`;
+    document.getElementById('matResultRows').innerHTML = h;
+    document.getElementById('matResult').style.display = 'block';
+
+  } else if (ac.canAmt && document.getElementById('amtSection').style.display !== 'none') {
+    const ati = parseFloat(document.getElementById('amtAti').value) || 0;
+    if (!ati) { document.getElementById('amtResult').style.display='none'; return; }
+    const amtBase = ati * 0.185;
+    let surcharge = 0;
+    if (ac.group === 'firm' && ati > 1e7) surcharge = amtBase * 0.12;
+    const amtCess = (amtBase + surcharge) * 0.04;
+    const amtTotal = amtBase + surcharge + amtCess;
+    let h = '';
+    h += `<div class="mat-row"><span class="ml">Adjusted Total Income (ATI)</span><span class="mv">${fmt(ati)}</span></div>`;
+    h += `<div class="mat-row"><span class="ml">AMT Rate</span><span class="mv">18.5%</span></div>`;
+    h += `<div class="mat-row"><span class="ml">AMT (before surcharge/cess)</span><span class="mv">${fmt(amtBase)}</span></div>`;
+    if (surcharge) h += `<div class="mat-row"><span class="ml">Surcharge</span><span class="mv">${fmt(surcharge)}</span></div>`;
+    h += `<div class="mat-row"><span class="ml">Cess @ 4%</span><span class="mv">${fmt(amtCess)}</span></div>`;
+    h += `<div class="mat-row mt"><span class="ml">Total AMT Payable</span><span class="mv">${fmt(amtTotal)}</span></div>`;
+    h += `<p style="font-size:11px;margin-top:8px;color:#78350F">Tax payable = <strong>MAX(Normal Tax, AMT)</strong>. If AMT &gt; Normal Tax, excess = AMT Credit u/s 115JD (carry fwd 15 yrs).</p>`;
+    document.getElementById('amtResultRows').innerHTML = h;
+    document.getElementById('amtResult').style.display = 'block';
+  }
+}
+
+/* ── Advance Tax Schedule ─────────────────────────────────────────── */
+function renderAdvanceTaxSchedule(totalTax, tdsPaid, tcsPaid) {
+  // Only for PY 2026-27
+  if (currentYear !== '2026-27') {
+    document.getElementById('advanceTaxCard').style.display = 'none';
+    return;
+  }
+  const netLiability = Math.max(0, totalTax - tdsPaid - tcsPaid);
+  if (netLiability < 10000) {
+    document.getElementById('advanceTaxCard').style.display = 'none';
+    return;
+  }
+
+  // Instalments for PY 2026-27 (u/s 211)
+  const today = new Date();
+  const instalments = [
+    { due: new Date('2026-06-15'), cumPct: 15,  pct: 15,  label: '1st Instalment' },
+    { due: new Date('2026-09-15'), cumPct: 45,  pct: 30,  label: '2nd Instalment' },
+    { due: new Date('2026-12-15'), cumPct: 75,  pct: 30,  label: '3rd Instalment' },
+    { due: new Date('2027-03-15'), cumPct: 100, pct: 25,  label: '4th Instalment' },
+  ];
+
+  // For presumptive income assessees (Sec 44AD/44ADA) — single instalment
+  const isPrespumptive = false; // could add toggle later
+
+  let h = `<div style="margin-bottom:12px;padding:10px 14px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:11px;color:#065F46">
+    <strong>💡 Total Tax Liability (after TDS/TCS):</strong> ${fmt(netLiability)} — Advance Tax required (≥ ₹10,000)
+  </div>`;
+
+  h += `<table class="at-table">
+    <thead>
+      <tr>
+        <th>Instalment</th>
+        <th style="text-align:center">% of Tax</th>
+        <th>Due Date</th>
+        <th style="text-align:right">Amount Due</th>
+        <th style="text-align:right">Cumulative</th>
+      </tr>
+    </thead>
+    <tbody>`;
+
+  let cumAmount = 0;
+  instalments.forEach((inst, idx) => {
+    const amt = Math.round(netLiability * inst.pct / 100);
+    const cumAmt = Math.round(netLiability * inst.cumPct / 100);
+    cumAmount = cumAmt;
+
+    const isPast = today > inst.due;
+    const isNext = !isPast && (idx === 0 || today > instalments[idx-1].due);
+    const rowClass = isPast ? 'overdue' : (isNext ? 'upcoming' : '');
+    const statusBadge = isPast
+      ? '<span style="font-size:10px;background:#FEE2E2;color:#B91C1C;padding:2px 7px;border-radius:10px;margin-left:6px;font-weight:700">Due</span>'
+      : (isNext ? '<span style="font-size:10px;background:#FEF3C7;color:#92400E;padding:2px 7px;border-radius:10px;margin-left:6px;font-weight:700">Next</span>' : '');
+
+    const dueDateStr = inst.due.toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' });
+
+    h += `<tr class="${rowClass}">
+      <td><strong>${inst.label}</strong>${statusBadge}</td>
+      <td class="pct">${inst.pct}%</td>
+      <td class="due">${dueDateStr}</td>
+      <td class="amt-cell">${fmt(amt)}</td>
+      <td class="amt-cell"><span class="cumul">Cumul: </span>${fmt(cumAmt)}</td>
+    </tr>`;
+  });
+
+  h += `</tbody>
+    <tfoot>
+      <tr style="background:#EFF6FF;font-weight:800">
+        <td colspan="3" style="padding:10px;font-size:12px">Total Advance Tax</td>
+        <td></td>
+        <td class="amt-cell" style="color:var(--brand);font-size:13px">${fmt(netLiability)}</td>
+      </tr>
+    </tfoot>
+  </table>`;
+
+  h += `<div style="margin-top:12px;font-size:11px;color:var(--muted);line-height:1.7">
+    <strong>📌 Notes:</strong>
+    <ul style="margin:6px 0 0 16px;padding:0">
+      <li>Instalments calculated on <em>estimated</em> total income for PY 2026-27.</li>
+      <li>Assessees under Sec 44AD / 44ADA (presumptive) may pay <strong>entire advance tax by 15 March 2027</strong> (single instalment).</li>
+      <li>Senior citizens (60+) with <em>no</em> business income are <strong>exempt</strong> from advance tax u/s 207.</li>
+      <li>If advance tax paid &lt; 90% of assessed tax → interest u/s 234B @ 1%/month on shortfall.</li>
+      <li>Shortfall in each instalment → interest u/s 234C @ 1%/month for 3 months (1 month for last instalment).</li>
+    </ul>
+  </div>`;
+
+  document.getElementById('advanceTaxTable').innerHTML = h;
+  document.getElementById('advanceTaxCard').style.display = 'block';
+}
+
 /* ── Main Computation ─────────────────────────────────────────────── */
 function computeForRegime(isNew) {
   const c = cfg();
+  const ac = getAssesseeCfg();
+  const t = document.getElementById('assesseeType').value;
   const name = document.getElementById('assesseeName').value.trim();
-  const isResident = document.getElementById('residentialStatus').value === 'resident';
+  const isResident = (ac.isNRI || document.getElementById('residentialStatus').value === 'nri') ? false : true;
 
   // Head 1: Salary
   const grossSalary = v('grossSalary');
@@ -1796,13 +2206,12 @@ function computeForRegime(isNew) {
   // Head 3: Business
   const businessIncome = v('businessIncome');
 
-  // Head 4: Capital Gains — with PY 2024-25 transitional support
+  // Head 4: Capital Gains
   const stcg111a = v('stcg111a');
   const stcgOther = v('stcgOther');
   const ltcg112a = v('ltcg112a');
   const ltcgOther = v('ltcgOther');
 
-  // Pre-July 2024 gains (only relevant for PY 2024-25)
   const isTrans = c.hasTransitional || false;
   const stcg111aPreJuly = isTrans ? v('stcg111aPreJuly') : 0;
   const ltcg112aPreJuly = isTrans ? v('ltcg112aPreJuly') : 0;
@@ -1812,14 +2221,20 @@ function computeForRegime(isNew) {
   const otherIncome = v('otherIncome');
   const winnings = v('winningsIncome');
 
-  // Gross Total Income (normal portion)
+  // For Company/Firm — compute flat rate tax
+  const isCo  = ac.group === 'company';
+  const isFirm = ac.group === 'firm';
+  const isCoop = ac.group === 'coop';
+
   const normalIncome = salaryIncome + Math.max(0, houseIncome) + businessIncome + stcgOther + otherIncome;
   const normalAfterLoss = Math.max(0, normalIncome + houseLossCapped);
 
   // Deductions
   let totalDeductions = 0;
   let ded80ccd2 = v('ded80ccd2');
-  if (isNew) {
+  if (isCo || isFirm) {
+    totalDeductions = 0; // not applicable
+  } else if (isNew) {
     totalDeductions = ded80ccd2;
   } else {
     totalDeductions = Math.min(v('ded80c'), 150000) + Math.min(v('ded80ccd1b'), 50000) +
@@ -1828,86 +2243,131 @@ function computeForRegime(isNew) {
 
   const normalTaxable = Math.max(0, normalAfterLoss - totalDeductions);
 
-  // Tax on normal income
-  const slabs = isNew ? c.newSlabs : getOldSlabs();
-  const slabResult = calcSlabTax(normalTaxable, slabs);
-  let normalTax = slabResult.tax;
+  let normalTax, surchargeNormal, surchargeSpecial, totalSurcharge, slabResult;
 
-  // Rebate u/s 87A
-  let rebate87a = 0;
-  if (isResident) {
-    const rebateCfg = isNew ? c.rebateNew : c.rebateOld;
-    if (normalTaxable <= rebateCfg.limit) {
-      rebate87a = Math.min(normalTax, rebateCfg.max);
+  if (isCo || isFirm) {
+    // Flat rate for companies and firms
+    const flatRes = computeForCompanyFirm(ac, normalTaxable);
+    normalTax = flatRes.totalTax;
+    surchargeNormal = flatRes.surcharge;
+    surchargeSpecial = 0;
+    totalSurcharge = flatRes.surcharge;
+    slabResult = { tax: flatRes.baseTax, breakup: [{ from:0, to:normalTaxable, rate:ac.flatRate, amount:normalTaxable, tax:flatRes.baseTax }] };
+  } else {
+    // Slab-based tax
+    const slabs = isNew ? c.newSlabs : getOldSlabs();
+    slabResult = calcSlabTax(normalTaxable, slabs);
+    normalTax = slabResult.tax;
+
+    // Rebate u/s 87A
+    let rebate87a = 0;
+    if (isResident && !isCo && !isFirm) {
+      const rebateCfg = isNew ? c.rebateNew : c.rebateOld;
+      if (normalTaxable <= rebateCfg.limit) {
+        rebate87a = Math.min(normalTax, rebateCfg.max);
+      }
     }
-  }
-  normalTax = Math.max(0, normalTax - rebate87a);
+    normalTax = Math.max(0, normalTax - rebate87a);
 
-  // ── Special rate taxes ──────────────────────────────────────────
-  // POST-July (or full year for non-transitional years)
+    // Special rate taxes
+    const taxSTCG111A = stcg111a * c.stcg111aRate;
+    const taxLTCG112A = Math.max(0, ltcg112a - c.ltcg112aExempt) * c.ltcg112aRate;
+    const taxLTCGOther = ltcgOther * c.ltcgOtherRate;
+    const taxWinnings = winnings * 0.30;
+
+    let taxSTCG111APreJuly = 0, taxLTCG112APreJuly = 0, taxLTCGOtherPreJuly = 0;
+    let ltcg112aPreJulyExemptAmt = 0;
+    if (isTrans) {
+      taxSTCG111APreJuly = stcg111aPreJuly * c.stcg111aRateOld;
+      ltcg112aPreJulyExemptAmt = Math.min(ltcg112aPreJuly, c.ltcg112aExemptOld);
+      taxLTCG112APreJuly = Math.max(0, ltcg112aPreJuly - ltcg112aPreJulyExemptAmt) * c.ltcg112aRateOld;
+      taxLTCGOtherPreJuly = ltcgOtherPreJuly * c.ltcgOtherRateOld;
+    }
+
+    const totalSpecialTax = taxSTCG111A + taxLTCG112A + taxLTCGOther + taxWinnings +
+                            taxSTCG111APreJuly + taxLTCG112APreJuly + taxLTCGOtherPreJuly;
+
+    const totalIncome = normalTaxable + stcg111a + stcg111aPreJuly + ltcg112a + ltcg112aPreJuly +
+                        ltcgOther + ltcgOtherPreJuly + winnings;
+
+    surchargeNormal = calcSurcharge(normalTax, totalIncome, isNew);
+    surchargeSpecial = calcSurchargeCapped(totalSpecialTax, totalIncome);
+    totalSurcharge = surchargeNormal + surchargeSpecial;
+
+    const totalBeforeCess = normalTax + totalSpecialTax + totalSurcharge;
+    const cess = totalBeforeCess * 0.04;
+    const totalTax = totalBeforeCess + cess;
+    const tdsPaid = v('tds');
+    const tcsPaid = v('tcs');
+    const advTax = v('advanceTax');
+    const totalPrepaid = tdsPaid + tcsPaid + advTax;
+    const netPayable = totalTax - totalPrepaid;
+
+    return {
+      yearLabel: c.label, ayLabel: c.ayLabel, isFuture: c.isFuture, isTrans,
+      name, isNew, isResident, c, ac, assesseeType: t,
+      grossSalary, exemptAllow, stdDed, salaryIncome,
+      houseRaw, loanInt, houseIncome, houseLossCapped,
+      businessIncome,
+      stcg111a, stcgOther, ltcg112a, ltcg112aExemptAmt: Math.min(ltcg112a, c.ltcg112aExempt), ltcgOther,
+      stcg111aPreJuly, ltcg112aPreJuly, ltcg112aPreJulyExemptAmt, ltcgOtherPreJuly,
+      otherIncome, winnings,
+      normalIncome: normalAfterLoss, totalDeductions, normalTaxable,
+      slabResult,
+      normalTax: normalTax + rebate87a, rebate87a,
+      normalTaxAfterRebate: normalTax,
+      taxSTCG111A, taxLTCG112A, taxLTCGOther, taxWinnings,
+      taxSTCG111APreJuly, taxLTCG112APreJuly, taxLTCGOtherPreJuly,
+      totalSpecialTax,
+      totalIncome, surchargeNormal, surchargeSpecial, totalSurcharge,
+      cess, totalTax,
+      tdsPaid, tcsPaid, advTax, totalPrepaid, netPayable,
+    };
+  }
+
+  // Company/firm path
   const taxSTCG111A = stcg111a * c.stcg111aRate;
-  const ltcg112aExemptAmt = Math.min(ltcg112a, c.ltcg112aExempt);
   const taxLTCG112A = Math.max(0, ltcg112a - c.ltcg112aExempt) * c.ltcg112aRate;
   const taxLTCGOther = ltcgOther * c.ltcgOtherRate;
   const taxWinnings = winnings * 0.30;
+  const totalSpecialTax = taxSTCG111A + taxLTCG112A + taxLTCGOther + taxWinnings;
+  const ltcg112aExemptAmt = Math.min(ltcg112a, c.ltcg112aExempt);
 
-  // PRE-July (transitional — PY 2024-25 only)
-  let taxSTCG111APreJuly = 0, taxLTCG112APreJuly = 0, taxLTCGOtherPreJuly = 0;
-  let ltcg112aPreJulyExemptAmt = 0;
-  if (isTrans) {
-    taxSTCG111APreJuly = stcg111aPreJuly * c.stcg111aRateOld;
-    // Pre-July LTCG 112A: exempt up to ₹1L (old limit), but combined with post-July exemption
-    // Total 112A exemption is shared: first apply old exempt on pre-July, remaining on post-July
-    const totalLtcg112a = ltcg112aPreJuly + ltcg112a;
-    const totalExemptUsed = Math.min(totalLtcg112a, c.ltcg112aExempt);
-    // Allocate exemption to pre-July first (up to old limit), then post-July gets remainder
-    ltcg112aPreJulyExemptAmt = Math.min(ltcg112aPreJuly, c.ltcg112aExemptOld);
-    taxLTCG112APreJuly = Math.max(0, ltcg112aPreJuly - ltcg112aPreJulyExemptAmt) * c.ltcg112aRateOld;
-    taxLTCGOtherPreJuly = ltcgOtherPreJuly * c.ltcgOtherRateOld;
-  }
+  const totalIncome = normalTaxable + stcg111a + ltcg112a + ltcgOther + winnings;
 
-  const totalSpecialTax = taxSTCG111A + taxLTCG112A + taxLTCGOther + taxWinnings +
-                          taxSTCG111APreJuly + taxLTCG112APreJuly + taxLTCGOtherPreJuly;
-
-  const totalIncome = normalTaxable + stcg111a + stcg111aPreJuly + ltcg112a + ltcg112aPreJuly +
-                      ltcgOther + ltcgOtherPreJuly + winnings;
-
-  // Surcharge
-  const surchargeNormal = calcSurcharge(normalTax, totalIncome, isNew);
-  const surchargeSpecial = calcSurchargeCapped(totalSpecialTax, totalIncome);
-  const totalSurcharge = surchargeNormal + surchargeSpecial;
-
-  // Cess
-  const totalBeforeCess = normalTax + totalSpecialTax + totalSurcharge;
-  const cess = totalBeforeCess * 0.04;
-  const totalTax = totalBeforeCess + cess;
-
-  // Prepaid taxes
+  const totalBeforeCess = normalTax; // for co/firm, totalTax already includes surcharge/cess above
+  // Recalculate properly for co/firm:
+  const flatRes2 = computeForCompanyFirm(ac, normalTaxable);
+  const baseTax = flatRes2.baseTax;
+  const surcharge = flatRes2.surcharge;
+  const cess = flatRes2.cess;
+  const totalTax = flatRes2.totalTax + totalSpecialTax;
   const tdsPaid = v('tds');
   const tcsPaid = v('tcs');
   const advTax = v('advanceTax');
   const totalPrepaid = tdsPaid + tcsPaid + advTax;
   const netPayable = totalTax - totalPrepaid;
+  const rebate87a = 0;
 
   return {
-    yearLabel: c.label, ayLabel: c.ayLabel, isFuture: c.isFuture, isTrans,
-    name, isNew, isResident, c,
-    grossSalary, exemptAllow, stdDed, salaryIncome,
+    yearLabel: c.label, ayLabel: c.ayLabel, isFuture: c.isFuture, isTrans: false,
+    name, isNew, isResident, c, ac, assesseeType: t,
+    grossSalary, exemptAllow: 0, stdDed: 0, salaryIncome,
     houseRaw, loanInt, houseIncome, houseLossCapped,
     businessIncome,
     stcg111a, stcgOther, ltcg112a, ltcg112aExemptAmt, ltcgOther,
-    stcg111aPreJuly, ltcg112aPreJuly, ltcg112aPreJulyExemptAmt, ltcgOtherPreJuly,
+    stcg111aPreJuly:0, ltcg112aPreJuly:0, ltcg112aPreJulyExemptAmt:0, ltcgOtherPreJuly:0,
     otherIncome, winnings,
-    normalIncome: normalAfterLoss, totalDeductions, normalTaxable,
-    slabResult,
-    normalTax: normalTax + rebate87a, rebate87a,
-    normalTaxAfterRebate: normalTax,
+    normalIncome: normalAfterLoss, totalDeductions: 0, normalTaxable,
+    slabResult: { tax: baseTax, breakup: [{ from:0, to:normalTaxable, rate:ac.flatRate, amount:normalTaxable, tax:baseTax }] },
+    normalTax: baseTax, rebate87a: 0, normalTaxAfterRebate: baseTax,
     taxSTCG111A, taxLTCG112A, taxLTCGOther, taxWinnings,
-    taxSTCG111APreJuly, taxLTCG112APreJuly, taxLTCGOtherPreJuly,
+    taxSTCG111APreJuly:0, taxLTCG112APreJuly:0, taxLTCGOtherPreJuly:0,
     totalSpecialTax,
-    totalIncome, surchargeNormal, surchargeSpecial, totalSurcharge,
+    totalIncome, surchargeNormal: surcharge, surchargeSpecial: 0, totalSurcharge: surcharge,
     cess, totalTax,
     tdsPaid, tcsPaid, advTax, totalPrepaid, netPayable,
+    isFlatRate: true, flatRate: ac.flatRate,
   };
 }
 
@@ -1918,10 +2378,15 @@ function row(lbl, val, cls) {
 
 function renderResult(r) {
   const c = r.c;
+  const ac = r.ac;
   let h = '';
+
+  // Assessee badge
+  h += `<div class="assessee-badge">👤 ${ac.label || ''}</div>`;
+
   h += row('Gross Salary', fmt(r.grossSalary));
-  if (!r.isNew) h += row('Less: Exempt Allowances', fmt(-r.exemptAllow), 'sub');
-  h += row('Less: Standard Deduction (₹'+c.stdDeduction.toLocaleString('en-IN')+')', fmt(-r.stdDed), 'sub');
+  if (!r.isNew && !r.isFlatRate) h += row('Less: Exempt Allowances', fmt(-r.exemptAllow), 'sub');
+  if (!r.isFlatRate) h += row('Less: Standard Deduction (₹'+c.stdDeduction.toLocaleString('en-IN')+')', fmt(-r.stdDed), 'sub');
   h += row('Net Salary Income (Head 1)', fmt(r.salaryIncome));
   h += '<div style="height:6px"></div>';
   h += row('House Property Income (Head 2)', fmt(r.houseIncome));
@@ -1932,13 +2397,11 @@ function renderResult(r) {
     const totalCG = r.stcg111a + r.stcgOther + r.ltcg112a + r.ltcgOther + r.stcg111aPreJuly + r.ltcg112aPreJuly + r.ltcgOtherPreJuly;
     h += row('Capital Gains (Head 4)', fmt(totalCG));
   }
-  // Pre-July gains (transitional PY 2024-25)
   if (r.isTrans && (r.stcg111aPreJuly || r.ltcg112aPreJuly || r.ltcgOtherPreJuly)) {
     if (r.stcg111aPreJuly) h += row('STCG 111A pre-July @ '+(c.stcg111aRateOld*100)+'%', fmt(r.stcg111aPreJuly), 'sub');
     if (r.ltcg112aPreJuly) h += row('LTCG 112A pre-July (exempt ₹'+(c.ltcg112aExemptOld/100000)+'L) @ '+(c.ltcg112aRateOld*100)+'%', fmt(r.ltcg112aPreJuly), 'sub');
     if (r.ltcgOtherPreJuly) h += row('LTCG Other pre-July @ '+c.ltcgOtherLabelOld, fmt(r.ltcgOtherPreJuly), 'sub');
   }
-  // Post-July / standard gains
   if (r.stcg111a) h += row((r.isTrans?'STCG 111A post-July':'STCG u/s 111A')+' @ '+(c.stcg111aRate*100)+'%', fmt(r.stcg111a), 'sub');
   if (r.stcgOther) h += row('STCG — Other (slab rate)', fmt(r.stcgOther), 'sub');
   if (r.ltcg112a) h += row((r.isTrans?'LTCG 112A post-July':'LTCG u/s 112A')+' (exempt ₹'+(c.ltcg112aExempt/100000)+'L)', fmt(r.ltcg112a), 'sub');
@@ -1954,17 +2417,19 @@ function renderResult(r) {
   h += row('Total Taxable Income (Normal)', fmt(r.normalTaxable), 'total');
 
   h += '<div style="height:4px;border-top:2px solid var(--border);margin:10px 0"></div>';
-  h += row('Tax on Normal Income (slab)', fmt(r.normalTax));
-  if (r.rebate87a > 0) h += row('Less: Rebate u/s 87A', fmt(-r.rebate87a), 'sub');
-  h += row('Tax after Rebate', fmt(r.normalTaxAfterRebate));
+  if (r.isFlatRate) {
+    h += row('Tax @ '+(r.flatRate*100)+'% (flat)', fmt(r.normalTax));
+  } else {
+    h += row('Tax on Normal Income (slab)', fmt(r.normalTax));
+    if (r.rebate87a > 0) h += row('Less: Rebate u/s 87A', fmt(-r.rebate87a), 'sub');
+    h += row('Tax after Rebate', fmt(r.normalTaxAfterRebate));
+  }
 
   if (r.totalSpecialTax > 0) {
     h += '<div style="height:6px"></div>';
-    // Pre-July tax lines
     if (r.taxSTCG111APreJuly) h += row('Tax STCG 111A pre-July @ '+(c.stcg111aRateOld*100)+'%', fmt(r.taxSTCG111APreJuly), 'sub');
     if (r.taxLTCG112APreJuly) h += row('Tax LTCG 112A pre-July @ '+(c.ltcg112aRateOld*100)+'%', fmt(r.taxLTCG112APreJuly), 'sub');
     if (r.taxLTCGOtherPreJuly) h += row('Tax LTCG Other pre-July @ '+(c.ltcgOtherRateOld*100)+'%', fmt(r.taxLTCGOtherPreJuly), 'sub');
-    // Post-July / standard tax lines
     if (r.taxSTCG111A) h += row('Tax '+(r.isTrans?'STCG 111A post-July':'STCG 111A')+' @ '+(c.stcg111aRate*100)+'%', fmt(r.taxSTCG111A), 'sub');
     if (r.taxLTCG112A) h += row('Tax '+(r.isTrans?'LTCG 112A post-July':'LTCG 112A')+' @ '+(c.ltcg112aRate*100)+'%', fmt(r.taxLTCG112A), 'sub');
     if (r.taxLTCGOther) h += row('Tax '+(r.isTrans?'LTCG Other post-July':'LTCG Other')+' @ '+c.ltcgOtherLabel, fmt(r.taxLTCGOther), 'sub');
@@ -1999,13 +2464,66 @@ function renderSlabs(result) {
   return h;
 }
 
+/* ── MAT/AMT in results panel ─────────────────────────────────────── */
+function renderMatAmtResult(result) {
+  const t = document.getElementById('assesseeType').value;
+  const ac = ASSESSEE_CFG[t];
+  const matCard = document.getElementById('matAmtResultCard');
+
+  if (ac.canMat) {
+    const bookProfit = parseFloat(document.getElementById('matBookProfit').value) || 0;
+    if (!bookProfit) { matCard.style.display = 'none'; return; }
+    const matRate = parseFloat(document.getElementById('matRate').value) || 0.15;
+    const matBase = bookProfit * matRate;
+    let surcharge = 0;
+    if (ac.surchargeRateLow && bookProfit > (ac.surchargeThreshold||1e7)) surcharge = matBase * (ac.surchargeRateHigh||0);
+    const matCess = (matBase + surcharge) * 0.04;
+    const matTotal = matBase + surcharge + matCess;
+    const normalTax = result.totalTax;
+    const isMatApplicable = matTotal > normalTax;
+
+    document.getElementById('matAmtResTitle').textContent = 'MAT Summary u/s 115JB';
+    let h = '';
+    h += `<div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:120px;padding:12px;background:#EFF6FF;border-radius:10px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Normal Tax</div>
+        <div style="font-size:16px;font-weight:800;color:var(--brand)">${fmt(normalTax)}</div>
+      </div>
+      <div style="flex:1;min-width:120px;padding:12px;background:#FEF3C7;border-radius:10px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">MAT</div>
+        <div style="font-size:16px;font-weight:800;color:#B45309">${fmt(matTotal)}</div>
+      </div>
+      <div style="flex:1;min-width:120px;padding:12px;background:${isMatApplicable?'#FEF3C7':'#F0FDF4'};border-radius:10px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Tax Payable</div>
+        <div style="font-size:16px;font-weight:800;color:${isMatApplicable?'#B45309':'#065F46'}">${fmt(Math.max(normalTax, matTotal))}</div>
+      </div>
+    </div>`;
+    if (isMatApplicable) {
+      h += `<div style="padding:10px 14px;background:#FEF3C7;border:1px solid #FDE68A;border-radius:8px;font-size:12px;color:#92400E;font-weight:600">
+        ⚠️ MAT applies — MAT (${fmt(matTotal)}) &gt; Normal Tax (${fmt(normalTax)}). MAT Credit u/s 115JAA = ${fmt(matTotal - normalTax)} (carry fwd up to 15 years).
+      </div>`;
+    } else {
+      h += `<div style="padding:10px 14px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:12px;color:#065F46;font-weight:600">
+        ✅ Normal Tax (${fmt(normalTax)}) &gt; MAT (${fmt(matTotal)}). Normal tax provisions apply.
+      </div>`;
+    }
+    document.getElementById('matAmtResBody').innerHTML = h;
+    matCard.style.display = 'block';
+  } else {
+    matCard.style.display = 'none';
+  }
+}
+
 /* ── CALCULATE ────────────────────────────────────────────────────── */
 function calculateTax() {
   const c = cfg();
   const panel = document.getElementById('resultPanel');
   const preInfo = document.getElementById('preCalcInfo');
+  const ac = getAssesseeCfg();
+  const isCo  = ac.group === 'company';
+  const isFirm = ac.group === 'firm';
 
-  if (currentRegime === 'both') {
+  if (currentRegime === 'both' && !isCo && !isFirm) {
     const rNew = computeForRegime(true);
     const rOld = computeForRegime(false);
 
@@ -2038,24 +2556,35 @@ function calculateTax() {
       '<div style="height:16px"></div>' +
       '<h3 style="font-size:13px;font-weight:700;margin-bottom:8px">📜 Old Regime Slabs</h3>' +
       renderSlabs(rOld);
+
+    // Advance tax for 2026-27
+    renderAdvanceTaxSchedule(rNew.totalTax, rNew.tdsPaid, rNew.tcsPaid);
+    renderMatAmtResult(rNew);
   } else {
-    const isNew = currentRegime === 'new';
+    const isNew = currentRegime === 'new' || isCo || isFirm;
     const result = computeForRegime(isNew);
 
     document.getElementById('singleResult').style.display = 'block';
     document.getElementById('compareResult').style.display = 'none';
 
-    const label = isNew ? '🆕 New Regime' : '📜 Old Regime';
+    let label = '';
+    if (isCo) label = '🏢 Company';
+    else if (isFirm) label = '🤝 Firm / LLP';
+    else label = isNew ? '🆕 New Regime' : '📜 Old Regime';
+
     document.getElementById('resultTitle').textContent = 'Tax Computation — ' + label;
     document.getElementById('resultSubtitle').textContent =
       (result.name ? result.name + ' · ' : '') + c.label + (c.isFuture ? ' (Estimated)' : '');
 
     document.getElementById('resultBody').innerHTML = renderResult(result);
-    document.getElementById('slabRegimeLabel').textContent = (isNew ? 'New Regime' : 'Old Regime') + ' · ' + c.label;
+    document.getElementById('slabRegimeLabel').textContent = (isCo ? 'Company' : isFirm ? 'Firm/LLP' : (isNew ? 'New Regime' : 'Old Regime')) + ' · ' + c.label;
     document.getElementById('slabBody').innerHTML = renderSlabs(result);
+
+    // Advance tax for 2026-27
+    renderAdvanceTaxSchedule(result.totalTax, result.tdsPaid, result.tcsPaid);
+    renderMatAmtResult(result);
   }
 
-  // Show/hide future disclaimer
   document.getElementById('futureDisclaimer').style.display = c.isFuture ? 'block' : 'none';
 
   panel.classList.add('show');
@@ -2080,10 +2609,14 @@ function resetForm() {
     else i.value = '';
   });
   document.getElementById('assesseeName').value = '';
+  document.getElementById('assesseeType').value = 'individual_below60';
   document.getElementById('resultPanel').classList.remove('show');
   document.getElementById('preCalcInfo').style.display = 'block';
   document.getElementById('singleResult').style.display = 'none';
   document.getElementById('compareResult').style.display = 'none';
+  document.getElementById('advanceTaxCard').style.display = 'none';
+  document.getElementById('matAmtResultCard').style.display = 'none';
+  onAssesseeTypeChange();
   setRegime('new');
   toast('Form reset');
 }
@@ -2098,6 +2631,7 @@ function toast(msg) {
 // Initialize
 setRegime('new');
 updateRefSlabs();
+onAssesseeTypeChange();
 </script>
 </body></html>"""
 
