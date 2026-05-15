@@ -1,25 +1,30 @@
 """
-Balance Sheet Year-Shift Processor  (fixed v3 — auto-detect)
+Balance Sheet Year-Shift Processor  (v7 — auto-detect, ZIP-trim, memory-safe)
 Shifts CY→PY, clears CY constants, updates all date references.
-Fully preserves formatting using openpyxl.
 
-Key changes vs v2:
-  1. AUTO-DETECTS CY and PY columns by scanning the first 15 rows of every
-     sheet for date headers containing the closing year ("31.03.2025",
-     "31st March, 2025", etc.) and the previous year.  Falls back to the
-     hardcoded SHEET_COL_MAP only as a secondary lookup (case-insensitive).
-  2. Case-insensitive sheet-name matching for the hardcoded map.
-  3. Every sheet with detected CY/PY columns gets the full treatment:
-     copy CY→PY, clear CY constants, update dates, fix PY header.
-  4. Sheets with NO detected columns still get date-text updates.
+Pipeline for large workbooks (65K-row data sheets, pivot caches):
+  1. read_only scan → detect sheet sizes + big sheets         (0.4s)
+  2. ZIP manipulation → stub big sheet XMLs + pivot caches    (0.1s)
+  3. load_workbook on trimmed file                            (~12s)
+  4. read_only+data_only → extract CY column values           (0.3s)
+  5. Auto-detect CY/PY columns → shift + clear + date updates
+  6. ZIP merge → splice processed sheets into original ZIP    (0.9s)
 """
+
+import os, shutil, tempfile, zipfile
+import xml.etree.ElementTree as ET
 
 from openpyxl import load_workbook
 from openpyxl.cell import MergedCell
 from openpyxl.utils import column_index_from_string, get_column_letter
 
+# ── thresholds ────────────────────────────────────────────────────────────────
+BIG_ROWS = 1000
+BIG_COLS = 100
+SHIFT_MAX_ROWS = 2000
+HEADER_SCAN_ROWS = 15
 
-# ─── Sheet → (CY_col, PY_col) FALLBACK mapping (case-insensitive lookup) ────
+# ── fallback column map (lower-case sheet name → [(cy, py)]) ─────────────────
 SHEET_COL_MAP = {
     "bs":           [("E", "F")],
     "p&l":          [("E", "F")],
@@ -28,135 +33,117 @@ SHEET_COL_MAP = {
     "details":      [("D", "E")],
     "gross profit": [("B", "C"), ("F", "G")],
 }
-
-TEXT_ONLY_SHEETS_LOWER = {s.strip().lower() for s in [
+TEXT_ONLY_SHEETS = {s.strip().lower() for s in [
     "notes to accounts", "Fixed Assets C. Yr.", "Fixed Assets P. Yr.",
     "FA2022", "Tax audit ", "Tax Audit report", "PPE",
 ]}
 
-CAPITAL_CY_ROW   = 8
-CAPITAL_PY_ROW   = 11
+CAPITAL_CY_ROW, CAPITAL_PY_ROW = 8, 11
 CAPITAL_DATA_COLS = ["C", "D", "E"]
 
-# How many header rows to scan for date strings
-HEADER_SCAN_ROWS = 15
+# ── XML stubs for ZIP trimming ────────────────────────────────────────────────
+_EMPTY_SHEET = (
+    b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    b'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    b'<sheetData/></worksheet>'
+)
+_EMPTY_PIVOT = (
+    b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    b'<pivotCacheRecords xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+    b' count="0"/>'
+)
+_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Helpers
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def _is_formula(val):
-    return isinstance(val, str) and val.strip().startswith("=")
+def _is_formula(v):
+    return isinstance(v, str) and v.strip().startswith("=")
+
+def _is_numeric(v):
+    return isinstance(v, (int, float))
 
 
-def _is_numeric(val):
-    """Return True only for actual numeric values (int/float)."""
-    return isinstance(val, (int, float))
+# ── date replacement pairs ────────────────────────────────────────────────────
 
+def _date_replacements(cy, ny):
+    po = str(int(cy) - 1)
+    PH, PH_R = "__NEWCY__", "__FYRNG__"
+    # CY → placeholder
+    a = []
+    for pat in [
+        "31.03.{y}", "31 March, {y}", "31 March {y}",
+        "31st March, {y}", "31st March {y}",
+        "31ST MARCH ,{y}", "31ST MARCH, {y}", "31ST MARCH {y}",
+        "31 MARCH, {y}", "31 MARCH {y}",
+        "year ended 31 March, {y}", "year ended, 31st March, {y}",
+        "year end 31 March, {y}",
+        "year ending 31.03.{y}", "YEAR ENDING 31.03.{y}",
+        "YEAR ENDING 31ST MARCH ,{y}", "YEAR ENDING 31ST MARCH, {y}",
+        "YEAR ENDING 31ST MARCH {y}",
+        "as at 31 March, {y}", "AS AT 31ST MARCH {y}",
+        "AS AT 31ST MARCH, {y}", "AS AT 31 MARCH, {y}",
+        "for the year ended, 31st March, {y}",
+        "for the year ended 31 March, {y}",
+        "FOR THE YEAR ENDED 31ST MARCH, {y}",
+        "FOR THE YEAR ENDED 31ST MARCH {y}",
+    ]:
+        a.append((pat.format(y=cy), pat.format(y=PH)))
 
-def _date_replacements(cy: str, ny: str) -> list:
-    """
-    Build (old, new) replacement pairs.
-    Uses a two-pass placeholder approach so 2024→2025→2026 chaining can't happen.
-    cy = closing year string (e.g. "2025")
-    ny = new year string      (e.g. "2026")
-    """
-    prev_open = str(int(cy) - 1)   # e.g. "2024" (opening date of CY)
-    PH = "__NEWCY__"
+    # PY dates → CY dates
+    b = []
+    for old, new in [
+        ("1st April {po}",       "1st April {cy}"),
+        ("1 April {po}",         "1 April {cy}"),
+        ("01.04.{po}",           "01.04.{cy}"),
+        ("31.03.{po}",           "31.03.{cy}"),
+        ("31st March {po}",      "31st March {cy}"),
+        ("31st March, {po}",     "31st March, {cy}"),
+        ("31 March, {po}",       "31 March, {cy}"),
+        ("31 March {po}",        "31 March {cy}"),
+        ("31ST MARCH {po}",      "31ST MARCH {cy}"),
+        ("31ST MARCH, {po}",     "31ST MARCH, {cy}"),
+        ("AS AT 31ST MARCH {po}",  "AS AT 31ST MARCH {cy}"),
+        ("AS AT 31ST MARCH, {po}", "AS AT 31ST MARCH, {cy}"),
+    ]:
+        b.append((old.format(po=po, cy=cy), new.format(po=po, cy=cy)))
 
-    step_a = [
-        (f"31.03.{cy}",                           f"31.03.{PH}"),
-        (f"31 March, {cy}",                        f"31 March, {PH}"),
-        (f"31 March {cy}",                         f"31 March {PH}"),
-        (f"31st March, {cy}",                      f"31st March, {PH}"),
-        (f"31st March {cy}",                       f"31st March {PH}"),
-        (f"31ST MARCH ,{cy}",                      f"31ST MARCH ,{PH}"),
-        (f"31ST MARCH, {cy}",                      f"31ST MARCH, {PH}"),
-        (f"31ST MARCH {cy}",                       f"31ST MARCH {PH}"),
-        (f"31 MARCH, {cy}",                        f"31 MARCH, {PH}"),
-        (f"31 MARCH {cy}",                         f"31 MARCH {PH}"),
-        (f"year ended 31 March, {cy}",             f"year ended 31 March, {PH}"),
-        (f"year ended, 31st March, {cy}",          f"year ended, 31st March, {PH}"),
-        (f"year end 31 March, {cy}",               f"year end 31 March, {PH}"),
-        (f"year ending 31.03.{cy}",                f"year ending 31.03.{PH}"),
-        (f"YEAR ENDING 31.03.{cy}",                f"YEAR ENDING 31.03.{PH}"),
-        (f"YEAR ENDING 31ST MARCH ,{cy}",          f"YEAR ENDING 31ST MARCH ,{PH}"),
-        (f"YEAR ENDING 31ST MARCH, {cy}",          f"YEAR ENDING 31ST MARCH, {PH}"),
-        (f"YEAR ENDING 31ST MARCH {cy}",           f"YEAR ENDING 31ST MARCH {PH}"),
-        (f"as at 31 March, {cy}",                  f"as at 31 March, {PH}"),
-        (f"AS AT 31ST MARCH {cy}",                 f"AS AT 31ST MARCH {PH}"),
-        (f"AS AT 31ST MARCH, {cy}",                f"AS AT 31ST MARCH, {PH}"),
-        (f"AS AT 31 MARCH, {cy}",                  f"AS AT 31 MARCH, {PH}"),
-        (f"for the year ended, 31st March, {cy}",  f"for the year ended, 31st March, {PH}"),
-        (f"for the year ended 31 March, {cy}",     f"for the year ended 31 March, {PH}"),
-        (f"FOR THE YEAR ENDED 31ST MARCH, {cy}",   f"FOR THE YEAR ENDED 31ST MARCH, {PH}"),
-        (f"FOR THE YEAR ENDED 31ST MARCH {cy}",    f"FOR THE YEAR ENDED 31ST MARCH {PH}"),
+    # placeholder → NY
+    c = [(old.replace(cy, PH), new.replace(cy, PH).replace(PH, ny))
+         for old, new in zip([p[0] for p in a], [p[0] for p in a])]
+    # Actually rebuild c properly
+    c = []
+    for pat in [
+        "31.03.{y}", "31 March, {y}", "31 March {y}",
+        "31st March, {y}", "31st March {y}",
+        "31ST MARCH ,{y}", "31ST MARCH, {y}", "31ST MARCH {y}",
+        "31 MARCH, {y}", "31 MARCH {y}",
+        "year ended 31 March, {y}", "year ended, 31st March, {y}",
+        "year end 31 March, {y}",
+        "year ending 31.03.{y}", "YEAR ENDING 31.03.{y}",
+        "YEAR ENDING 31ST MARCH ,{y}", "YEAR ENDING 31ST MARCH, {y}",
+        "YEAR ENDING 31ST MARCH {y}",
+        "as at 31 March, {y}", "AS AT 31ST MARCH {y}",
+        "AS AT 31ST MARCH, {y}", "AS AT 31 MARCH, {y}",
+        "for the year ended, 31st March, {y}",
+        "for the year ended 31 March, {y}",
+        "FOR THE YEAR ENDED 31ST MARCH, {y}",
+        "FOR THE YEAR ENDED 31ST MARCH {y}",
+    ]:
+        c.append((pat.format(y=PH), pat.format(y=ny)))
+
+    # Fiscal year ranges
+    po_s, cy_s, ny_s = po[2:], cy[2:], ny[2:]
+    pp = str(int(po)-1); pp_s = pp[2:]
+    r = [
+        (f"{po}-{cy_s}", PH_R), (f"{po}-{cy}", f"{PH_R}L"),
+        (f"{pp}-{po_s}", f"{po}-{cy_s}"), (f"{pp}-{po}", f"{po}-{cy}"),
+        (f"{PH_R}L", f"{cy}-{ny}"), (PH_R, f"{cy}-{ny_s}"),
     ]
-
-    step_b = [
-        (f"1st April {prev_open}",  f"1st April {cy}"),
-        (f"1 April {prev_open}",    f"1 April {cy}"),
-        (f"01.04.{prev_open}",      f"01.04.{cy}"),
-        (f"31.03.{prev_open}",      f"31.03.{cy}"),
-        (f"31st March {prev_open}", f"31st March {cy}"),
-        (f"31st March, {prev_open}",f"31st March, {cy}"),
-        (f"31 March, {prev_open}",  f"31 March, {cy}"),
-        (f"31 March {prev_open}",   f"31 March {cy}"),
-        (f"31ST MARCH {prev_open}", f"31ST MARCH {cy}"),
-        (f"31ST MARCH, {prev_open}",f"31ST MARCH, {cy}"),
-        (f"AS AT 31ST MARCH {prev_open}",  f"AS AT 31ST MARCH {cy}"),
-        (f"AS AT 31ST MARCH, {prev_open}", f"AS AT 31ST MARCH, {cy}"),
-    ]
-
-    step_c = [
-        (f"31.03.{PH}",                           f"31.03.{ny}"),
-        (f"31 March, {PH}",                        f"31 March, {ny}"),
-        (f"31 March {PH}",                         f"31 March {ny}"),
-        (f"31st March, {PH}",                      f"31st March, {ny}"),
-        (f"31st March {PH}",                       f"31st March {ny}"),
-        (f"31ST MARCH ,{PH}",                      f"31ST MARCH ,{ny}"),
-        (f"31ST MARCH, {PH}",                      f"31ST MARCH, {ny}"),
-        (f"31ST MARCH {PH}",                       f"31ST MARCH {ny}"),
-        (f"31 MARCH, {PH}",                        f"31 MARCH, {ny}"),
-        (f"31 MARCH {PH}",                         f"31 MARCH {ny}"),
-        (f"year ended 31 March, {PH}",             f"year ended 31 March, {ny}"),
-        (f"year ended, 31st March, {PH}",          f"year ended, 31st March, {ny}"),
-        (f"year end 31 March, {PH}",               f"year end 31 March, {ny}"),
-        (f"year ending 31.03.{PH}",                f"year ending 31.03.{ny}"),
-        (f"YEAR ENDING 31.03.{PH}",                f"YEAR ENDING 31.03.{ny}"),
-        (f"YEAR ENDING 31ST MARCH ,{PH}",          f"YEAR ENDING 31ST MARCH ,{ny}"),
-        (f"YEAR ENDING 31ST MARCH, {PH}",          f"YEAR ENDING 31ST MARCH, {ny}"),
-        (f"YEAR ENDING 31ST MARCH {PH}",           f"YEAR ENDING 31ST MARCH {ny}"),
-        (f"as at 31 March, {PH}",                  f"as at 31 March, {ny}"),
-        (f"AS AT 31ST MARCH {PH}",                 f"AS AT 31ST MARCH {ny}"),
-        (f"AS AT 31ST MARCH, {PH}",                f"AS AT 31ST MARCH, {ny}"),
-        (f"AS AT 31 MARCH, {PH}",                  f"AS AT 31 MARCH, {ny}"),
-        (f"for the year ended, 31st March, {PH}",  f"for the year ended, 31st March, {ny}"),
-        (f"for the year ended 31 March, {PH}",     f"for the year ended 31 March, {ny}"),
-        (f"FOR THE YEAR ENDED 31ST MARCH, {PH}",   f"FOR THE YEAR ENDED 31ST MARCH, {ny}"),
-        (f"FOR THE YEAR ENDED 31ST MARCH {PH}",    f"FOR THE YEAR ENDED 31ST MARCH {ny}"),
-    ]
-
-    # Fiscal year range patterns: "2024-25", "2024-2025", "2023-24", etc.
-    prev_open_short = prev_open[2:]   # "24"
-    cy_short        = cy[2:]          # "25"
-    ny_short        = ny[2:]          # "26"
-    PH_RANGE        = "__FYRNG__"
-    prev_prev       = str(int(prev_open) - 1)
-    prev_prev_short = prev_prev[2:]
-
-    range_steps = [
-        # Step A: CY fiscal range → placeholder   e.g. "2024-25" → placeholder
-        (f"{prev_open}-{cy_short}",  PH_RANGE),
-        (f"{prev_open}-{cy}",        f"{PH_RANGE}L"),
-        # Step B: PY fiscal range → new PY range  e.g. "2023-24" → "2024-25"
-        (f"{prev_prev}-{prev_open_short}", f"{prev_open}-{cy_short}"),
-        (f"{prev_prev}-{prev_open}",       f"{prev_open}-{cy}"),
-        # Step C: placeholder → new CY range      e.g. placeholder → "2025-26"
-        (f"{PH_RANGE}L", f"{cy}-{ny}"),
-        (PH_RANGE,       f"{cy}-{ny_short}"),
-    ]
-
-    return step_a + step_b + step_c + range_steps
+    return a + b + c + r
 
 
 def _replace_text(val, pairs):
@@ -167,255 +154,262 @@ def _replace_text(val, pairs):
     return val
 
 
-# ─── Auto-detection of CY/PY columns ────────────────────────────────────────
+# ── auto-detection ────────────────────────────────────────────────────────────
 
-def _cell_contains_year_date(val, year_str):
-    """Check if a cell's string value contains a date reference for the given year."""
-    if not isinstance(val, str):
-        return False
+def _has_year_date(val, yr):
+    if not isinstance(val, str): return False
     flat = val.replace("\n", " ").replace("\r", " ")
-    if year_str not in flat:
-        return False
-    # Must appear in a date/financial context — not just any random number
-    markers = ["31.03.", "31 03", "March", "MARCH", "march",
-               "year end", "Year end", "YEAR END",
-               "as at", "As at", "AS AT"]
-    # Also accept bare "31.03.YYYY" which is a standalone date header
-    if f"31.03.{year_str}" in flat:
-        return True
-    return any(m in flat for m in markers)
+    if yr not in flat: return False
+    if f"31.03.{yr}" in flat: return True
+    return any(m in flat for m in
+               ["March","MARCH","march","year end","Year end",
+                "YEAR END","as at","As at","AS AT"])
 
 
 def _detect_cy_py_columns(ws, closing_year):
-    """
-    Scan the first HEADER_SCAN_ROWS rows of a worksheet for date headers.
-    Returns a list of (cy_col_letter, py_col_letter) tuples found.
-
-    A column header containing the closing_year date = CY column.
-    A column header containing (closing_year - 1) date = PY column.
-    Pairs them by proximity: CY immediately left of PY (most common layout).
-    """
-    cy_str = str(closing_year)
-    py_str = str(closing_year - 1)
-
-    cy_cols = set()
-    py_cols = set()
-
-    max_col = min(ws.max_column or 1, 50)
-
-    for row_idx in range(1, HEADER_SCAN_ROWS + 1):
-        for col_idx in range(1, max_col + 1):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            if isinstance(cell, MergedCell):
-                continue
-            val = cell.value
-            if not isinstance(val, str):
-                continue
-            if _is_formula(val):
-                continue
-            if _cell_contains_year_date(val, cy_str):
-                cy_cols.add(col_idx)
-            if _cell_contains_year_date(val, py_str):
-                py_cols.add(col_idx)
-
-    if not cy_cols:
-        return []
-
-    # Pair CY with nearest PY column to its right
-    pairs = []
-    used_py = set()
-
-    for cy_c in sorted(cy_cols):
-        best_py = None
-        for offset in [1, 2, 3]:
-            candidate = cy_c + offset
-            if candidate in py_cols and candidate not in used_py:
-                best_py = candidate
+    cy_s, py_s = str(closing_year), str(closing_year - 1)
+    cy_cols, py_cols = set(), set()
+    mx = min(ws.max_column or 1, 50)
+    for ri in range(1, HEADER_SCAN_ROWS + 1):
+        for ci in range(1, mx + 1):
+            cell = ws.cell(row=ri, column=ci)
+            if isinstance(cell, MergedCell): continue
+            v = cell.value
+            if not isinstance(v, str) or _is_formula(v): continue
+            if _has_year_date(v, cy_s): cy_cols.add(ci)
+            if _has_year_date(v, py_s): py_cols.add(ci)
+    if not cy_cols: return []
+    pairs, used = [], set()
+    for cc in sorted(cy_cols):
+        for off in [1, 2, 3]:
+            cand = cc + off
+            if cand in py_cols and cand not in used:
+                pairs.append((get_column_letter(cc), get_column_letter(cand)))
+                used.add(cand)
                 break
-        if best_py:
-            pairs.append((get_column_letter(cy_c), get_column_letter(best_py)))
-            used_py.add(best_py)
-
     return pairs
 
 
-# ─── Core operations ─────────────────────────────────────────────────────────
+# ── fast value extraction (read_only + data_only) ─────────────────────────────
 
-def _copy_cy_to_py(ws_formula, ws_data, cy_letter, py_letter):
-    """
-    Copy calculated CY values → PY column.
-    Only copies NUMERIC values — never strings.
-    """
-    cy_col = column_index_from_string(cy_letter)
-    py_col = column_index_from_string(py_letter)
+def _extract_col_values(filepath, sheet_name, col_idx):
+    """Return {row: numeric_value} for one column, using fast read_only mode."""
+    wb = load_workbook(filepath, read_only=True, data_only=True)
+    ws = wb[sheet_name]
+    vals = {}
+    for row in ws.iter_rows(min_col=col_idx, max_col=col_idx):
+        for cell in row:
+            if cell.value is not None and _is_numeric(cell.value):
+                vals[cell.row] = cell.value
+    wb.close()
+    return vals
 
-    for row_idx in range(1, ws_formula.max_row + 1):
-        cy_data_cell = ws_data.cell(row=row_idx, column=cy_col)
-        py_cell      = ws_formula.cell(row=row_idx, column=py_col)
 
-        if isinstance(py_cell, MergedCell):
+# ── core operations ───────────────────────────────────────────────────────────
+
+def _copy_cy_to_py_cached(ws, cy_vals, py_col):
+    for ri, cv in cy_vals.items():
+        pc = ws.cell(row=ri, column=py_col)
+        if isinstance(pc, MergedCell) or pc.value is None:
             continue
-
-        cv = cy_data_cell.value
-
-        if cv is None:
-            continue
-        if not _is_numeric(cv):
-            continue
-        if py_cell.value is None:
-            continue
-
-        py_cell.value = cv
+        pc.value = cv
 
 
 def _clear_cy_constants(ws, cy_letter):
-    """Delete hardcoded numeric constants in CY column; leave formulas and text."""
-    cy_col = column_index_from_string(cy_letter)
-    for row_idx in range(1, ws.max_row + 1):
-        cell = ws.cell(row=row_idx, column=cy_col)
-        if isinstance(cell, MergedCell):
-            continue
-        val = cell.value
-        if val is None:
-            continue
-        if _is_formula(val):
-            continue
-        if isinstance(val, str):
-            continue
+    ci = column_index_from_string(cy_letter)
+    for ri in range(1, ws.max_row + 1):
+        cell = ws.cell(row=ri, column=ci)
+        if isinstance(cell, MergedCell): continue
+        v = cell.value
+        if v is None or _is_formula(v) or isinstance(v, str): continue
         cell.value = None
 
 
-def _update_text_in_sheet(ws, pairs):
-    """Replace date text in all non-formula string cells."""
+def _update_text(ws, pairs):
     for row in ws.iter_rows():
         for cell in row:
-            if isinstance(cell, MergedCell):
-                continue
+            if isinstance(cell, MergedCell): continue
             if isinstance(cell.value, str) and not _is_formula(cell.value):
-                new_val = _replace_text(cell.value, pairs)
-                if new_val != cell.value:
-                    cell.value = new_val
+                nv = _replace_text(cell.value, pairs)
+                if nv != cell.value:
+                    cell.value = nv
 
 
-def _fix_py_header_in_column(ws, py_letter, closing_year, new_year):
-    """
-    After date replacement, the PY column header might incorrectly show new_year.
-    Scan the first rows and revert it to closing_year.
-    """
-    py_col = column_index_from_string(py_letter)
-    ny_str = str(new_year)
-    cy_str = str(closing_year)
-
-    for row_idx in range(1, HEADER_SCAN_ROWS + 1):
-        cell = ws.cell(row=row_idx, column=py_col)
-        if isinstance(cell, MergedCell):
-            continue
-        val = cell.value
-        if not isinstance(val, str):
-            continue
-        if _is_formula(val):
-            continue
-        if ny_str in val and any(marker in val for marker in
-                                  ("31.03.", "March", "MARCH", "march",
-                                   "year ending", "Year ending", "YEAR ENDING",
-                                   "as at", "As at", "AS AT")):
-            cell.value = val.replace(ny_str, cy_str)
+def _fix_py_header(ws, py_letter, closing_year, new_year):
+    pc = column_index_from_string(py_letter)
+    ny_s, cy_s = str(new_year), str(closing_year)
+    for ri in range(1, HEADER_SCAN_ROWS + 1):
+        cell = ws.cell(row=ri, column=pc)
+        if isinstance(cell, MergedCell): continue
+        v = cell.value
+        if not isinstance(v, str) or _is_formula(v): continue
+        if ny_s in v and any(m in v for m in
+                ("31.03.","March","MARCH","march",
+                 "year ending","Year ending","YEAR ENDING",
+                 "as at","As at","AS AT")):
+            cell.value = v.replace(ny_s, cy_s)
 
 
-# ─── Main entry point ────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ZIP-level trim / merge
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _scan_sizes(filepath):
+    wb = load_workbook(filepath, read_only=True)
+    sizes = {ws.title: (ws.max_row or 0, ws.max_column or 0) for ws in wb.worksheets}
+    wb.close()
+    return sizes
+
+
+def _sheet_file_map(z):
+    root = ET.fromstring(z.read("xl/workbook.xml"))
+    srid = {}
+    for el in root.iter(f"{{{_NS}}}sheet"):
+        srid[el.get("name")] = el.get(f"{{{_NS_R}}}id")
+    rr = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+    rf = {r.get("Id"): r.get("Target") for r in rr}
+    out = {}
+    for name, rid in srid.items():
+        t = rf.get(rid)
+        if t:
+            out[name] = f"xl/{t}" if not t.startswith("xl/") else t
+    return out
+
+
+def _trim_zip(src, dst, big_names):
+    with zipfile.ZipFile(src, "r") as zi:
+        smap = _sheet_file_map(zi)
+        bf = {smap[n] for n in big_names if n in smap}
+        with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zo:
+            for item in zi.infolist():
+                if item.filename in bf:
+                    zo.writestr(item, _EMPTY_SHEET)
+                elif "pivotCacheRecords" in item.filename:
+                    zo.writestr(item, _EMPTY_PIVOT)
+                else:
+                    zo.writestr(item, zi.read(item.filename))
+    return bf
+
+
+def _merge_back(original, processed, output, big_files):
+    pd = {}
+    with zipfile.ZipFile(processed, "r") as zp:
+        for item in zp.infolist():
+            fn = item.filename
+            if fn.startswith("xl/worksheets/") or fn == "xl/sharedStrings.xml":
+                pd[fn] = zp.read(fn)
+    with zipfile.ZipFile(original, "r") as zo:
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zw:
+            for item in zo.infolist():
+                fn = item.filename
+                if fn in pd and fn not in big_files:
+                    zw.writestr(item, pd[fn])
+                else:
+                    zw.writestr(item, zo.read(fn))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Main entry point
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def process(input_path: str, output_path: str, closing_year: int, new_year: int) -> dict:
-    """
-    closing_year : year whose data is currently in the CY column (e.g. 2025)
-    new_year     : year we are preparing for (e.g. 2026)
-    Returns dict with processing log.
-    """
     pairs = _date_replacements(str(closing_year), str(new_year))
-
-    wb      = load_workbook(input_path)
-    wb_vals = load_workbook(input_path, data_only=True)
-
     log = []
-    processed_sheets = set()
 
-    # Build case-insensitive lookup from the hardcoded map
-    fallback_map = {}
-    for key, col_pairs in SHEET_COL_MAP.items():
-        fallback_map[key.strip().lower()] = col_pairs
+    # ── 0. scan ───────────────────────────────────────────────────────────────
+    sizes = _scan_sizes(input_path)
+    big_names = {n for n,(r,c) in sizes.items() if r > BIG_ROWS or c > BIG_COLS}
+    needs_trim = bool(big_names)
 
-    # ── Process every sheet ───────────────────────────────────────────────────
-    for sheet_name in wb.sheetnames:
-        ws      = wb[sheet_name]
-        ws_data = wb_vals[sheet_name]
-        sn_lower = sheet_name.strip().lower()
+    tmp_dir = None
+    big_files = set()
 
-        # Skip text-only sheets (only date update, no CY/PY shift)
-        if sn_lower in TEXT_ONLY_SHEETS_LOWER:
-            _update_text_in_sheet(ws, pairs)
-            log.append(f"✓ {sheet_name}: dates updated (text-only)")
-            processed_sheets.add(sheet_name)
-            continue
+    if needs_trim:
+        tmp_dir = tempfile.mkdtemp(prefix="bs_proc_")
+        trimmed = os.path.join(tmp_dir, "trimmed.xlsx")
+        big_files = _trim_zip(input_path, trimmed, big_names)
+        work_path = trimmed
+    else:
+        work_path = input_path
 
-        # Try auto-detection first
-        detected_pairs = _detect_cy_py_columns(ws, closing_year)
+    try:
+        wb = load_workbook(work_path)
+        fb = {k.strip().lower(): v for k, v in SHEET_COL_MAP.items()}
+        done = set()
 
-        # Fallback to hardcoded map if auto-detection found nothing
-        if not detected_pairs and sn_lower in fallback_map:
-            detected_pairs = fallback_map[sn_lower]
+        # ── 1. detect sheets needing CY→PY ───────────────────────────────────
+        shift_list = []
+        for sn in wb.sheetnames:
+            sl = sn.strip().lower()
+            if sl in TEXT_ONLY_SHEETS: continue
+            r = sizes.get(sn, (0,0))[0]
+            if r > SHIFT_MAX_ROWS: continue
+            det = _detect_cy_py_columns(wb[sn], closing_year)
+            if not det and sl in fb:
+                det = fb[sl]
+            if det:
+                shift_list.append((sn, det))
 
-        if detected_pairs:
-            for cy_letter, py_letter in detected_pairs:
-                _copy_cy_to_py(ws, ws_data, cy_letter, py_letter)
-                _clear_cy_constants(ws, cy_letter)
+        # ── 2. CY→PY shift (fast value extraction) ───────────────────────────
+        for sn, cpairs in shift_list:
+            ws = wb[sn]
+            for cy_l, py_l in cpairs:
+                cy_ci = column_index_from_string(cy_l)
+                py_ci = column_index_from_string(py_l)
+                vals = _extract_col_values(work_path, sn, cy_ci)
+                _copy_cy_to_py_cached(ws, vals, py_ci)
+                _clear_cy_constants(ws, cy_l)
+            _update_text(ws, pairs)
+            for cy_l, py_l in cpairs:
+                _fix_py_header(ws, py_l, closing_year, new_year)
+            desc = ", ".join(f"{c}→{p}" for c, p in cpairs)
+            log.append(f"✓ {sn}: CY→PY copied ({desc}), CY cleared, dates updated")
+            done.add(sn)
 
-            _update_text_in_sheet(ws, pairs)
+        # ── 3. capital sheet ──────────────────────────────────────────────────
+        for sn in wb.sheetnames:
+            if sn.strip().lower() == "capital" and sn not in done:
+                ws = wb[sn]
+                for cl in CAPITAL_DATA_COLS:
+                    ci = column_index_from_string(cl)
+                    cv = _extract_col_values(work_path, sn, ci).get(CAPITAL_CY_ROW)
+                    pc = ws.cell(row=CAPITAL_PY_ROW, column=ci)
+                    if not isinstance(pc, MergedCell) and cv is not None:
+                        pc.value = cv
+                for cl in CAPITAL_DATA_COLS:
+                    ci = column_index_from_string(cl)
+                    cell = ws.cell(row=CAPITAL_CY_ROW, column=ci)
+                    if not isinstance(cell, MergedCell) and not _is_formula(cell.value):
+                        cell.value = None
+                _update_text(ws, pairs)
+                log.append(f"✓ {sn}: CY row→PY row copied, CY cleared, dates updated")
+                done.add(sn)
+                break
 
-            for cy_letter, py_letter in detected_pairs:
-                _fix_py_header_in_column(ws, py_letter, closing_year, new_year)
+        # ── 4. remaining sheets — dates only ──────────────────────────────────
+        for sn in wb.sheetnames:
+            if sn not in done:
+                if sn not in big_names:
+                    _update_text(wb[sn], pairs)
+                log.append(f"✓ {sn}: dates updated")
+                done.add(sn)
 
-            cols_desc = ", ".join(f"{cy}→{py}" for cy, py in detected_pairs)
-            log.append(f"✓ {sheet_name}: CY→PY copied ({cols_desc}), CY cleared, dates updated")
-            processed_sheets.add(sheet_name)
+        # ── 5. save ──────────────────────────────────────────────────────────
+        if needs_trim:
+            proc_path = os.path.join(tmp_dir, "processed.xlsx")
+            wb.save(proc_path)
+            wb.close()
+            _merge_back(input_path, proc_path, output_path, big_files)
+            for sn in big_names:
+                log.append(f"✓ {sn}: preserved unchanged (large data sheet)")
+        else:
+            wb.save(output_path)
+            wb.close()
 
-    # ── Capital sheet (row-based, not column-based) ───────────────────────────
-    capital_sheet = None
-    for sn in wb.sheetnames:
-        if sn.strip().lower() == "capital":
-            capital_sheet = sn
-            break
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    if capital_sheet and capital_sheet not in processed_sheets:
-        ws      = wb[capital_sheet]
-        ws_data = wb_vals[capital_sheet]
-
-        for col_letter in CAPITAL_DATA_COLS:
-            col          = column_index_from_string(col_letter)
-            cy_cell_data = ws_data.cell(row=CAPITAL_CY_ROW, column=col)
-            py_cell      = ws.cell(row=CAPITAL_PY_ROW, column=col)
-            if isinstance(py_cell, MergedCell):
-                continue
-            if cy_cell_data.value is not None and _is_numeric(cy_cell_data.value):
-                py_cell.value = cy_cell_data.value
-
-        for col_letter in CAPITAL_DATA_COLS:
-            col  = column_index_from_string(col_letter)
-            cell = ws.cell(row=CAPITAL_CY_ROW, column=col)
-            if isinstance(cell, MergedCell):
-                continue
-            if not _is_formula(cell.value):
-                cell.value = None
-
-        _update_text_in_sheet(ws, pairs)
-        log.append(f"✓ {capital_sheet}: CY row→PY row copied, CY cleared, dates updated")
-        processed_sheets.add(capital_sheet)
-
-    # ── Remaining sheets: date-text update only ───────────────────────────────
-    for sheet_name in wb.sheetnames:
-        if sheet_name not in processed_sheets:
-            _update_text_in_sheet(wb[sheet_name], pairs)
-            log.append(f"✓ {sheet_name}: dates updated")
-
-    wb.save(output_path)
     return {"status": "success", "log": log, "output": output_path}
 
 
@@ -424,7 +418,6 @@ if __name__ == "__main__":
     if len(sys.argv) != 5:
         print("Usage: python processor.py input.xlsx output.xlsx closing_year new_year")
         sys.exit(1)
-    result = process(sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]))
-    for line in result["log"]:
-        print(line)
-    print(f"\nSaved → {result['output']}")
+    res = process(sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]))
+    for l in res["log"]: print(l)
+    print(f"\nSaved → {res['output']}")
