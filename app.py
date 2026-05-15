@@ -933,7 +933,7 @@ async function processFile(){
     if(data.status==='success'){
       const logHtml='<ul class="log-list">'+data.log.map(l=>`<li>${l}</li>`).join('')+'</ul>';
       showStatus('success','✓ Done! Your file is ready.'+logHtml);
-      dl.href='/download/'+data.file_id;dl.download=data.filename;
+      dl.href='/download/'+data.file_id+'?fn='+encodeURIComponent(data.filename);dl.download=data.filename;
       dl.textContent='⬇  Download — '+data.filename;dl.style.display='block';
       toast('Processed successfully!');
     }else{showStatus('error','✗ '+data.message);}
@@ -5378,29 +5378,112 @@ def tool_depreciation_calculator():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _convert_xls_to_xlsx(xls_path, xlsx_path):
-    """Convert legacy .xls to .xlsx using xlrd + openpyxl."""
+    """Convert legacy .xls to .xlsx using xlrd + openpyxl with formatting."""
     import xlrd
     from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
     from openpyxl.utils import get_column_letter
 
-    xls_wb = xlrd.open_workbook(xls_path, formatting_info=False)
-    xlsx_wb = Workbook()
-    # Remove default sheet created by Workbook()
-    xlsx_wb.remove(xlsx_wb.active)
+    wb_xls = xlrd.open_workbook(xls_path, formatting_info=True)
+    wb_out = Workbook()
+    wb_out.remove(wb_out.active)
 
-    for sheet_name in xls_wb.sheet_names():
-        xls_ws = xls_wb.sheet_by_name(sheet_name)
-        xlsx_ws = xlsx_wb.create_sheet(title=sheet_name)
+    colour_map = wb_xls.colour_map
+    def xlrd_color_to_hex(idx):
+        if idx is None or idx < 8 or idx > 63: return None
+        rgb = colour_map.get(idx)
+        if rgb and rgb != (0, 0, 0): return f'{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}'
+        return None
+
+    border_styles = {0: None, 1: 'thin', 2: 'medium', 3: 'dashed',
+                     4: 'dotted', 5: 'thick', 6: 'double', 7: 'hair'}
+
+    for sheet_name in wb_xls.sheet_names():
+        xls_ws = wb_xls.sheet_by_name(sheet_name)
+        xlsx_ws = wb_out.create_sheet(title=sheet_name)
+
         for row_idx in range(xls_ws.nrows):
             for col_idx in range(xls_ws.ncols):
-                cell = xls_ws.cell(row_idx, col_idx)
-                val = cell.value
-                # xlrd returns floats for all numbers; convert whole floats to int
-                if cell.ctype == xlrd.XL_CELL_NUMBER and val == int(val):
-                    val = int(val)
-                xlsx_ws.cell(row=row_idx + 1, column=col_idx + 1, value=val)
+                ctype = xls_ws.cell_type(row_idx, col_idx)
+                if ctype == xlrd.XL_CELL_EMPTY:
+                    continue
+                val = xls_ws.cell_value(row_idx, col_idx)
+                cell = xlsx_ws.cell(row=row_idx + 1, column=col_idx + 1)
 
-    xlsx_wb.save(xlsx_path)
+                if ctype == xlrd.XL_CELL_NUMBER and val == int(val):
+                    val = int(val)
+                if ctype == xlrd.XL_CELL_DATE:
+                    try:
+                        from datetime import datetime
+                        dt = xlrd.xldate_as_tuple(val, wb_xls.datemode)
+                        cell.value = datetime(*dt)
+                    except:
+                        cell.value = val
+                else:
+                    cell.value = val
+
+                # Copy formatting
+                try:
+                    xf = wb_xls.xf_list[xls_ws.cell_xf_index(row_idx, col_idx)]
+                    font_xls = wb_xls.font_list[xf.font_index]
+
+                    cell.font = Font(
+                        name=font_xls.name or 'Calibri',
+                        size=font_xls.height / 20 if font_xls.height else 11,
+                        bold=font_xls.bold, italic=font_xls.italic,
+                        underline='single' if font_xls.underline_type else None,
+                    )
+
+                    ha = {0: None, 1: 'left', 2: 'center', 3: 'right',
+                          5: 'justify'}.get(xf.alignment.hor_align)
+                    va = {0: 'top', 1: 'center', 2: 'bottom'}.get(
+                        xf.alignment.vert_align, 'bottom')
+                    cell.alignment = Alignment(
+                        horizontal=ha, vertical=va,
+                        wrap_text=bool(xf.alignment.text_wrapped),
+                        indent=xf.alignment.indent_level,
+                    )
+
+                    fmt_str = wb_xls.format_map.get(xf.format_key)
+                    if fmt_str:
+                        cell.number_format = fmt_str.format_str
+
+                    def _side(style_idx):
+                        s = border_styles.get(style_idx)
+                        return Side(style=s) if s else Side()
+                    brd = xf.border
+                    cell.border = Border(
+                        left=_side(brd.left_line_style),
+                        right=_side(brd.right_line_style),
+                        top=_side(brd.top_line_style),
+                        bottom=_side(brd.bottom_line_style),
+                    )
+
+                    bg_idx = xf.background.pattern_colour_index
+                    bg_hex = xlrd_color_to_hex(bg_idx)
+                    if bg_hex and xf.background.fill_pattern:
+                        cell.fill = PatternFill('solid', fgColor=bg_hex)
+                except Exception:
+                    pass
+
+        # Merged cells (after data so we don't write to merged cells)
+        for crange in xls_ws.merged_cells:
+            r1, r2, c1, c2 = crange
+            xlsx_ws.merge_cells(
+                start_row=r1 + 1, start_column=c1 + 1,
+                end_row=r2, end_column=c2)
+
+        # Column widths
+        for c, ci in xls_ws.colinfo_map.items():
+            if ci.width:
+                xlsx_ws.column_dimensions[get_column_letter(c + 1)].width = ci.width / 256
+
+        # Row heights
+        for r, rh in xls_ws.rowinfo_map.items():
+            if rh.height:
+                xlsx_ws.row_dimensions[r + 1].height = rh.height / 20
+
+    wb_out.save(xlsx_path)
 
 @app.route("/process", methods=["POST"])
 @login_required
@@ -5467,8 +5550,10 @@ def download(fid):
     if not re.fullmatch(r"[a-f0-9]{32}", fid): return "Invalid ID", 400
     path = os.path.join(OUTPUT_DIR, f"{fid}_out.xlsx")
     if not os.path.exists(path): return "File not found or expired.", 404
+    fn = request.args.get("fn", f"bs_shift_{fid[:8]}.xlsx")
+    if not fn.endswith(".xlsx"): fn += ".xlsx"
     return send_file(path, as_attachment=True,
-        download_name=f"bs_shift_{fid[:8]}.xlsx",
+        download_name=fn,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # ══════════════════════════════════════════════════════════════════════════════
