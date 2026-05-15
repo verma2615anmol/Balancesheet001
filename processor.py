@@ -54,6 +54,7 @@ def _date_replacements(cy, ny):
         "31st March, {y}", "31st March {y}",
         "31ST MARCH ,{y}", "31ST MARCH, {y}", "31ST MARCH {y}",
         "31 MARCH, {y}", "31 MARCH {y}",
+        "31st MARCH, {y}", "31st MARCH {y}",       # mixed: lowercase ordinal + uppercase MARCH
         "year ended 31 March, {y}", "year ended, 31st March, {y}",
         "year end 31 March, {y}",
         "year ending 31.03.{y}", "YEAR ENDING 31.03.{y}",
@@ -61,10 +62,13 @@ def _date_replacements(cy, ny):
         "YEAR ENDING 31ST MARCH {y}",
         "as at 31 March, {y}", "AS AT 31ST MARCH {y}",
         "AS AT 31ST MARCH, {y}", "AS AT 31 MARCH, {y}",
+        "AS AT 31st MARCH, {y}", "AS AT 31st MARCH {y}",   # mixed case in AS AT
         "for the year ended, 31st March, {y}",
         "for the year ended 31 March, {y}",
         "FOR THE YEAR ENDED 31ST MARCH, {y}",
         "FOR THE YEAR ENDED 31ST MARCH {y}",
+        "FOR THE YEAR ENDED 31st MARCH, {y}",               # mixed case in FOR THE YEAR
+        "FOR THE YEAR ENDED 31st MARCH {y}",
     ]
 
     a = [(p.format(y=cy), p.format(y=PH)) for p in patterns]   # CY → placeholder
@@ -75,8 +79,11 @@ def _date_replacements(cy, ny):
         ("31st March {po}", "31st March {cy}"),("31st March, {po}","31st March, {cy}"),
         ("31 March, {po}",  "31 March, {cy}"), ("31 March {po}",  "31 March {cy}"),
         ("31ST MARCH {po}", "31ST MARCH {cy}"),("31ST MARCH, {po}","31ST MARCH, {cy}"),
+        ("31st MARCH {po}", "31st MARCH {cy}"),("31st MARCH, {po}","31st MARCH, {cy}"),
         ("AS AT 31ST MARCH {po}","AS AT 31ST MARCH {cy}"),
         ("AS AT 31ST MARCH, {po}","AS AT 31ST MARCH, {cy}"),
+        ("AS AT 31st MARCH {po}","AS AT 31st MARCH {cy}"),
+        ("AS AT 31st MARCH, {po}","AS AT 31st MARCH, {cy}"),
     ]:
         b.append((old.format(po=po, cy=cy), new.format(po=po, cy=cy)))
     c = [(p.format(y=PH), p.format(y=ny)) for p in patterns]   # placeholder → NY
@@ -323,20 +330,121 @@ def _process_sheet_xml(xml_bytes, col_pairs, cy_vals, cy_formulas, shared_string
 
 
 def _update_shared_strings(xml_bytes, pairs):
-    """Replace date text in sharedStrings.xml."""
+    """Replace date text in sharedStrings.xml.
+    
+    Handles BOTH plain strings and rich-text entries where a date like
+    "31st MARCH, 2025" is split across multiple <t> elements
+    (e.g., "31" + "st" + " MARCH, 2025" for superscript formatting).
+    
+    Strategy for rich-text: concatenate all <t> texts, apply replacements
+    on the full string, then redistribute the changes back proportionally.
+    """
     root = ET.fromstring(xml_bytes)
     changed = False
     for si in root:
-        for t_el in si.iter(f"{{{_NS}}}t"):
+        t_els = list(si.iter(f"{{{_NS}}}t"))
+        if not t_els:
+            continue
+
+        # --- Single <t> (plain string) — fast path ---
+        if len(t_els) == 1:
+            t_el = t_els[0]
             if t_el.text:
                 new_text = _apply_pairs(t_el.text, pairs)
                 if new_text != t_el.text:
                     t_el.text = new_text
                     changed = True
+            continue
+
+        # --- Multiple <t> (rich-text) — concatenate, replace, redistribute ---
+        originals = [t.text or "" for t in t_els]
+        full_old = "".join(originals)
+        full_new = _apply_pairs(full_old, pairs)
+        if full_new == full_old:
+            continue
+        changed = True
+
+        # Redistribute: walk new text assigning to each run.
+        # Keep each run's length the same where possible; absorb any
+        # length change (from e.g. "2025" → "2026", same length, or
+        # "2024-25" → "2025-26") into the run that contains the change.
+        _redistribute_rich_text(t_els, originals, full_new)
+
     if not changed:
         return xml_bytes
     ET.register_namespace("", _NS)
     return ET.tostring(root, xml_declaration=True, encoding="UTF-8")
+
+
+def _redistribute_rich_text(t_els, originals, full_new):
+    """Redistribute replaced full_new text back into t_els runs.
+    
+    Uses a simple approach: find common prefix/suffix between old and new
+    full text, then assign the changed middle portion to whichever runs
+    it overlaps with.
+    """
+    full_old = "".join(originals)
+    
+    # Find which character positions changed
+    # Build a mapping: for each run, its start/end position in full_old
+    run_ranges = []
+    pos = 0
+    for orig in originals:
+        run_ranges.append((pos, pos + len(orig)))
+        pos += len(orig)
+    
+    # If lengths are the same (most common: year number swap), we can map 1:1
+    if len(full_new) == len(full_old):
+        pos = 0
+        for i, t_el in enumerate(t_els):
+            run_len = len(originals[i])
+            t_el.text = full_new[pos:pos + run_len]
+            pos += run_len
+        return
+    
+    # Lengths differ — find common prefix/suffix and assign the changed
+    # region proportionally. This handles cases like "2024-25" → "2025-26"
+    # where the replacement might span multiple runs.
+    pfx = 0
+    while pfx < len(full_old) and pfx < len(full_new) and full_old[pfx] == full_new[pfx]:
+        pfx += 1
+    sfx = 0
+    while (sfx < len(full_old) - pfx and sfx < len(full_new) - pfx and
+           full_old[-(sfx+1)] == full_new[-(sfx+1)]):
+        sfx += 1
+    
+    # Assign runs: unchanged prefix runs get their original text,
+    # the run(s) spanning the changed region get the new middle,
+    # unchanged suffix runs get their original text.
+    new_texts = []
+    pos = 0
+    change_start = pfx
+    change_end_old = len(full_old) - sfx
+    change_end_new = len(full_new) - sfx
+    new_middle = full_new[change_start:change_end_new]
+    middle_assigned = False
+    
+    for i, (rstart, rend) in enumerate(run_ranges):
+        if rend <= change_start:
+            # Entirely before change — keep original
+            new_texts.append(originals[i])
+        elif rstart >= change_end_old:
+            # Entirely after change — keep original
+            new_texts.append(originals[i])
+        else:
+            # This run overlaps the change
+            before = originals[i][:max(0, change_start - rstart)]
+            after = originals[i][max(0, change_end_old - rstart):]
+            if not middle_assigned:
+                new_texts.append(before + new_middle + after)
+                middle_assigned = True
+            else:
+                # Additional overlapping runs — their changed portion was
+                # already consumed; keep only the after-change suffix
+                new_texts.append(after)
+    
+    for i, t_el in enumerate(t_els):
+        t_el.text = new_texts[i] if i < len(new_texts) else ""
 
 
 def _update_sheet_inline_strings(xml_bytes, pairs):
