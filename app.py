@@ -1109,11 +1109,114 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
 
 .assessee-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;background:#EFF6FF;color:#1E40AF;margin-bottom:10px}
 
-@media print{nav,footer,.hero,.regime-toggle,.card:first-child,.btn-calc,.btn-reset,.print-btn,.toast,.year-pills{display:none!important}
+/* ═══════════════════════════════════════════
+   ANIMATIONS & MICRO-INTERACTIONS
+   ═══════════════════════════════════════════ */
+
+/* ── Scroll-reveal cards ── */
+.reveal{opacity:0;transform:translateY(28px);transition:opacity .55s cubic-bezier(.22,1,.36,1),transform .55s cubic-bezier(.22,1,.36,1)}
+.reveal.visible{opacity:1;transform:translateY(0)}
+.reveal-delay-1{transition-delay:.08s}
+.reveal-delay-2{transition-delay:.16s}
+.reveal-delay-3{transition-delay:.24s}
+.reveal-delay-4{transition-delay:.32s}
+
+/* ── Result panel slide-in ── */
+@keyframes slideUp{from{opacity:0;transform:translateY(32px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.result-panel.show{animation:slideUp .5s cubic-bezier(.22,1,.36,1) forwards}
+.result-row{animation:fadeIn .3s ease both}
+
+/* ── Calculate button states ── */
+.btn-calc{position:relative;overflow:hidden}
+.btn-calc .btn-text{transition:opacity .2s}
+.btn-calc .btn-spinner{position:absolute;display:none;width:18px;height:18px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.btn-calc.loading .btn-text{opacity:0}
+.btn-calc.loading .btn-spinner{display:block}
+.btn-calc .ripple{position:absolute;border-radius:50%;background:rgba(255,255,255,.35);transform:scale(0);animation:rippleAnim .55s linear;pointer-events:none}
+@keyframes rippleAnim{to{transform:scale(4);opacity:0}}
+
+/* ── Progress bar ── */
+#calcProgress{position:fixed;top:0;left:0;width:0;height:3px;background:linear-gradient(90deg,var(--brand),#60A5FA,var(--green));z-index:9999;transition:width .35s ease;border-radius:0 3px 3px 0;box-shadow:0 0 8px rgba(37,99,235,.5)}
+
+/* ── Number counter ── */
+.count-anim{display:inline-block;transition:transform .1s}
+
+/* ── Tax Donut Chart ── */
+#taxChartWrap{margin-top:20px;padding:16px;background:#F9FAFB;border-radius:12px;border:1px solid var(--border)}
+#taxChartWrap h3{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:14px;text-align:center}
+.donut-container{display:flex;align-items:center;gap:20px;flex-wrap:wrap;justify-content:center}
+.donut-svg{flex-shrink:0;filter:drop-shadow(0 4px 12px rgba(0,0,0,.08))}
+.donut-legend{display:flex;flex-direction:column;gap:8px;min-width:140px}
+.donut-legend-item{display:flex;align-items:center;gap:8px;font-size:12px}
+.donut-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.donut-label{color:var(--muted);font-weight:500}
+.donut-val{font-weight:700;color:var(--ink);margin-left:auto}
+.donut-segment{transition:stroke-dasharray .8s cubic-bezier(.22,1,.36,1),stroke-dashoffset .8s cubic-bezier(.22,1,.36,1)}
+
+/* ── Regime bar chart ── */
+#regimeChartWrap{margin-top:16px;padding:16px;background:#F9FAFB;border-radius:12px;border:1px solid var(--border)}
+#regimeChartWrap h3{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:14px;text-align:center}
+.bar-chart{display:flex;flex-direction:column;gap:10px}
+.bar-row{display:flex;align-items:center;gap:10px;font-size:12px}
+.bar-label{width:90px;font-weight:600;color:var(--muted);font-size:11px;text-align:right;flex-shrink:0}
+.bar-track{flex:1;height:22px;background:#E5E7EB;border-radius:6px;overflow:hidden;position:relative}
+.bar-fill{height:100%;border-radius:6px;width:0;transition:width 1s cubic-bezier(.22,1,.36,1);display:flex;align-items:center;justify-content:flex-end;padding-right:8px}
+.bar-fill span{font-size:10px;font-weight:700;color:#fff;white-space:nowrap}
+.bar-val{width:90px;font-weight:700;font-size:11px;color:var(--ink);flex-shrink:0}
+
+/* ── Confetti ── */
+.confetti-piece{position:fixed;width:8px;height:8px;top:-10px;border-radius:2px;pointer-events:none;z-index:9998;animation:confettiFall linear forwards}
+@keyframes confettiFall{0%{transform:translateY(0) rotate(0deg);opacity:1}100%{transform:translateY(110vh) rotate(720deg);opacity:0}}
+
+/* ── Assessee button pop ── */
+.at-btn{transition:all .18s cubic-bezier(.34,1.56,.64,1)}
+.at-btn.active{transform:scale(1.05)}
+.at-btn:active{transform:scale(.95)}
+
+/* ── Input focus ring glow ── */
+input[type=number]:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+select:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(37,99,235,.12);outline:none}
+
+/* ── Card hover lift ── */
+.card{transition:box-shadow .25s,transform .25s}
+.card:hover{box-shadow:0 8px 32px rgba(0,0,0,.10);transform:translateY(-2px)}
+
+/* ── Year pill bounce ── */
+.year-pill{transition:all .2s cubic-bezier(.34,1.56,.64,1)}
+.year-pill.active{transform:scale(1.06)}
+
+/* ── Regime btn pop ── */
+.regime-btn{transition:all .2s cubic-bezier(.34,1.56,.64,1)}
+.regime-btn.active{transform:scale(1.04)}
+
+/* ── Result row stagger ── */
+@keyframes rowIn{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:translateX(0)}}
+.result-row{animation:rowIn .3s ease both}
+
+/* ── Total row pulse ── */
+@keyframes totalPulse{0%{transform:scale(1)}50%{transform:scale(1.02)}100%{transform:scale(1)}}
+.result-row.total{animation:rowIn .4s ease both, totalPulse .4s ease .5s}
+
+/* ── Toast slide & bounce ── */
+@keyframes toastIn{0%{transform:translateY(80px) scale(.9)}70%{transform:translateY(-4px) scale(1.02)}100%{transform:translateY(0) scale(1)}}
+.toast.show{animation:toastIn .4s cubic-bezier(.34,1.56,.64,1) forwards}
+
+/* ── Hero text shimmer on load ── */
+@keyframes shimmer{0%{background-position:200% center}100%{background-position:-200% center}}
+.hero-shimmer{background:linear-gradient(90deg,var(--brand) 0%,#60A5FA 40%,var(--brand) 80%);background-size:200% auto;-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;animation:shimmer 3s linear infinite}
+
+/* ── Nav scroll shadow ── */
+nav{transition:box-shadow .3s}
+nav.scrolled{box-shadow:0 4px 24px rgba(0,0,0,.10)}
+
+@media print{nav,footer,.hero,.regime-toggle,.card:first-child,.btn-calc,.btn-reset,.print-btn,.toast,.year-pills,#calcProgress{display:none!important}
              .result-panel{display:block!important}.calc-grid{display:block!important}
              .card{box-shadow:none!important;border:1px solid #ccc!important}}
 </style></head><body>
 
+<div id="calcProgress"></div>
 <nav>
   <a href="/" class="logo">CA<span>Toolkit</span></a>
   <ul class="nav-links">
@@ -1133,7 +1236,7 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
 
 <section class="hero">
   <div class="hero-badge">🧮 Multi-Year · PY 2023-24 to PY 2026-27</div>
-  <h1>Income Tax <em>Calculator</em></h1>
+  <h1>Income Tax <em class="hero-shimmer">Calculator</em></h1>
   <p>Calculate tax under Old &amp; New Regime for any year from PY 2023-24 to PY 2026-27. Income under 5 heads, deductions, TDS/TCS — instant comparison with slab-wise breakup.</p>
 </section>
 
@@ -1150,7 +1253,7 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
   <!-- LEFT: Input Section -->
   <div>
     <!-- ──── BASIC INFO ──── -->
-    <div class="card">
+    <div class="card reveal reveal-delay-1">
       <div class="card-head">
         <div class="icon" style="background:#EFF6FF">👤</div>
         <div><h2>Basic Information</h2><p>Assessee details &amp; Assessment Year</p></div>
@@ -1654,7 +1757,10 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
       </div>
     </div>
 
-    <button class="btn-calc" onclick="calculateTax()">🧮 Calculate Tax</button>
+    <button class="btn-calc" id="calcBtn" onclick="calculateTax(event)">
+      <span class="btn-text">🧮 Calculate Tax</span>
+      <div class="btn-spinner"></div>
+    </button>
     <button class="btn-reset" onclick="resetForm()">↺ Reset All Fields</button>
   </div>
 
@@ -1669,6 +1775,21 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
         </div>
         <div class="card-body">
           <div id="resultBody"></div>
+          <!-- Donut chart -->
+          <div id="taxChartWrap" style="display:none">
+            <h3>Tax Breakdown</h3>
+            <div class="donut-container">
+              <svg class="donut-svg" width="140" height="140" viewBox="0 0 140 140">
+                <circle cx="70" cy="70" r="54" fill="none" stroke="#F3F4F6" stroke-width="22"/>
+                <circle id="donut-base" class="donut-segment" cx="70" cy="70" r="54" fill="none" stroke="#2563EB" stroke-width="22" stroke-dasharray="0 339.3" stroke-dashoffset="84.8" stroke-linecap="round"/>
+                <circle id="donut-surcharge" class="donut-segment" cx="70" cy="70" r="54" fill="none" stroke="#F59E0B" stroke-width="22" stroke-dasharray="0 339.3" stroke-dashoffset="84.8" stroke-linecap="round"/>
+                <circle id="donut-cess" class="donut-segment" cx="70" cy="70" r="54" fill="none" stroke="#10B981" stroke-width="22" stroke-dasharray="0 339.3" stroke-dashoffset="84.8" stroke-linecap="round"/>
+                <text x="70" y="65" text-anchor="middle" font-size="10" fill="#6B7280" font-weight="600" font-family="Inter,sans-serif">Total Tax</text>
+                <text id="donut-center-val" x="70" y="82" text-anchor="middle" font-size="13" fill="#111827" font-weight="800" font-family="Inter,sans-serif">₹0</text>
+              </svg>
+              <div class="donut-legend" id="donutLegend"></div>
+            </div>
+          </div>
           <button class="print-btn" onclick="window.print()">🖨️ Print / Save PDF</button>
         </div>
       </div>
@@ -1682,6 +1803,12 @@ select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px
             <thead><tr><th></th><th>🆕 New Regime</th><th>📜 Old Regime</th></tr></thead>
             <tbody id="compareBody"></tbody>
           </table>
+        </div>
+
+        <!-- Regime bar chart -->
+        <div id="regimeChartWrap">
+          <h3>📊 Visual Comparison</h3>
+          <div class="bar-chart" id="regimeBarChart"></div>
         </div>
 
         <div class="card" style="margin-top:16px">
@@ -2824,6 +2951,9 @@ function calculateTax() {
       '<h3 style="font-size:13px;font-weight:700;margin-bottom:8px">📜 Old Regime Slabs</h3>' +
       renderSlabs(rOld);
 
+    // Regime bar chart
+    setTimeout(() => renderRegimeBarChart(rNew, rOld), 400);
+
     // Advance tax for 2026-27
     renderAdvanceTaxSchedule(rNew.totalTax, rNew.tdsPaid, rNew.tcsPaid);
     renderMatAmtResult(rNew);
@@ -2903,6 +3033,305 @@ function toast(msg) {
 setRegime('new');
 updateRefSlabs();
 onAssesseeTypeChange();
+
+/* ═══════════════════════════════════════════
+   ANIMATION ENGINE
+   ═══════════════════════════════════════════ */
+
+/* ── 1. Scroll reveal ── */
+function initReveal() {
+  const obs = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); obs.unobserve(e.target); } });
+  }, { threshold: 0.08 });
+  document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
+}
+initReveal();
+
+/* ── 2. Nav scroll shadow ── */
+window.addEventListener('scroll', () => {
+  document.querySelector('nav').classList.toggle('scrolled', window.scrollY > 10);
+});
+
+/* ── 3. Progress bar ── */
+function showProgress() {
+  const bar = document.getElementById('calcProgress');
+  bar.style.width = '0';
+  bar.style.transition = 'none';
+  requestAnimationFrame(() => {
+    bar.style.transition = 'width .35s ease';
+    bar.style.width = '70%';
+    setTimeout(() => { bar.style.width = '95%'; }, 350);
+  });
+}
+function finishProgress() {
+  const bar = document.getElementById('calcProgress');
+  bar.style.width = '100%';
+  setTimeout(() => { bar.style.width = '0'; bar.style.transition = 'none'; }, 400);
+}
+
+/* ── 4. Button ripple ── */
+function addRipple(btn, e) {
+  const rect = btn.getBoundingClientRect();
+  const size = Math.max(rect.width, rect.height) * 2;
+  const r = document.createElement('span');
+  r.className = 'ripple';
+  r.style.cssText = `width:${size}px;height:${size}px;left:${e.clientX - rect.left - size/2}px;top:${e.clientY - rect.top - size/2}px`;
+  btn.appendChild(r);
+  r.addEventListener('animationend', () => r.remove());
+}
+
+/* ── 5. Number counter ── */
+function animateCounter(el, target, prefix, suffix, duration) {
+  const start = performance.now();
+  const startVal = 0;
+  function update(now) {
+    const progress = Math.min((now - start) / duration, 1);
+    const ease = 1 - Math.pow(1 - progress, 3);
+    const current = Math.round(startVal + (target - startVal) * ease);
+    el.textContent = prefix + current.toLocaleString('en-IN') + suffix;
+    if (progress < 1) requestAnimationFrame(update);
+  }
+  requestAnimationFrame(update);
+}
+
+function animateAllCounters() {
+  document.querySelectorAll('.val').forEach(el => {
+    const text = el.textContent.trim();
+    const isNeg = text.startsWith('-₹');
+    const clean = text.replace(/[₹,\-]/g, '');
+    const num = parseFloat(clean);
+    if (!isNaN(num) && num > 0) {
+      animateCounter(el, num, isNeg ? '-₹' : '₹', '', 900);
+    }
+  });
+}
+
+/* ── 6. Donut chart ── */
+const CIRC = 2 * Math.PI * 54; // 339.3
+const DONUT_COLORS = ['#2563EB', '#F59E0B', '#10B981', '#EF4444'];
+const DONUT_LABELS = ['Base Tax', 'Surcharge', 'Cess', 'Special Rate Tax'];
+const DONUT_IDS    = ['donut-base', 'donut-surcharge', 'donut-cess', 'donut-special'];
+
+function renderDonutChart(baseTax, surcharge, cess, specialTax) {
+  const wrap = document.getElementById('taxChartWrap');
+  const total = baseTax + surcharge + cess + specialTax;
+  if (total <= 0) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+
+  const values = [baseTax, surcharge, cess, specialTax];
+  document.getElementById('donut-center-val').textContent = '₹' + Math.round(total).toLocaleString('en-IN');
+
+  // Build SVG segments — need 4 circles layered with correct dashoffset
+  // Remove old special segment if exists
+  const oldSpecial = document.getElementById('donut-special');
+  if (oldSpecial) oldSpecial.remove();
+
+  let offsetDeg = 0; // starts at top (adjusted by -85° in CSS)
+  const ids = ['donut-base', 'donut-surcharge', 'donut-cess'];
+  const colors = ['#2563EB', '#F59E0B', '#10B981'];
+  const mainVals = [baseTax, surcharge, cess];
+
+  // Also add special if needed
+  if (specialTax > 0) {
+    const svg = document.querySelector('.donut-svg');
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('id', 'donut-special');
+    circle.setAttribute('class', 'donut-segment');
+    circle.setAttribute('cx', '70'); circle.setAttribute('cy', '70'); circle.setAttribute('r', '54');
+    circle.setAttribute('fill', 'none'); circle.setAttribute('stroke', '#EF4444');
+    circle.setAttribute('stroke-width', '22');
+    circle.setAttribute('stroke-dasharray', '0 339.3');
+    circle.setAttribute('stroke-dashoffset', '84.8');
+    circle.setAttribute('stroke-linecap', 'round');
+    svg.appendChild(circle);
+    ids.push('donut-special'); colors.push('#EF4444'); mainVals.push(specialTax);
+  }
+
+  let cumOffset = CIRC * 0.25; // start at top
+  ids.forEach((id, i) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const pct = mainVals[i] / total;
+    const dash = pct * CIRC;
+    const gap  = CIRC - dash;
+    el.setAttribute('stroke', colors[i]);
+    // Animate after paint
+    setTimeout(() => {
+      el.style.strokeDasharray = `${dash} ${gap}`;
+      el.style.strokeDashoffset = cumOffset;
+    }, 80 + i * 60);
+    cumOffset -= dash;
+  });
+
+  // Legend
+  const legend = document.getElementById('donutLegend');
+  const allLabels = ['Base Tax', 'Surcharge', 'Cess', 'Special Rate'];
+  legend.innerHTML = ids.map((id, i) => {
+    if (mainVals[i] <= 0) return '';
+    const pct = ((mainVals[i] / total) * 100).toFixed(1);
+    return `<div class="donut-legend-item">
+      <span class="donut-dot" style="background:${colors[i]}"></span>
+      <span class="donut-label">${allLabels[i]}</span>
+      <span class="donut-val">${pct}%</span>
+    </div>`;
+  }).join('');
+}
+
+/* ── 7. Regime bar chart ── */
+function renderRegimeBarChart(rNew, rOld) {
+  const wrap = document.getElementById('regimeChartWrap');
+  const chart = document.getElementById('regimeBarChart');
+  const maxVal = Math.max(rNew.totalTax, rOld.totalTax, 1);
+
+  const rows = [
+    { label: 'Taxable Income', nv: rNew.normalTaxable, ov: rOld.normalTaxable },
+    { label: 'Base Tax', nv: rNew.normalTaxAfterRebate, ov: rOld.normalTaxAfterRebate },
+    { label: 'Total Tax', nv: rNew.totalTax, ov: rOld.totalTax },
+    { label: 'Net Payable', nv: Math.max(0,rNew.netPayable), ov: Math.max(0,rOld.netPayable) },
+  ];
+
+  const maxAll = Math.max(...rows.map(r => Math.max(r.nv, r.ov)), 1);
+
+  chart.innerHTML = rows.map(r => {
+    const nPct = (r.nv / maxAll * 100).toFixed(1);
+    const oPct = (r.ov / maxAll * 100).toFixed(1);
+    const nWinner = r.nv <= r.ov;
+    return `<div style="margin-bottom:14px">
+      <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">${r.label}</div>
+      <div class="bar-row">
+        <div class="bar-label" style="color:#2563EB;font-size:10px">🆕 New</div>
+        <div class="bar-track">
+          <div class="bar-fill" style="background:${nWinner?'#2563EB':'#93C5FD'}" data-pct="${nPct}">
+            <span>₹${Math.round(r.nv/1000)}K</span>
+          </div>
+        </div>
+        <div class="bar-val" style="color:${nWinner?'#2563EB':'var(--muted)'}">₹${Math.round(r.nv).toLocaleString('en-IN')}</div>
+      </div>
+      <div class="bar-row" style="margin-top:4px">
+        <div class="bar-label" style="color:#F59E0B;font-size:10px">📜 Old</div>
+        <div class="bar-track">
+          <div class="bar-fill" style="background:${!nWinner?'#F59E0B':'#FCD34D'}" data-pct="${oPct}">
+            <span>₹${Math.round(r.ov/1000)}K</span>
+          </div>
+        </div>
+        <div class="bar-val" style="color:${!nWinner?'#F59E0B':'var(--muted)'}">₹${Math.round(r.ov).toLocaleString('en-IN')}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Animate bars after DOM paint
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      document.querySelectorAll('.bar-fill').forEach(bar => {
+        bar.style.width = bar.dataset.pct + '%';
+      });
+    }, 100);
+  });
+}
+
+/* ── 8. Confetti burst ── */
+function fireConfetti() {
+  const colors = ['#2563EB','#10B981','#F59E0B','#EF4444','#8B5CF6','#EC4899'];
+  for (let i = 0; i < 60; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'confetti-piece';
+    piece.style.cssText = `
+      left: ${Math.random()*100}vw;
+      background: ${colors[Math.floor(Math.random()*colors.length)]};
+      width: ${4+Math.random()*6}px;
+      height: ${4+Math.random()*6}px;
+      border-radius: ${Math.random()>.5?'50%':'2px'};
+      animation-duration: ${1.5+Math.random()*2}s;
+      animation-delay: ${Math.random()*.5}s;
+      opacity: 1;
+    `;
+    document.body.appendChild(piece);
+    piece.addEventListener('animationend', () => piece.remove());
+  }
+}
+
+/* ── Override calculateTax to wire animations ── */
+const _origCalc = calculateTax;
+calculateTax = function(e) {
+  const btn = document.getElementById('calcBtn');
+
+  // Ripple
+  if (e && btn) addRipple(btn, e);
+
+  // Spinner
+  if (btn) btn.classList.add('loading');
+
+  // Progress bar
+  showProgress();
+
+  // Small delay to show spinner, then compute
+  setTimeout(() => {
+    _origCalc();
+    if (btn) btn.classList.remove('loading');
+    finishProgress();
+
+    // Counter animation
+    setTimeout(animateAllCounters, 200);
+
+    // Add reveal to result cards
+    document.querySelectorAll('#resultPanel .card, #resultPanel > div').forEach((el, i) => {
+      el.classList.add('reveal');
+      el.style.transitionDelay = (i * 0.07) + 's';
+      setTimeout(() => el.classList.add('visible'), 50 + i * 70);
+    });
+
+    // Wire up donut chart from result data
+    // (called from calculateTax internals via hook below)
+
+  }, 380);
+};
+
+/* Hook into renderResult to trigger donut */
+const _origRenderResult = renderResult;
+renderResult = function(r) {
+  const html = _origRenderResult(r);
+  // Schedule donut render
+  setTimeout(() => {
+    const baseTax = r.normalTaxAfterRebate || r.normalTax || 0;
+    const surcharge = r.totalSurcharge || 0;
+    const cess = r.cess || 0;
+    const special = r.totalSpecialTax || 0;
+    renderDonutChart(baseTax, surcharge, cess, special);
+
+    // Confetti if zero tax
+    if ((r.totalTax || 0) === 0 || (r.netPayable || 0) <= 0) {
+      fireConfetti();
+    }
+  }, 500);
+  return html;
+};
+
+/* Hook into calculateTax for regime bar chart */
+const _origCmpRow = cmpRow;
+let _lastRNew = null, _lastROld = null;
+const _origCalcTax2 = calculateTax;
+// Patch the compare path via renderResult hook on compare
+const _origCalcTaxFinal = calculateTax;
+calculateTax = (function(prev) {
+  return function(e) {
+    prev(e);
+    // Regime bar chart rendered after compute
+    setTimeout(() => {
+      if (document.getElementById('compareResult').style.display !== 'none') {
+        // bar chart data is set by calculateTax — read from compare table
+        const rows = document.querySelectorAll('#compareBody tr');
+        if (rows.length >= 3) {
+          // parse from DOM (simpler than re-running compute)
+          document.getElementById('regimeChartWrap').style.display = 'block';
+        }
+      }
+    }, 500);
+  };
+})(calculateTax);
+
+/* Store last comparison data for bar chart */
+const _origCalculateTaxInner = window.calculateTax;
+
 </script>
 </body></html>"""
 
