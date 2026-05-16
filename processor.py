@@ -241,6 +241,16 @@ def _detect_columns(ws, closing_year: int) -> list:
     if not cy_cols:
         return []
 
+    # BUG 1 FIX: Remove col 1 (A) from cy_cols — it's almost always a 
+    # label/title column containing text like "Current Year (CY)" but no data.
+    # Real CY data columns are always col 2 (B) or higher.
+    cy_cols.discard(1)
+    py_cols.discard(1)
+    py_cols.discard(2)  # Col B is rarely a PY data col (usually labels)
+
+    if not cy_cols:
+        return []
+
     pairs, used = [], set()
     for cc in sorted(cy_cols):
         # Look for a PY col to the right (offset 1, 2, or 3)
@@ -417,8 +427,14 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
                             frows.add(rn)
                             if isinstance(cell.value, (int, float)) and cell.value is not None:
                                 vals[rn] = float(cell.value)
+                            elif cell.value is None:
+                                # Formula evaluated to empty/zero — record as 0
+                                vals[rn] = 0.0
                         elif isinstance(cell.value, (int, float)) and cell.value is not None:
                             vals[rn] = float(cell.value)
+                        elif isinstance(cell.value, str) and cell.value.strip() in ("-", "—", "–", "-"):
+                            # BUG 2 FIX: dash string = zero. Copy 0 to PY column.
+                            vals[rn] = 0.0
 
                 cy_vals_sheet[cy_l]  = vals
                 cy_frows_sheet[cy_l] = frows
@@ -483,9 +499,11 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                 cy_l = py_to_cy[cl]
                 py_l, vals, frows = col_info[cy_l]
                 if rn in vals:
-                    has_f = cell_el.find(f"{{{_NS}}}f") is not None
-                    if not has_f:
-                        changes[ref] = ("set_v", _fmt_num(vals[rn]))
+                    # BUG 3 FIX: Write CY value to PY cell even if PY cell
+                    # is currently a formula. PY column should be hardcoded
+                    # actuals (last year's numbers), not live formula refs.
+                    # This also fixes BS E→F where both cols are formulas.
+                    changes[ref] = ("set_v_overwrite", _fmt_num(vals[rn]))
 
             if cl in cy_letters:
                 _, vals, frows = col_info[cl]
@@ -510,7 +528,11 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
         if action == "clear_v":
             full = re.sub(r'<v>[^<]*</v>', '', full)
             full = re.sub(r'<v\s*/>', '', full)
-        else:  # set_v
+        elif action in ("set_v", "set_v_overwrite"):
+            if action == "set_v_overwrite":
+                # Remove any <f>...</f> formula tag first (convert formula → value)
+                full = re.sub(r'<f[^>]*>.*?</f>', '', full, flags=re.DOTALL)
+                full = re.sub(r'<f[^>]*/>', '', full)
             if '<v>' in full:
                 full = re.sub(r'<v>[^<]*</v>', f'<v>{new_val}</v>', full)
             else:
@@ -537,6 +559,11 @@ def _fmt_num(v: float) -> str:
     if v == int(v):
         return str(int(v))
     return repr(v)  # repr gives enough precision without scientific notation
+
+def _fmt_num_for_py(v: float) -> str:
+    """Format CY value for writing to PY cell. Zero stays as zero (not dash) 
+    because PY column may have its own dash formatting via cell format."""
+    return _fmt_num(v)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
