@@ -5877,44 +5877,44 @@ async function doProcess(){
 
 def _parse_gstr3b_pdf(pdf_path):
     """Extract Table 3.1 data (rows A,B,C,E — NOT D) from a GSTR 3B PDF.
-    
-    Uses pdftotext (C-based, instant) for metadata and pdfplumber cropped
-    to just the 3.1 table area for reliable number extraction.  ~0.3s/PDF.
+
+    Uses pdfplumber cropped to just the top ~45 % of page 1 where Table 3.1
+    lives. Skips the rest of the page (tables 3.1.1, 3.2, 4, 5 …) for speed.
+    ~0.2 s per PDF, no external CLI dependencies.
     """
-    import subprocess, pdfplumber
-    # ── fast metadata via pdftotext ──────────────────────────────────────
-    try:
-        text = subprocess.run(
-            ['pdftotext', '-f', '1', '-l', '1', pdf_path, '-'],
-            capture_output=True, text=True, timeout=10
-        ).stdout
-    except Exception:
-        text = ""
+    import pdfplumber
 
-    period_m = re.search(r'Period\s+(\w+)', text)
-    year_m   = re.search(r'Year\s+([\d-]+)', text)
-    gstin_m  = re.search(r'GSTIN of the supplier\s+(\S+)', text)
-    trade_m  = re.search(r'Trade name, if any\s+(.+?)(?:\n|$)', text)
-
-    period     = period_m.group(1).strip() if period_m else None
-    year       = year_m.group(1).strip()   if year_m   else None
-    gstin      = gstin_m.group(1).strip()  if gstin_m  else None
-    trade_name = trade_m.group(1).strip()  if trade_m  else None
-    state_code = gstin[:2] if gstin else None
-
-    # ── table 3.1 via cropped pdfplumber (top 45% of page 1 only) ───────
     result = {'taxable': 0, 'igst': 0, 'cgst': 0, 'sgst': 0, 'cess': 0}
+    period = year = gstin = trade_name = state_code = None
+
     try:
         with pdfplumber.open(pdf_path) as pdf:
             page = pdf.pages[0]
+            text = page.extract_text() or ""
+
+            # ── metadata ────────────────────────────────────────────────
+            period_m = re.search(r'Period\s+(\w+)', text)
+            year_m   = re.search(r'Year\s+([\d-]+)', text)
+            gstin_m  = re.search(r'GSTIN of the supplier\s+(\S+)', text)
+            trade_m  = re.search(r'Trade name, if any\s+(.+?)(?:\n|$)', text)
+
+            period     = period_m.group(1).strip() if period_m else None
+            year       = year_m.group(1).strip()   if year_m   else None
+            gstin      = gstin_m.group(1).strip()  if gstin_m  else None
+            trade_name = trade_m.group(1).strip()  if trade_m  else None
+            state_code = gstin[:2] if gstin else None
+
+            # ── table 3.1 (cropped to top 45 % of page) ────────────────
             cropped = page.crop((0, 0, page.width, page.height * 0.45))
             tables = cropped.extract_tables()
+
             for t in tables:
                 if not t or not t[0] or not t[0][0]:
                     continue
                 if 'Nature of Supplies' not in str(t[0][0]):
                     continue
-                if not any('Outward taxable supplies' in str(r[0] or '') for r in t[1:]):
+                if not any('Outward taxable supplies' in str(r[0] or '')
+                           for r in t[1:]):
                     continue
 
                 def cn(s):
@@ -5927,7 +5927,7 @@ def _parse_gstr3b_pdf(pdf_path):
 
                 for row in t[1:]:
                     lbl = str(row[0] or '').lower()
-                    if '(d)' in lbl:
+                    if '(d)' in lbl:          # skip reverse charge
                         continue
                     if any(f'({x})' in lbl for x in 'abce'):
                         result['taxable'] += cn(row[1])
@@ -5935,7 +5935,7 @@ def _parse_gstr3b_pdf(pdf_path):
                         result['cgst']    += cn(row[3])
                         result['sgst']    += cn(row[4])
                         result['cess']    += cn(row[5])
-                break
+                break                         # only need the first matching table
     except Exception:
         pass
 
@@ -5945,7 +5945,8 @@ def _parse_gstr3b_pdf(pdf_path):
         'taxable_value': result['taxable'],
         'igst': result['igst'], 'cgst': result['cgst'],
         'sgst': result['sgst'], 'cess': result['cess'],
-        'total_tax': result['igst'] + result['cgst'] + result['sgst'] + result['cess'],
+        'total_tax': (result['igst'] + result['cgst']
+                      + result['sgst'] + result['cess']),
     }
 
 
@@ -6113,6 +6114,9 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
     # Validate mappings
     valid_mappings = {}
     for sc, col_name in mappings.items():
+        if not col_name:
+            log.append(f"⚠ State {sc}: no column name provided — skipped")
+            continue
         if col_name in col_headers:
             valid_mappings[sc] = col_name
         else:
@@ -6123,6 +6127,12 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
                     break
             if sc not in valid_mappings:
                 log.append(f"⚠ Warning: Column '{col_name}' not found for state {sc}")
+
+    if not valid_mappings:
+        return {'status': 'error',
+                'message': 'No valid state-column mappings. Please enter the exact column header names from your sales file (e.g. DRH/LDH, LUCKNOW, RUDRAPUR, HOSUR).'}
+
+    log.append(f"Valid mappings: {', '.join(f'{k}→{v}' for k,v in valid_mappings.items())}")
 
     month_totals = {}  # {month: {books, gstr, tax}}
 
