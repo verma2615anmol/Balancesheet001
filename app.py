@@ -64,7 +64,7 @@ PLANS = {
     "standard": {"label": "Standard",     "uploads": 25,  "price": 130},
     "pro":      {"label": "Professional", "uploads": 60,  "price": 270},
     "firm":     {"label": "Firm",         "uploads": 150, "price": 600},
-    "ca":       {"label": "CA Admin",     "uploads": 500, "price": 1500},
+    "ca":       {"label": "CA Admin",     "uploads": 500, "price": 1000},
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -620,9 +620,9 @@ input:focus{border-color:var(--brand)}
                  border-bottom:1px solid var(--border);padding:48px 24px}
 .pricing-section h2{text-align:center;font-size:24px;font-weight:800;margin-bottom:6px}
 .psub{text-align:center;color:var(--muted);font-size:13px;margin-bottom:32px}
-.plans{max-width:980px;margin:0 auto;
-       display:grid;grid-template-columns:repeat(5,1fr);gap:14px}
-@media(max-width:900px){.plans{grid-template-columns:repeat(2,1fr)}}
+.plans{max-width:1080px;margin:0 auto;
+       display:grid;grid-template-columns:repeat(6,1fr);gap:14px}
+@media(max-width:900px){.plans{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:480px){.plans{grid-template-columns:1fr}}
 .plan{border:1.5px solid var(--border);border-radius:var(--radius);padding:20px 16px;position:relative}
 .plan.pop{border-color:var(--brand)}
@@ -871,7 +871,7 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
     </div>
     <div class="plan">
       <div class="plan-name">CA Admin</div>
-      <div class="plan-price">₹1,500</div>
+      <div class="plan-price">₹1,000</div>
       <div class="plan-uploads">500 uploads</div>
       <div class="plan-validity">3 month validity</div>
       <ul><li>All features + GST Recon</li><li>WhatsApp support</li><li>Best for CA firms</li></ul>
@@ -5194,7 +5194,7 @@ tr:hover td{background:#F9FAFB}
               <option value="standard" selected>Standard (25 uploads · ₹130)</option>
               <option value="pro">Professional (60 uploads · ₹270)</option>
               <option value="firm">Firm (150 uploads · ₹600)</option>
-              <option value="ca">CA Admin (500 uploads · ₹1500)</option>
+              <option value="ca">CA Admin (500 uploads · ₹1000)</option>
             </select></div>
           <div class="field"><label>&nbsp;</label>
             <button class="btn" type="submit">Create User</button></div>
@@ -5798,6 +5798,78 @@ input[type=text]:focus{border-color:var(--brand)}
     </div>
   </div>
 </div>
+
+<section style="background:var(--white);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:48px 24px">
+  <h2 style="text-align:center;font-size:24px;font-weight:800;margin-bottom:6px">Simple Pricing</h2>
+  <p style="text-align:center;color:var(--muted);font-size:13px;margin-bottom:32px">Upload-based · 3-month validity · Shared across all premium tools</p>
+  <div style="max-width:1080px;margin:0 auto;display:grid;grid-template-columns:repeat(6,1fr);gap:14px">
+    <div style="border:1.5px solid var(--border);border-radius:var(--radius);padding:20px 16px">
+      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Free</div>
+      <div style="font-size:24px;font-weight:800;margin-bottom:2px">₹0</div>
+      <div style="font-size:12px;font-weight:700;color:var(--brand);margin-bottom:2px">2 uploads</div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:14px">Try it out</div>
+      <ul style="list-style:none;margin-bottom:16px;font-size:11px"><li style="padding:3px 0">✓ All premium tools</li><li style="padding:3px 0">✓ BS + GST Recon</li></ul>
+      <a href="#" style="display:block;text-align:center;padding:8px;border-radius:7px;font-size:12px;font-weight:700;background:var(--bg);color:var(--ink);text-decoration:none;border:1px solid var(--border)">Get Started</a>
+    </div>
+    <div style="border:1.5px solid var(--border);border-radius:var(--radius);padding:20px 16px">
+      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Starter</div>
+      <div style="font-size:24px;font-weight:800;margin-bottom:2px">₹60</div>
+      <div style="font-size:12px;font-weight:700;color:var(--brand);margin-bottom:2px">10 uploads</div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:14px">3 month validity</div>
+      <ul style="list-style:none;margin-bottom:16px;font-size:11px"><li style="padding:3px 0">✓ All premium tools</li><li style="padding:3px 0">✓ BS + GST Recon</li></ul>
+      <a href="#gst-contact" style="display:block;text-align:center;padding:8px;border-radius:7px;font-size:12px;font-weight:700;background:var(--bg);color:var(--ink);text-decoration:none;border:1px solid var(--border)">Contact to Buy</a>
+    </div>
+    <div style="border:1.5px solid var(--brand);border-radius:var(--radius);padding:20px 16px;position:relative">
+      <div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--brand);color:#fff;font-size:10px;font-weight:700;padding:2px 10px;border-radius:99px;white-space:nowrap">Most Popular</div>
+      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Standard</div>
+      <div style="font-size:24px;font-weight:800;margin-bottom:2px">₹130</div>
+      <div style="font-size:12px;font-weight:700;color:var(--brand);margin-bottom:2px">25 uploads</div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:14px">3 month validity</div>
+      <ul style="list-style:none;margin-bottom:16px;font-size:11px"><li style="padding:3px 0">✓ All premium tools</li><li style="padding:3px 0">✓ Priority support</li></ul>
+      <a href="#gst-contact" style="display:block;text-align:center;padding:8px;border-radius:7px;font-size:12px;font-weight:700;background:var(--brand);color:#fff;text-decoration:none">Contact to Buy</a>
+    </div>
+    <div style="border:1.5px solid var(--border);border-radius:var(--radius);padding:20px 16px">
+      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Professional</div>
+      <div style="font-size:24px;font-weight:800;margin-bottom:2px">₹270</div>
+      <div style="font-size:12px;font-weight:700;color:var(--brand);margin-bottom:2px">60 uploads</div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:14px">3 month validity</div>
+      <ul style="list-style:none;margin-bottom:16px;font-size:11px"><li style="padding:3px 0">✓ All premium tools</li><li style="padding:3px 0">✓ Priority support</li></ul>
+      <a href="#gst-contact" style="display:block;text-align:center;padding:8px;border-radius:7px;font-size:12px;font-weight:700;background:var(--bg);color:var(--ink);text-decoration:none;border:1px solid var(--border)">Contact to Buy</a>
+    </div>
+    <div style="border:1.5px solid var(--border);border-radius:var(--radius);padding:20px 16px">
+      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Firm</div>
+      <div style="font-size:24px;font-weight:800;margin-bottom:2px">₹600</div>
+      <div style="font-size:12px;font-weight:700;color:var(--brand);margin-bottom:2px">150 uploads</div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:14px">3 month validity</div>
+      <ul style="list-style:none;margin-bottom:16px;font-size:11px"><li style="padding:3px 0">✓ All premium tools</li><li style="padding:3px 0">✓ WhatsApp support</li></ul>
+      <a href="#gst-contact" style="display:block;text-align:center;padding:8px;border-radius:7px;font-size:12px;font-weight:700;background:var(--bg);color:var(--ink);text-decoration:none;border:1px solid var(--border)">Contact to Buy</a>
+    </div>
+    <div style="border:1.5px solid var(--border);border-radius:var(--radius);padding:20px 16px">
+      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">CA Admin</div>
+      <div style="font-size:24px;font-weight:800;margin-bottom:2px">₹1,000</div>
+      <div style="font-size:12px;font-weight:700;color:var(--brand);margin-bottom:2px">500 uploads</div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:14px">3 month validity</div>
+      <ul style="list-style:none;margin-bottom:16px;font-size:11px"><li style="padding:3px 0">✓ All premium tools</li><li style="padding:3px 0">✓ Best for CA firms</li></ul>
+      <a href="#gst-contact" style="display:block;text-align:center;padding:8px;border-radius:7px;font-size:12px;font-weight:700;background:var(--bg);color:var(--ink);text-decoration:none;border:1px solid var(--border)">Contact to Buy</a>
+    </div>
+  </div>
+  <p style="text-align:center;font-size:11px;color:var(--muted);margin-top:16px">⚠ No refund after first upload is used · Unused uploads stack when you recharge</p>
+</section>
+
+<section style="max-width:700px;margin:0 auto;padding:48px 24px" id="gst-contact">
+  <h2 style="text-align:center;font-size:20px;font-weight:800;margin-bottom:16px">Purchase a Plan</h2>
+  <p style="text-align:center;color:var(--muted);font-size:13px;margin-bottom:24px">Pay via UPI and send your payment screenshot to our email. Account upgraded within a few hours.</p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:400px;margin:0 auto">
+    <div style="text-align:center">
+      <strong style="font-size:11px;color:var(--muted);text-transform:uppercase">Email</strong><br>
+      <a href="mailto:{{ contact_email }}" style="font-size:13px;color:var(--brand)">{{ contact_email }}</a>
+    </div>
+    <div style="text-align:center">
+      <strong style="font-size:11px;color:var(--muted);text-transform:uppercase">UPI Payment</strong><br>
+      <span style="font-size:13px;font-weight:600">{{ contact_upi }}</span>
+    </div>
+  </div>
+</section>
 
 <div id="toast" style="position:fixed;bottom:24px;right:24px;background:#065F46;color:#fff;padding:12px 20px;border-radius:10px;font-size:13px;font-weight:600;opacity:0;transition:opacity .3s;pointer-events:none;z-index:999"></div>
 
