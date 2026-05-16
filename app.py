@@ -339,10 +339,11 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .hero h1 em{font-style:normal;color:var(--brand)}
 .hero p{font-size:15px;color:var(--muted);line-height:1.7}
 
-.tools-grid{max-width:1200px;margin:0 auto;padding:0 24px 56px;
-            display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-@media(max-width:900px){.tools-grid{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:540px){.tools-grid{grid-template-columns:1fr}}
+.tools-grid{max-width:1320px;margin:0 auto;padding:0 24px 56px;
+            display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+@media(max-width:1100px){.tools-grid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:768px){.tools-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:480px){.tools-grid{grid-template-columns:1fr}}
 
 .tool-card{background:var(--white);border:1.5px solid var(--border);
            border-radius:var(--radius);padding:22px 20px;
@@ -424,7 +425,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <!-- Tools grid -->
 <div class="tools-grid">
 
-  <!-- PREMIUM: Login required -->
+  <!-- PREMIUM: Balance Sheet Year-Shift -->
   {% if username %}
   <a href="/tool/converter" class="tool-card">
   {% else %}
@@ -438,7 +439,21 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <div class="arrow">→</div>
   </a>
 
-  <!-- PREMIUM: Login required -->
+  <!-- PREMIUM: GST Reconciliation -->
+  {% if username %}
+  <a href="/tool/gst-reconciliation" class="tool-card" style="position:relative">
+  {% else %}
+  <a href="/login" class="tool-card" style="position:relative">
+  {% endif %}
+    {% if not username %}<div style="position:absolute;top:12px;right:12px;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🔒 Login Required</div>{% else %}<div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">Premium</div>{% endif %}
+    <div class="tool-icon" style="background:#FEF3C7">📊</div>
+    <h2>GST Reconciliation</h2>
+    <p>Compare Sales as per Books vs GSTR 3B returns. Upload your sales summary and GSTR 3B PDFs (ZIP) — get month-wise, state-wise difference report instantly.</p>
+    <span class="tool-tag tag-live">✓ Live · Premium</span>
+    <div class="arrow">→</div>
+  </a>
+
+  <!-- PREMIUM: Coming Soon -->
   <div class="tool-card disabled" style="position:relative">
     <div style="position:absolute;top:12px;right:12px;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🔒 Premium</div>
     <div class="tool-icon" style="background:#F0FDF4">📋</div>
@@ -447,7 +462,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <span class="tool-tag tag-soon">🔜 Coming Soon</span>
   </div>
 
-  <!-- FREE: No login needed -->
+  <!-- FREE TOOLS -->
   <a href="/tool/tax-calculator" class="tool-card">
     <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
     <div class="tool-icon" style="background:#FFFBEB">🧮</div>
@@ -457,7 +472,6 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <div class="arrow">→</div>
   </a>
 
-  <!-- FREE: No login needed -->
   <a href="/tool/tds-calculator" class="tool-card">
     <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
     <div class="tool-icon" style="background:#EFF6FF">📑</div>
@@ -467,7 +481,6 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <div class="arrow">→</div>
   </a>
 
-  <!-- FREE: No login needed -->
   <a href="/tool/depreciation-calculator" class="tool-card">
     <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
     <div class="tool-icon" style="background:#F5F3FF">🏭</div>
@@ -477,7 +490,6 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <div class="arrow">→</div>
   </a>
 
-  <!-- FREE: No login needed -->
   <a href="/tool/msme-calculator" class="tool-card" style="position:relative">
     <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
     <div class="tool-icon" style="background:#FEF2F2">📄</div>
@@ -487,22 +499,12 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <div class="arrow">→</div>
   </a>
 
-  <!-- FREE: No login needed -->
   <a href="/tool/capital-gains-calculator" class="tool-card" style="position:relative">
     <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
     <div class="tool-icon" style="background:#F5F3FF">💰</div>
     <h2>Capital Gains Calculator</h2>
     <p>Calculate LTCG/STCG on property, shares, MF and more. Compare old vs new regime, indexation benefit, and find zero-tax sale price with reverse calculator.</p>
     <span class="tool-tag tag-live">✓ Live · Free</span>
-    <div class="arrow">→</div>
-  </a>
-
-  <a href="/tool/gst-reconciliation" class="tool-card" style="position:relative">
-    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">Premium</div>
-    <div class="tool-icon" style="background:#FEF3C7">📊</div>
-    <h2>GST Reconciliation</h2>
-    <p>Compare Sales as per Books vs GSTR 3B returns. Upload your sales summary and GSTR 3B PDFs (ZIP) — get month-wise, state-wise difference report instantly.</p>
-    <span class="tool-tag tag-live">✓ Live · Premium</span>
     <div class="arrow">→</div>
   </a>
 
