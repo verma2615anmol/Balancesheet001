@@ -6,6 +6,7 @@ Auth + Upload-Based Plans + Admin Panel
 import re
 import os
 import uuid
+import json
 import hashlib
 import secrets
 from datetime import datetime, timedelta
@@ -492,6 +493,15 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <h2>Capital Gains Calculator</h2>
     <p>Calculate LTCG/STCG on property, shares, MF and more. Compare old vs new regime, indexation benefit, and find zero-tax sale price with reverse calculator.</p>
     <span class="tool-tag tag-live">✓ Live · Free</span>
+    <div class="arrow">→</div>
+  </a>
+
+  <a href="/tool/gst-reconciliation" class="tool-card" style="position:relative">
+    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">Premium</div>
+    <div class="tool-icon" style="background:#FEF3C7">📊</div>
+    <h2>GST Reconciliation</h2>
+    <p>Compare Sales as per Books vs GSTR 3B returns. Upload your sales summary and GSTR 3B PDFs (ZIP) — get month-wise, state-wise difference report instantly.</p>
+    <span class="tool-tag tag-live">✓ Live · Premium</span>
     <div class="arrow">→</div>
   </a>
 
@@ -5647,8 +5657,658 @@ def tool_cg_calculator():
     return render_template_string(CG_CALC_T, **ctx)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  STARTUP
+#  TEMPLATE — GST RECONCILIATION
 # ══════════════════════════════════════════════════════════════════════════════
+
+GST_RECON_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GST Reconciliation – CA Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+<style>
+""" + BASE_CSS + """
+.nav-links{display:flex;gap:20px;list-style:none}
+.nav-links a{text-decoration:none;color:var(--muted);font-size:13px;font-weight:500;transition:color .2s}
+.nav-links a:hover{color:var(--brand)}
+.hero{text-align:center;padding:40px 24px 30px;max-width:700px;margin:0 auto}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#FEF3C7;
+            color:#92400E;border:1px solid #FDE68A;border-radius:99px;
+            padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:18px}
+h1{font-size:clamp(22px,3.5vw,34px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:10px}
+h1 em{font-style:normal;color:var(--brand)}
+.hero p{font-size:14px;color:var(--muted);line-height:1.7;max-width:520px;margin:0 auto}
+.main{max-width:900px;margin:0 auto;padding:30px 24px}
+.card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
+      box-shadow:var(--shadow);overflow:hidden;margin-bottom:24px}
+.card-head{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.card-head .icon{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px}
+.card-head h2{font-size:14px;font-weight:700}
+.card-body{padding:20px}
+.field{margin-bottom:16px}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:5px}
+.hint{font-size:11px;color:var(--muted);margin-top:4px}
+.dropzone{border:2px dashed var(--border);border-radius:10px;padding:24px 14px;text-align:center;cursor:pointer;transition:all .2s;position:relative;background:var(--bg)}
+.dropzone:hover,.dropzone.drag{border-color:var(--brand);background:#EFF6FF}
+.dropzone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.dz-icon{font-size:26px;margin-bottom:6px}
+.dz-text{font-size:12px;color:var(--muted)}
+.dz-text strong{color:var(--brand)}
+.dz-file{font-size:12px;font-weight:600;color:var(--green);margin-top:5px;display:none}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+input[type=text]{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px 12px;font-size:13px;font-family:inherit;outline:none;transition:border .2s;box-sizing:border-box}
+input[type=text]:focus{border-color:var(--brand)}
+.btn{width:100%;padding:12px;background:var(--brand);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:background .2s;font-family:inherit}
+.btn:hover{background:#1E40AF}
+.btn:disabled{background:#93C5FD;cursor:not-allowed}
+.spinner{display:none;width:16px;height:16px;border:2.5px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.status{padding:14px 16px;border-radius:10px;font-size:13px;margin-top:16px;display:none;line-height:1.6}
+.status.success{background:#ECFDF5;border:1px solid #A7F3D0;color:#065F46}
+.status.error{background:#FEF2F2;border:1px solid #FECACA;color:#991B1B}
+.dl-link{display:none;margin-top:14px;padding:12px 18px;background:#ECFDF5;border:1px solid #A7F3D0;border-radius:10px;color:#065F46;font-weight:700;font-size:13px;text-decoration:none;text-align:center}
+.dl-link:hover{background:#D1FAE5}
+.info-box{background:#FEF3C7;border:1px solid #FDE68A;border-radius:10px;padding:14px 16px;font-size:12px;color:#92400E;line-height:1.7;margin-bottom:16px}
+.log-list{margin:10px 0 0;padding:0;list-style:none;font-size:12px;line-height:1.8}
+.log-list li{padding:2px 0}
+.mapping-row{display:grid;grid-template-columns:80px 1fr 30px;gap:8px;align-items:center;margin-bottom:8px}
+.mapping-row input{font-size:13px}
+.mapping-row .remove-btn{background:none;border:none;color:#EF4444;cursor:pointer;font-size:18px;padding:0}
+#add-mapping{background:none;border:1px dashed var(--border);border-radius:8px;padding:8px;font-size:12px;color:var(--muted);cursor:pointer;width:100%;margin-top:4px}
+#add-mapping:hover{border-color:var(--brand);color:var(--brand)}
+</style></head><body>
+<nav class="navbar"><div class="nav-inner">
+  <a href="/" class="logo">CA Toolkit</a>
+  <ul class="nav-links">
+    <li><a href="/">← All Tools</a></li>
+    {% if username %}<li><a href="/logout">Logout</a></li>{% endif %}
+  </ul>
+</div></nav>
+
+<div class="hero">
+  <div class="hero-badge">📊 GST Reconciliation</div>
+  <h1>Sales <em>Books vs GSTR 3B</em></h1>
+  <p>Upload your month-wise sales summary and GSTR 3B PDFs to get an instant reconciliation report showing differences by state and month.</p>
+</div>
+
+<div class="main">
+  <div class="card">
+    <div class="card-head">
+      <div class="icon" style="background:#FEF3C7">📄</div>
+      <div><h2>Upload Files</h2><p style="font-size:12px;color:var(--muted)">Sales summary (.xlsx) + GSTR 3B PDFs (.zip)</p></div>
+    </div>
+    <div class="card-body">
+
+      <div class="info-box">
+        <strong>How to prepare your files:</strong><br>
+        <strong>Sales Summary:</strong> Excel with Month in col A, then one column per plant/location. First data row should have month names (e.g. Apr-25, Dec-25).<br>
+        <strong>GSTR 3B ZIP:</strong> Create a ZIP with folders named by 2-digit state code (e.g. 03/, 09/, 33/). Put the GSTR 3B PDFs inside each folder. The tool reads Table 3.1 points A, B, C, E (excludes D — reverse charge).
+      </div>
+
+      <div class="field">
+        <label>Sales Summary (Excel)</label>
+        <div class="dropzone" id="dz-sales">
+          <div class="dz-icon">📊</div>
+          <div class="dz-text"><strong>Click or drag</strong> your sales summary .xlsx</div>
+          <div class="dz-file" id="sf-sales"></div>
+          <input type="file" id="file-sales" accept=".xlsx,.xls" onchange="pickFile(this,'sf-sales')">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>GSTR 3B PDFs (ZIP file)</label>
+        <div class="dropzone" id="dz-gst">
+          <div class="dz-icon">📁</div>
+          <div class="dz-text"><strong>Click or drag</strong> your GSTR 3B ZIP file</div>
+          <div class="dz-file" id="sf-gst"></div>
+          <input type="file" id="file-gst" accept=".zip" onchange="pickFile(this,'sf-gst')">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>State Code → Sales Column Mapping</label>
+        <p class="hint" style="margin-bottom:8px">Map each GST state code to the corresponding column header in your sales file. The tool will auto-detect from the ZIP folder names.</p>
+        <div id="mapping-container"></div>
+        <button id="add-mapping" onclick="addMapping()">+ Add Mapping</button>
+      </div>
+
+      <div class="field">
+        <label>Output File Name (optional)</label>
+        <input type="text" id="output-name" placeholder="GST_Reconciliation">
+      </div>
+
+      <button class="btn" id="proc-btn" onclick="doProcess()">
+        <span id="bt">⚡ Process & Download</span>
+        <div class="spinner" id="sp"></div>
+      </button>
+
+      <div class="status" id="status"></div>
+      <a class="dl-link" id="dl-link" href="#">⬇ Download</a>
+    </div>
+  </div>
+</div>
+
+<div id="toast" style="position:fixed;bottom:24px;right:24px;background:#065F46;color:#fff;padding:12px 20px;border-radius:10px;font-size:13px;font-weight:600;opacity:0;transition:opacity .3s;pointer-events:none;z-index:999"></div>
+
+<script>
+function pickFile(inp, sfId){
+  const sf=document.getElementById(sfId);
+  if(inp.files.length){sf.textContent='✓ '+inp.files[0].name;sf.style.display='block';}
+  // Auto-detect state codes from ZIP
+  if(sfId==='sf-gst' && inp.files[0]){detectStateCodes(inp.files[0]);}
+}
+
+async function detectStateCodes(file){
+  // Read ZIP to find state code folders
+  const ab=await file.arrayBuffer();
+  const view=new Uint8Array(ab);
+  // Simple ZIP parsing: find folder names like "XX/" or "gst/XX/"
+  const text=new TextDecoder('utf-8',{fatal:false}).decode(view);
+  const codes=new Set();
+  // Match folder patterns in ZIP central directory
+  const re=/(?:^|\/)(0[1-9]|[1-3][0-9])\//gm;
+  let m;while((m=re.exec(text))!==null)codes.add(m[1]);
+  if(codes.size>0){
+    document.getElementById('mapping-container').innerHTML='';
+    for(const c of [...codes].sort())addMapping(c,'');
+  }
+}
+
+function addMapping(code,col){
+  const container=document.getElementById('mapping-container');
+  const div=document.createElement('div');div.className='mapping-row';
+  div.innerHTML=`<input type="text" class="map-code" value="${code||''}" placeholder="03">
+    <input type="text" class="map-col" value="${col||''}" placeholder="Column header (e.g. DRH/LDH)">
+    <button class="remove-btn" onclick="this.parentElement.remove()">✕</button>`;
+  container.appendChild(div);
+}
+
+function showStatus(t,m){const e=document.getElementById('status');e.className=t;e.innerHTML=m;e.style.display=m?'block':'none';}
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.style.opacity='1';setTimeout(()=>t.style.opacity='0',3000);}
+
+async function doProcess(){
+  const btn=document.getElementById('proc-btn'),sp=document.getElementById('sp'),bt=document.getElementById('bt');
+  const dl=document.getElementById('dl-link');
+  const salesFile=document.getElementById('file-sales').files[0];
+  const gstFile=document.getElementById('file-gst').files[0];
+  if(!salesFile){showStatus('error','✗ Please upload your Sales Summary Excel file.');return;}
+  if(!gstFile){showStatus('error','✗ Please upload your GSTR 3B ZIP file.');return;}
+
+  // Collect mappings
+  const rows=document.querySelectorAll('.mapping-row');
+  const mappings={};
+  for(const r of rows){
+    const code=r.querySelector('.map-code').value.trim();
+    const col=r.querySelector('.map-col').value.trim();
+    if(code&&col)mappings[code]=col;
+  }
+  if(Object.keys(mappings).length===0){showStatus('error','✗ Please add at least one State Code → Column mapping.');return;}
+
+  const fd=new FormData();
+  fd.append('sales_file',salesFile);
+  fd.append('gst_file',gstFile);
+  fd.append('mappings',JSON.stringify(mappings));
+  fd.append('output_name',document.getElementById('output-name').value.trim());
+
+  btn.disabled=true;sp.style.display='inline-block';bt.textContent='Processing…';
+  showStatus('','');dl.style.display='none';
+
+  try{
+    const res=await fetch('/gst-process',{method:'POST',body:fd});
+    const ct=res.headers.get('content-type')||'';
+    if(!ct.includes('application/json')){
+      showStatus('error','✗ Server error. Please try again.');return;
+    }
+    const data=await res.json();
+    if(data.status==='success'){
+      const logHtml='<ul class="log-list">'+data.log.map(l=>`<li>${l}</li>`).join('')+'</ul>';
+      showStatus('success','✓ Reconciliation complete!'+logHtml);
+      dl.href='/download/'+data.file_id+'?fn='+encodeURIComponent(data.filename);dl.download=data.filename;
+      dl.textContent='⬇  Download — '+data.filename;dl.style.display='block';
+      toast('Reconciliation done!');
+    }else{showStatus('error','✗ '+data.message);}
+  }catch(e){showStatus('error','✗ Network error: '+e.message);}
+  finally{btn.disabled=false;sp.style.display='none';bt.textContent='⚡ Process & Download';}
+}
+</script>
+</body></html>"""
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  GST RECONCILIATION — PROCESSING LOGIC
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _parse_gstr3b_pdf(pdf_path):
+    """Extract Table 3.1 data (rows A,B,C,E — NOT D) from a GSTR 3B PDF.
+    
+    Uses pdftotext (C-based, instant) for metadata and pdfplumber cropped
+    to just the 3.1 table area for reliable number extraction.  ~0.3s/PDF.
+    """
+    import subprocess, pdfplumber
+    # ── fast metadata via pdftotext ──────────────────────────────────────
+    try:
+        text = subprocess.run(
+            ['pdftotext', '-f', '1', '-l', '1', pdf_path, '-'],
+            capture_output=True, text=True, timeout=10
+        ).stdout
+    except Exception:
+        text = ""
+
+    period_m = re.search(r'Period\s+(\w+)', text)
+    year_m   = re.search(r'Year\s+([\d-]+)', text)
+    gstin_m  = re.search(r'GSTIN of the supplier\s+(\S+)', text)
+    trade_m  = re.search(r'Trade name, if any\s+(.+?)(?:\n|$)', text)
+
+    period     = period_m.group(1).strip() if period_m else None
+    year       = year_m.group(1).strip()   if year_m   else None
+    gstin      = gstin_m.group(1).strip()  if gstin_m  else None
+    trade_name = trade_m.group(1).strip()  if trade_m  else None
+    state_code = gstin[:2] if gstin else None
+
+    # ── table 3.1 via cropped pdfplumber (top 45% of page 1 only) ───────
+    result = {'taxable': 0, 'igst': 0, 'cgst': 0, 'sgst': 0, 'cess': 0}
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            page = pdf.pages[0]
+            cropped = page.crop((0, 0, page.width, page.height * 0.45))
+            tables = cropped.extract_tables()
+            for t in tables:
+                if not t or not t[0] or not t[0][0]:
+                    continue
+                if 'Nature of Supplies' not in str(t[0][0]):
+                    continue
+                if not any('Outward taxable supplies' in str(r[0] or '') for r in t[1:]):
+                    continue
+
+                def cn(s):
+                    if s is None: return 0.0
+                    s = str(s).replace('\n', '').strip()
+                    s = re.sub(r'^[A-Z]\s*', '', s)
+                    if s in ('-', '', '0'): return 0.0
+                    try: return float(s.replace(',', ''))
+                    except: return 0.0
+
+                for row in t[1:]:
+                    lbl = str(row[0] or '').lower()
+                    if '(d)' in lbl:
+                        continue
+                    if any(f'({x})' in lbl for x in 'abce'):
+                        result['taxable'] += cn(row[1])
+                        result['igst']    += cn(row[2])
+                        result['cgst']    += cn(row[3])
+                        result['sgst']    += cn(row[4])
+                        result['cess']    += cn(row[5])
+                break
+    except Exception:
+        pass
+
+    return {
+        'period': period, 'year': year, 'gstin': gstin,
+        'trade_name': trade_name, 'state_code': state_code,
+        'taxable_value': result['taxable'],
+        'igst': result['igst'], 'cgst': result['cgst'],
+        'sgst': result['sgst'], 'cess': result['cess'],
+        'total_tax': result['igst'] + result['cgst'] + result['sgst'] + result['cess'],
+    }
+
+
+def _month_key(period_name, fy_str):
+    """Convert GSTR3B period 'December' + year '2025-26' to 'Dec-25' format."""
+    month_abbr = {
+        'january': 'Jan', 'february': 'Feb', 'march': 'Mar', 'april': 'Apr',
+        'may': 'May', 'june': 'Jun', 'july': 'Jul', 'august': 'Aug',
+        'september': 'Sep', 'october': 'Oct', 'november': 'Nov', 'december': 'Dec'
+    }
+    abbr = month_abbr.get(period_name.lower())
+    if not abbr:
+        return None
+    # FY "2025-26" means Apr 2025 - Mar 2026
+    # Apr-Mar months: Apr,May,...,Dec use first year; Jan,Feb,Mar use second
+    try:
+        fy_start = int(fy_str.split('-')[0])
+    except:
+        return None
+    if abbr in ('Jan', 'Feb', 'Mar'):
+        yr = fy_start + 1
+    else:
+        yr = fy_start
+    return f"{abbr}-{str(yr)[2:]}"
+
+
+def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path):
+    """Process GST reconciliation and generate output Excel."""
+    from openpyxl import load_workbook as lb
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+    from openpyxl.utils import get_column_letter
+    import tempfile, shutil
+
+    log = []
+
+    # --- 1. Read Sales Summary ---
+    wb_sales = lb(sales_path, read_only=True, data_only=True)
+    ws = wb_sales[wb_sales.sheetnames[0]]
+    rows = list(ws.iter_rows(min_row=1, max_row=500, values_only=False))
+    wb_sales.close()
+
+    # Find header row (first row with "Month" in col A or similar)
+    header_idx = None
+    for i, row in enumerate(rows):
+        a_val = str(row[0].value or '').strip().lower()
+        if a_val in ('month', 'months', 'period'):
+            header_idx = i
+            break
+    if header_idx is None:
+        # Try first row with multiple non-empty cells
+        for i, row in enumerate(rows):
+            non_empty = sum(1 for c in row if c.value is not None)
+            if non_empty >= 3:
+                header_idx = i
+                break
+    if header_idx is None:
+        return {'status': 'error', 'message': 'Could not find header row in sales file.'}
+
+    header_row = rows[header_idx]
+    col_headers = {str(c.value).strip(): c.column - 1 for c in header_row if c.value}
+    log.append(f"Sales columns found: {', '.join(col_headers.keys())}")
+
+    # Read month-wise sales data
+    sales_data = {}
+    for row in rows[header_idx + 1:]:
+        month_val = row[0].value
+        if month_val is None:
+            continue
+        ms = str(month_val).strip()
+        if 'total' in ms.lower() or 'grand' in ms.lower():
+            continue
+        sales_data[ms] = {}
+        for hdr, idx in col_headers.items():
+            if hdr.lower() in ('month', 'months', 'period'):
+                continue
+            try:
+                val = row[idx].value
+                sales_data[ms][hdr] = float(val) if val is not None else 0.0
+            except:
+                sales_data[ms][hdr] = 0.0
+
+    log.append(f"Sales months found: {', '.join(sales_data.keys())}")
+
+    # --- 2. Extract GSTR 3B data from ZIP ---
+    gst_data = {}  # {state_code: {month_key: {taxable, igst, cgst, sgst, cess, total_tax}}}
+    trade_names = {}
+
+    tmpdir = tempfile.mkdtemp()
+    try:
+        import zipfile as zf
+        with zf.ZipFile(gst_zip_path, 'r') as z:
+            z.extractall(tmpdir)
+
+        # Walk extracted files looking for PDFs
+        for root_dir, dirs, files in os.walk(tmpdir):
+            for fname in files:
+                if not fname.lower().endswith('.pdf'):
+                    continue
+                if 'certificate' in root_dir.lower():
+                    continue
+                pdf_path = os.path.join(root_dir, fname)
+                result = _parse_gstr3b_pdf(pdf_path)
+                if result and result['state_code'] and result['period']:
+                    sc = result['state_code']
+                    mk = _month_key(result['period'], result['year'] or '')
+                    if mk:
+                        if sc not in gst_data:
+                            gst_data[sc] = {}
+                        gst_data[sc][mk] = result
+                        if result.get('trade_name'):
+                            trade_names[sc] = result['trade_name']
+                        log.append(f"Parsed: State {sc} / {mk} — taxable ₹{result['taxable_value']:,.2f}")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    if not gst_data:
+        return {'status': 'error', 'message': 'No valid GSTR 3B PDFs found in the ZIP.'}
+
+    # --- 3. Build output Excel ---
+    wb = Workbook()
+    ws_out = wb.active
+    ws_out.title = "Reconciliation"
+
+    # Styles
+    hdr_font = Font(name='Arial', bold=True, size=11)
+    hdr_fill = PatternFill('solid', fgColor='1F4E79')
+    hdr_font_w = Font(name='Arial', bold=True, size=11, color='FFFFFF')
+    sub_fill = PatternFill('solid', fgColor='D6E4F0')
+    num_fmt = '#,##0.00'
+    thin = Side(style='thin', color='B4B4B4')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    diff_neg_font = Font(name='Arial', color='CC0000', bold=True, size=10)
+    diff_pos_font = Font(name='Arial', color='006600', bold=True, size=10)
+    data_font = Font(name='Arial', size=10)
+
+    # Title
+    entity = trade_names.get(list(gst_data.keys())[0], 'Entity')
+    ws_out['A1'] = f"{entity} — GST Reconciliation (Sales Books vs GSTR 3B)"
+    ws_out['A1'].font = Font(name='Arial', bold=True, size=14, color='1F4E79')
+    ws_out.merge_cells('A1:I1')
+    ws_out['A2'] = "Table 3.1: Points A + B + C + E (Excludes D — Reverse Charge)"
+    ws_out['A2'].font = Font(name='Arial', italic=True, size=10, color='666666')
+    ws_out.merge_cells('A2:I2')
+
+    # Headers (row 4)
+    headers = ['Month', 'GST State Code', 'Sale in Books',
+               'Sale in GSTR 3B\n(Excl. Tax)', 'Tax Amount\n(IGST+CGST+SGST+Cess)',
+               'Difference 1\n(Books − GSTR3B)',
+               'Difference 2\n(Books − GSTR3B incl. Tax)',
+               'IGST', 'CGST', 'SGST']
+    for c, h in enumerate(headers, 1):
+        cell = ws_out.cell(row=4, column=c, value=h)
+        cell.font = hdr_font_w
+        cell.fill = hdr_fill
+        cell.alignment = center
+        cell.border = border
+
+    # Data rows
+    row_num = 5
+    all_months = sorted(sales_data.keys(), key=lambda x: _month_sort_key(x))
+    all_state_codes = sorted(gst_data.keys())
+
+    # Validate mappings
+    valid_mappings = {}
+    for sc, col_name in mappings.items():
+        if col_name in col_headers:
+            valid_mappings[sc] = col_name
+        else:
+            # Try case-insensitive match
+            for h in col_headers:
+                if h.lower() == col_name.lower():
+                    valid_mappings[sc] = h
+                    break
+            if sc not in valid_mappings:
+                log.append(f"⚠ Warning: Column '{col_name}' not found for state {sc}")
+
+    month_totals = {}  # {month: {books, gstr, tax}}
+
+    for month in all_months:
+        first_in_month = True
+        for sc in all_state_codes:
+            if sc not in valid_mappings:
+                continue
+            col_name = valid_mappings[sc]
+            books_val = sales_data.get(month, {}).get(col_name, 0.0)
+            gst_entry = gst_data.get(sc, {}).get(month)
+
+            if gst_entry is None and books_val == 0:
+                continue
+
+            gstr_val = gst_entry['taxable_value'] if gst_entry else 0.0
+            tax_val = gst_entry['total_tax'] if gst_entry else 0.0
+            igst = gst_entry['igst'] if gst_entry else 0.0
+            cgst = gst_entry['cgst'] if gst_entry else 0.0
+            sgst = gst_entry['sgst'] if gst_entry else 0.0
+
+            diff1 = books_val - gstr_val
+            diff2 = books_val - (gstr_val + tax_val)
+
+            # Track totals
+            if month not in month_totals:
+                month_totals[month] = {'books': 0, 'gstr': 0, 'tax': 0, 'igst': 0, 'cgst': 0, 'sgst': 0}
+            month_totals[month]['books'] += books_val
+            month_totals[month]['gstr'] += gstr_val
+            month_totals[month]['tax'] += tax_val
+            month_totals[month]['igst'] += igst
+            month_totals[month]['cgst'] += cgst
+            month_totals[month]['sgst'] += sgst
+
+            vals = [month if first_in_month else '', sc, books_val, gstr_val, tax_val, diff1, diff2, igst, cgst, sgst]
+            for c, v in enumerate(vals, 1):
+                cell = ws_out.cell(row=row_num, column=c, value=v)
+                cell.font = data_font
+                cell.border = border
+                if c >= 3:
+                    cell.number_format = num_fmt
+                    cell.alignment = Alignment(horizontal='right')
+                if c in (6, 7) and isinstance(v, (int, float)):
+                    cell.font = diff_neg_font if v < -0.5 else (diff_pos_font if v > 0.5 else data_font)
+                if c <= 2:
+                    cell.alignment = center
+
+            first_in_month = False
+            row_num += 1
+
+        # Month subtotal
+        if month in month_totals:
+            mt = month_totals[month]
+            sub_vals = [f'{month} Total', '', mt['books'], mt['gstr'], mt['tax'],
+                        mt['books'] - mt['gstr'], mt['books'] - mt['gstr'] - mt['tax'],
+                        mt['igst'], mt['cgst'], mt['sgst']]
+            for c, v in enumerate(sub_vals, 1):
+                cell = ws_out.cell(row=row_num, column=c, value=v)
+                cell.font = Font(name='Arial', bold=True, size=10)
+                cell.fill = sub_fill
+                cell.border = border
+                if c >= 3:
+                    cell.number_format = num_fmt
+                    cell.alignment = Alignment(horizontal='right')
+                if c in (6, 7) and isinstance(v, (int, float)):
+                    cell.font = Font(name='Arial', bold=True, size=10, color='CC0000' if v < -0.5 else ('006600' if v > 0.5 else '000000'))
+                    cell.fill = sub_fill
+            row_num += 1
+        row_num += 1  # blank row between months
+
+    # Grand Total
+    grand = {'books': 0, 'gstr': 0, 'tax': 0, 'igst': 0, 'cgst': 0, 'sgst': 0}
+    for mt in month_totals.values():
+        for k in grand:
+            grand[k] += mt[k]
+
+    gt_vals = ['GRAND TOTAL', '', grand['books'], grand['gstr'], grand['tax'],
+               grand['books'] - grand['gstr'], grand['books'] - grand['gstr'] - grand['tax'],
+               grand['igst'], grand['cgst'], grand['sgst']]
+    for c, v in enumerate(gt_vals, 1):
+        cell = ws_out.cell(row=row_num, column=c, value=v)
+        cell.font = Font(name='Arial', bold=True, size=11, color='FFFFFF')
+        cell.fill = PatternFill('solid', fgColor='1F4E79')
+        cell.border = border
+        if c >= 3:
+            cell.number_format = num_fmt
+            cell.alignment = Alignment(horizontal='right')
+
+    # Column widths
+    widths = [12, 16, 18, 22, 22, 22, 24, 16, 14, 14]
+    for i, w in enumerate(widths, 1):
+        ws_out.column_dimensions[get_column_letter(i)].width = w
+
+    # Freeze panes
+    ws_out.freeze_panes = 'A5'
+
+    wb.save(output_path)
+    log.append(f"Output: {len(month_totals)} months × {len(valid_mappings)} states reconciled")
+    return {'status': 'success', 'log': log}
+
+
+def _month_sort_key(ms):
+    """Sort key for month strings like 'Apr-25', 'Dec-25', 'Jan-26'."""
+    month_order = {'apr':1,'may':2,'jun':3,'jul':4,'aug':5,'sep':6,
+                   'oct':7,'nov':8,'dec':9,'jan':10,'feb':11,'mar':12}
+    parts = ms.lower().split('-')
+    if len(parts) == 2:
+        m = month_order.get(parts[0][:3], 0)
+        try: y = int(parts[1])
+        except: y = 0
+        return (y, m)
+    return (99, 99)
+
+
+# ── GST routes ────────────────────────────────────────────────────────────────
+
+@app.route("/tool/gst-reconciliation")
+@login_required
+def tool_gst_reconciliation():
+    user = get_user_by_id(session["uid"])
+    return render_template_string(GST_RECON_T, **user_ctx(user))
+
+
+@app.route("/gst-process", methods=["POST"])
+@login_required
+def gst_process():
+    try:
+        user = get_user_by_id(session["uid"])
+        if not user["is_admin"] and uploads_remaining(user) <= 0:
+            return jsonify({"status": "error",
+                "message": f"No uploads remaining. Contact {CONTACT_EMAIL} to recharge."})
+
+        if "sales_file" not in request.files or "gst_file" not in request.files:
+            return jsonify({"status": "error", "message": "Please upload both files."})
+
+        sales_f = request.files["sales_file"]
+        gst_f = request.files["gst_file"]
+
+        if not sales_f.filename.lower().endswith(('.xlsx', '.xls')):
+            return jsonify({"status": "error", "message": "Sales file must be .xlsx or .xls"})
+        if not gst_f.filename.lower().endswith('.zip'):
+            return jsonify({"status": "error", "message": "GSTR 3B file must be a .zip"})
+
+        try:
+            mappings = json.loads(request.form.get("mappings", "{}"))
+        except:
+            return jsonify({"status": "error", "message": "Invalid mapping data."})
+
+        if not mappings:
+            return jsonify({"status": "error", "message": "Please provide at least one state-column mapping."})
+
+        on = request.form.get("output_name", "").strip()
+        h = uuid.uuid4().hex
+        sales_path = os.path.join(UPLOAD_DIR, f"{h}_sales.xlsx")
+        gst_path = os.path.join(UPLOAD_DIR, f"{h}_gst.zip")
+        op = os.path.join(OUTPUT_DIR, f"{h}_out.xlsx")
+
+        try:
+            orig = sales_f.filename.lower()
+            if orig.endswith('.xls') and not orig.endswith('.xlsx'):
+                xls_tmp = os.path.join(UPLOAD_DIR, f"{h}_sales.xls")
+                sales_f.save(xls_tmp)
+                _convert_xls_to_xlsx(xls_tmp, sales_path)
+                try: os.remove(xls_tmp)
+                except: pass
+            else:
+                sales_f.save(sales_path)
+            gst_f.save(gst_path)
+
+            result = _process_gst_reconciliation(sales_path, gst_path, mappings, op)
+        except Exception as e:
+            return jsonify({"status": "error", "message": f"Processing error: {e}"})
+        finally:
+            for p in (sales_path, gst_path):
+                try: os.remove(p)
+                except: pass
+
+        if result['status'] != 'success':
+            return jsonify(result)
+
+        fname = f"{on or 'GST_Reconciliation'}.xlsx"
+        log_usage(user["id"], fname)
+        return jsonify({"status": "success", "log": result["log"],
+                        "file_id": h, "filename": fname})
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Unexpected error: {e}"}), 500
 
 init_db()
 
