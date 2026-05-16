@@ -64,6 +64,7 @@ PLANS = {
     "standard": {"label": "Standard",     "uploads": 25,  "price": 130},
     "pro":      {"label": "Professional", "uploads": 60,  "price": 270},
     "firm":     {"label": "Firm",         "uploads": 150, "price": 600},
+    "ca":       {"label": "CA Admin",     "uploads": 500, "price": 1500},
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -864,6 +865,14 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
       <div class="plan-uploads">150 uploads</div>
       <div class="plan-validity">3 month validity</div>
       <ul><li>All features</li><li>WhatsApp support</li><li>Up to 20 MB</li></ul>
+      <a href="#contact" class="plan-btn">Contact to Buy</a>
+    </div>
+    <div class="plan">
+      <div class="plan-name">CA Admin</div>
+      <div class="plan-price">₹1,500</div>
+      <div class="plan-uploads">500 uploads</div>
+      <div class="plan-validity">3 month validity</div>
+      <ul><li>All features + GST Recon</li><li>WhatsApp support</li><li>Best for CA firms</li></ul>
       <a href="#contact" class="plan-btn">Contact to Buy</a>
     </div>
   </div>
@@ -5183,6 +5192,7 @@ tr:hover td{background:#F9FAFB}
               <option value="standard" selected>Standard (25 uploads · ₹130)</option>
               <option value="pro">Professional (60 uploads · ₹270)</option>
               <option value="firm">Firm (150 uploads · ₹600)</option>
+              <option value="ca">CA Admin (500 uploads · ₹1500)</option>
             </select></div>
           <div class="field"><label>&nbsp;</label>
             <button class="btn" type="submit">Create User</button></div>
@@ -5241,6 +5251,7 @@ tr:hover td{background:#F9FAFB}
                   <option value="standard" selected>+25</option>
                   <option value="pro">+60</option>
                   <option value="firm">+150</option>
+                  <option value="ca">+500</option>
                 </select>
                 <button class="sm am" type="submit">Add</button>
               </form>
