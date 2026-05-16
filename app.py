@@ -1,770 +1,5657 @@
 """
-Balance Sheet Year-Shift Processor  (v9 — single-pass, Render-safe)
-
-Key improvements over v8:
-  • ONE workbook open total (was 4). Collects values + formulas in one pass.
-  • all_formula_rows protection removed — wrong concept and memory-heavy.
-    Instead: only clear a CY cell if THAT SPECIFIC CY column cell is a
-    plain constant (not a formula). This is correct and sufficient.
-  • HFPL / "Current year" / "Previous year" header detection added.
-  • XML edits via regex on raw bytes — never ET.tostring → no namespace corruption.
-  • Falls back gracefully when lxml absent (sharedStrings via ET is safe there).
-  • BIG_ROWS raised; big sheets skip CY/PY shift but still get date text updates.
+BS Annual Updater — Multi-Tool CA Dashboard
+Auth + Upload-Based Plans + Admin Panel
 """
 
 import re
-import zipfile
-import xml.etree.ElementTree as ET
+import os
+import uuid
+import hashlib
+import secrets
+from datetime import datetime, timedelta
+from functools import wraps
+from flask import (Flask, request, send_file, jsonify,
+                   render_template_string, session, redirect, url_for, g)
+from processor import process
 
-from openpyxl import load_workbook
-from openpyxl.cell import MergedCell
-from openpyxl.utils import get_column_letter
+# ── Database driver selection ────────────────────────────────────────────────
+# If DATABASE_URL is set (Supabase/PostgreSQL), use psycopg2.
+# Otherwise, fall back to SQLite for local development.
+DATABASE_URL = os.environ.get("DATABASE_URL")
+USE_POSTGRES = bool(DATABASE_URL)
 
-# ── thresholds ─────────────────────────────────────────────────────────────────
-BIG_ROWS        = 3000
-BIG_COLS        = 150
-HEADER_SCAN_ROWS = 20
+if USE_POSTGRES:
+    import psycopg2
+    import psycopg2.extras
+else:
+    import sqlite3
 
-# ── XML namespaces ─────────────────────────────────────────────────────────────
-_NS   = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-_NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
-# ── Fallback column map  (lower-cased sheet name → [(cy_col, py_col)]) ────────
-#    Used when auto-detect finds nothing.
-SHEET_COL_MAP = {
-    # DP Thapar format
-    "bs":            [("E", "F")],
-    "p&l":           [("E", "F")],
-    "notes to bs":   [("D", "E")],
-    "notes to p&l":  [("D", "E")],
-    "details":       [("D", "E")],
-    "gross profit":  [("B", "C"), ("F", "G")],
-    "capital":       [("E", "F")],
-    # HFPL / HUG FOODS format
-    "notes":         [("H", "J")],
-    "othr notes":    [("H", "J")],
-    "share cap":     [("H", "J")],
-    "provision":     [("H", "J")],
-    "provisions":    [("H", "J")],
-    "cash flow":     [("D", "F")],
-    "dep co":        [("D", "F")],
-    "consump":       [("F", "H")],
-    "dep":           [("D", "F")],
+# ── Global error handlers — ensure /process NEVER returns HTML ────────────
+@app.errorhandler(500)
+def handle_500(e):
+    if request.path == "/process":
+        return jsonify({"status": "error", "message": f"Server error: {e}"}), 500
+    return "Internal Server Error", 500
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    if request.path == "/process":
+        return jsonify({"status": "error", "message": f"Server error: {e}"}), 500
+    raise e
+
+UPLOAD_DIR = "/tmp/bs_uploads"
+OUTPUT_DIR = "/tmp/bs_outputs"
+DB_PATH    = os.environ.get("DB_PATH", "users.db")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+FREE_UPLOADS         = 2
+UPLOAD_VALIDITY_DAYS = 90
+
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "sumit_admin")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Admin@Secure123")
+CONTACT_EMAIL  = "sumitverma2880@gmail.com"
+CONTACT_UPI    = "sumit2615verma@okhdfcbank"
+
+PLANS = {
+    "free":     {"label": "Free",         "uploads": 2,   "price": 0},
+    "starter":  {"label": "Starter",      "uploads": 10,  "price": 60},
+    "standard": {"label": "Standard",     "uploads": 25,  "price": 130},
+    "pro":      {"label": "Professional", "uploads": 60,  "price": 270},
+    "firm":     {"label": "Firm",         "uploads": 150, "price": 600},
 }
 
-# Sheets that only contain text — skip CY/PY shift entirely
-TEXT_ONLY_SHEETS = {s.strip().lower() for s in [
-    "notes to accounts", "Fixed Assets C. Yr.", "Fixed Assets P. Yr.",
-    "FA2022", "Tax audit ", "Tax Audit report", "PPE",
-    "acc policies",
-]}
-
-# Sheets whose data must never be touched (raw transaction dumps etc.)
-RAW_DATA_SHEETS = {s.strip().lower() for s in [
-    "new trial", "summary trial", "purchase report", "sale report",
-    "stk", "other details", "debtors", "creditors",
-    "purchase report pivot", "sales report pivot", "control",
-    "pending", "legal case", "provisions",
-]}
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Date-replacement pairs
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _date_replacements(cy: str, ny: str) -> list:
-    po = str(int(cy) - 1)
-    PH, PH_R = "__NEWCY__", "__FYRNG__"
-
-    patterns = [
-        "31.03.{y}", "31 March, {y}", "31 March {y}",
-        "31st March, {y}", "31st March {y}",
-        "31ST MARCH ,{y}", "31ST MARCH, {y}", "31ST MARCH {y}",
-        "31 MARCH, {y}", "31 MARCH {y}",
-        "31st MARCH, {y}", "31st MARCH {y}",
-        "year ended 31 March, {y}", "year ended, 31st March, {y}",
-        "year end 31 March, {y}",
-        "year ending 31.03.{y}", "YEAR ENDING 31.03.{y}",
-        "YEAR ENDING 31ST MARCH ,{y}", "YEAR ENDING 31ST MARCH, {y}",
-        "YEAR ENDING 31ST MARCH {y}",
-        "as at 31 March, {y}", "AS AT 31ST MARCH {y}",
-        "AS AT 31ST MARCH, {y}", "AS AT 31 MARCH, {y}",
-        "AS AT 31st MARCH, {y}", "AS AT 31st MARCH {y}",
-        "for the year ended, 31st March, {y}",
-        "for the year ended 31 March, {y}",
-        "FOR THE YEAR ENDED 31ST MARCH, {y}",
-        "FOR THE YEAR ENDED 31ST MARCH {y}",
-        "FOR THE YEAR ENDED 31st MARCH, {y}",
-        "FOR THE YEAR ENDED 31st MARCH {y}",
-    ]
-
-    # Step A: CY dates → placeholder
-    a = [(p.format(y=cy), p.format(y=PH)) for p in patterns]
-
-    # Step B: old PY dates → CY dates  (so they become the new PY column header)
-    b = []
-    for old_tpl, new_tpl in [
-        ("1st April {po}",       "1st April {cy}"),
-        ("1 April {po}",         "1 April {cy}"),
-        ("01.04.{po}",           "01.04.{cy}"),
-        ("31.03.{po}",           "31.03.{cy}"),
-        ("31st March {po}",      "31st March {cy}"),
-        ("31st March, {po}",     "31st March, {cy}"),
-        ("31 March, {po}",       "31 March, {cy}"),
-        ("31 March {po}",        "31 March {cy}"),
-        ("31ST MARCH {po}",      "31ST MARCH {cy}"),
-        ("31ST MARCH, {po}",     "31ST MARCH, {cy}"),
-        ("31st MARCH {po}",      "31st MARCH {cy}"),
-        ("31st MARCH, {po}",     "31st MARCH, {cy}"),
-        ("AS AT 31ST MARCH {po}","AS AT 31ST MARCH {cy}"),
-        ("AS AT 31ST MARCH, {po}","AS AT 31ST MARCH, {cy}"),
-        ("AS AT 31st MARCH {po}","AS AT 31st MARCH {cy}"),
-        ("AS AT 31st MARCH, {po}","AS AT 31st MARCH, {cy}"),
-    ]:
-        b.append((old_tpl.format(po=po, cy=cy), new_tpl.format(po=po, cy=cy)))
-
-    # Step C: placeholder → NY dates
-    c = [(p.format(y=PH), p.format(y=ny)) for p in patterns]
-
-    # Step D: fiscal year range strings  e.g. "2024-25" → "2025-26"
-    po_s = po[2:]; cy_s = cy[2:]; ny_s = ny[2:]
-    pp = str(int(po) - 1); pp_s = pp[2:]
-    r = [
-        (f"{po}-{cy_s}", PH_R),          # "2024-25" → placeholder
-        (f"{po}-{cy}",   f"{PH_R}L"),     # "2024-2025" → placeholder+L
-        (f"{pp}-{po_s}", f"{po}-{cy_s}"), # "2023-24" → "2024-25"
-        (f"{pp}-{po}",   f"{po}-{cy}"),   # "2023-2024" → "2024-2025"
-        (f"{PH_R}L",     f"{cy}-{ny}"),   # placeholder+L → "2025-2026"
-        (PH_R,           f"{cy}-{ny_s}"), # placeholder → "2025-26"
-    ]
-    return a + b + c + r
-
-
-def _apply_pairs(text: str, pairs: list) -> str:
-    for old, new in pairs:
-        text = text.replace(old, new)
-    return text
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Column-detection helpers
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _has_year_date(val: str, yr: str) -> bool:
-    """Return True if val is a date-bearing string for year yr."""
-    if not isinstance(val, str):
-        return False
-    flat = val.replace("\n", " ").replace("\r", " ")
-    if yr not in flat:
-        return False
-    return ("31.03." in flat or any(m in flat for m in (
-        "March", "MARCH", "march",
-        "year end", "Year end", "YEAR END",
-        "as at", "As at", "AS AT",
-    )))
-
-
-def _has_cy_py_label(val: str) -> tuple:
-    """
-    Detect HFPL-style headers: 'Current year' / 'Previous year'.
-    Returns (is_cy, is_py).
-    """
-    if not isinstance(val, str):
-        return False, False
-    lower = val.strip().lower()
-    is_cy = lower in ("current year", "current year ", "cy", "current")
-    is_py = lower in ("previous year", "previous year ", "py", "previous")
-    return is_cy, is_py
-
-
-_COL_RE = re.compile(r'^([A-Z]+)(\d+)$')
-
-
-def _col_idx(letter: str) -> int:
-    n = 0
-    for ch in letter.upper():
-        n = n * 26 + (ord(ch) - 64)
-    return n
-
-
-def _detect_columns(ws, closing_year: int) -> list:
-    """
-    Scan header rows for CY/PY column markers.
-    Supports both:
-      • date-bearing strings  ("As at 31st March, 2025")
-      • label strings         ("Current year" / "Previous year")
-    Returns [(cy_letter, py_letter), ...].
-    """
-    cy_s, py_s = str(closing_year), str(closing_year - 1)
-    cy_cols, py_cols = set(), set()
-
-    for row in ws.iter_rows(min_row=1, max_row=HEADER_SCAN_ROWS, max_col=60):
-        for cell in row:
-            if isinstance(cell, MergedCell):
-                continue
-            v = cell.value
-            if not isinstance(v, str):
-                continue
-            if v.startswith("="):
-                continue
-
-            # Date-bearing detection
-            if _has_year_date(v, cy_s):
-                cy_cols.add(cell.column)
-            if _has_year_date(v, py_s):
-                py_cols.add(cell.column)
-
-            # Label detection ("Current year" / "Previous year")
-            is_cy_lbl, is_py_lbl = _has_cy_py_label(v)
-            if is_cy_lbl:
-                cy_cols.add(cell.column)
-            if is_py_lbl:
-                py_cols.add(cell.column)
-
-    # Also detect fiscal year range labels e.g. "2024-25", "2023-24"
-    cy_s2 = cy_s[2:]   # "25"
-    py_s2 = py_s[2:]   # "24"
-    cy_range = f"{py_s}-{cy_s2}"   # "2024-25"
-    py_range = f"{str(int(py_s)-1)[2:]}-{py_s2}" if False else None  # not needed
-
-    for row in ws.iter_rows(min_row=1, max_row=HEADER_SCAN_ROWS, max_col=60):
-        for cell in row:
-            if isinstance(cell, MergedCell):
-                continue
-            v = cell.value
-            if not isinstance(v, str) or v.startswith("="):
-                continue
-            stripped = v.strip()
-            if stripped == cy_range:
-                cy_cols.add(cell.column)
-
-    if not cy_cols:
-        return []
-
-    # BUG 1 FIX: Remove col 1 (A) from cy_cols — it's almost always a 
-    # label/title column containing text like "Current Year (CY)" but no data.
-    # Real CY data columns are always col 2 (B) or higher.
-    cy_cols.discard(1)
-    py_cols.discard(1)
-    py_cols.discard(2)  # Col B is rarely a PY data col (usually labels)
-
-    if not cy_cols:
-        return []
-
-    pairs, used = [], set()
-    for cc in sorted(cy_cols):
-        # Look for a PY col to the right (offset 1, 2, or 3)
-        for off in [1, 2, 3]:
-            cand = cc + off
-            if cand in py_cols and cand not in used:
-                pairs.append((get_column_letter(cc), get_column_letter(cand)))
-                used.add(cand)
-                break
-        # If no PY col found but CY found, don't force it
-    return pairs
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  ZIP helpers
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _parse_dim(dim_str: str) -> tuple:
-    if ":" not in dim_str:
-        return 1, 1
-    _, end = dim_str.split(":")
-    m = _COL_RE.match(end)
-    if not m:
-        return 1, 1
-    return int(m.group(2)), _col_idx(m.group(1))
-
-
-def _get_sizes_from_zip(filepath: str) -> dict:
-    """Read sheet dimensions from XML headers — no cell parsing, very fast."""
-    sizes = {}
-    dim_re = re.compile(rb'<dimension ref="([^"]+)"')
-    with zipfile.ZipFile(filepath) as z:
-        for item in z.infolist():
-            fn = item.filename
-            if fn.startswith("xl/worksheets/sheet") and fn.endswith(".xml"):
-                header = z.read(fn)[:2000]
-                m = dim_re.search(header)
-                sizes[fn] = _parse_dim(m.group(1).decode()) if m else (0, 0)
-    return sizes
-
-
-def _sheet_file_map(z) -> dict:
-    """Return {sheet_name: 'xl/worksheets/sheetN.xml'}."""
-    root = ET.fromstring(z.read("xl/workbook.xml"))
-    srid = {}
-    for el in root.iter(f"{{{_NS}}}sheet"):
-        srid[el.get("name")] = el.get(f"{{{_NS_R}}}id")
-    rr = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
-    rf = {r.get("Id"): r.get("Target") for r in rr}
-    out = {}
-    for name, rid in srid.items():
-        t = rf.get(rid, "")
-        t = t.lstrip("/")
-        if t and not t.startswith("xl/"):
-            t = f"xl/{t}"
-        if t:
-            out[name] = t
-    return out
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  SINGLE-PASS workbook scan  (ONE open, collect everything)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _scan_workbook(filepath: str, closing_year: int) -> tuple:
-    """
-    Open the workbook ONCE (read_only=True, data_only=True).
-
-    Returns:
-        sizes        {sheet_name: (rows, cols)}
-        shift_map    {sheet_name: [(cy_letter, py_letter), ...]}
-        cy_values    {sheet_name: {cy_col_letter: {row_int: float}}}
-        cy_formulas  {sheet_name: {cy_col_letter: set_of_row_ints}}
-
-    Strategy:
-    - data_only=True means formula cells return their last-cached value.
-    - We read each CY column cell: if the cached value is numeric → record it
-      in cy_values.  If the raw XML shows it was a formula, we mark it in
-      cy_formulas so we know NOT to clear it later.
-
-    Detecting formula cells with data_only=True:
-    - openpyxl sets cell.data_type == 'n' for numbers, but for formula cells
-      that evaluated to a number, it also returns cell.value as a number.
-    - The only way to distinguish formula vs constant is to check the raw XML.
-    - We do that efficiently via a single regex pass on each sheet's XML bytes,
-      extracting all formula-cell refs before opening with openpyxl.
-    """
-
-    # ── Step 1: sizes from ZIP (no cell parsing) ───────────────────────────
-    with zipfile.ZipFile(filepath) as z:
-        smap = _sheet_file_map(z)
-        file_sizes = {}
-        dim_re = re.compile(rb'<dimension ref="([^"]+)"')
-        for fn in smap.values():
-            try:
-                header = z.read(fn)[:2000]
-                m = dim_re.search(header)
-                file_sizes[fn] = _parse_dim(m.group(1).decode()) if m else (0, 0)
-            except Exception:
-                file_sizes[fn] = (0, 0)
-
-    sizes = {sn: file_sizes.get(sf, (0, 0)) for sn, sf in smap.items()}
-    big_names = {n for n, (r, c) in sizes.items() if r > BIG_ROWS or c > BIG_COLS}
-
-    # ── Step 2: extract formula-cell refs directly from ZIP XML (regex, no ET)
-    #    formula_refs[sheet_file] = set of "ColRow" refs like {"E5","E12"}
-    formula_refs = {}  # {sheet_file: set_of_refs}
-    # A formula cell in OOXML looks like: <c r="E5" ...><f ...>...</f><v>...</v></c>
-    # We just need to find all refs that contain a <f> tag.
-    _f_cell_re = re.compile(rb'<c\b[^>]*\br="([A-Z]+\d+)"[^>]*>[^<]*<f[ />]')
-    with zipfile.ZipFile(filepath) as z:
-        for sn, sf in smap.items():
-            if sn in big_names:
-                continue
-            sl = sn.strip().lower()
-            if sl in TEXT_ONLY_SHEETS or sl in RAW_DATA_SHEETS:
-                continue
-            try:
-                xml_data = z.read(sf)
-                refs = set(m.group(1).decode() for m in _f_cell_re.finditer(xml_data))
-                formula_refs[sf] = refs
-            except Exception:
-                formula_refs[sf] = set()
-
-    # ── Step 3: single openpyxl open (data_only → gets cached values) ─────
-    fb = {k.strip().lower(): v for k, v in SHEET_COL_MAP.items()}
-    shift_map  = {}
-    cy_values  = {}
-    cy_formulas = {}
-
-    wb = load_workbook(filepath, read_only=True, data_only=True)
-    try:
-        for sn in wb.sheetnames:
-            sl = sn.strip().lower()
-            if sn in big_names:
-                continue
-            if sl in TEXT_ONLY_SHEETS or sl in RAW_DATA_SHEETS:
-                continue
-
-            ws = wb[sn]
-
-            # Detect CY/PY columns
-            det = _detect_columns(ws, closing_year)
-            if not det:
-                det = fb.get(sl, [])
-            if not det:
-                continue
-
-            shift_map[sn] = det
-
-            # Build formula-row sets from pre-extracted refs
-            sf = smap.get(sn, "")
-            sheet_frefs = formula_refs.get(sf, set())
-
-            cy_vals_sheet   = {}
-            cy_frows_sheet  = {}
-
-            for cy_l, _ in det:
-                ci = _col_idx(cy_l)
-                vals  = {}
-                frows = set()
-
-                for row in ws.iter_rows(min_col=ci, max_col=ci):
-                    for cell in row:
-                        if isinstance(cell, MergedCell):
-                            continue
-                        if not hasattr(cell, 'row') or cell.row is None:
-                            continue
-                        rn = cell.row
-                        ref = f"{cy_l}{rn}"
-
-                        if ref in sheet_frefs:
-                            # It's a formula cell — record row, grab cached value too
-                            frows.add(rn)
-                            if isinstance(cell.value, (int, float)) and cell.value is not None:
-                                vals[rn] = float(cell.value)
-                            elif cell.value is None:
-                                # Formula evaluated to empty/zero — record as 0
-                                vals[rn] = 0.0
-                        elif isinstance(cell.value, (int, float)) and cell.value is not None:
-                            vals[rn] = float(cell.value)
-                        elif isinstance(cell.value, str) and cell.value.strip() in ("-", "—", "–", "-"):
-                            # BUG 2 FIX: dash string = zero. Copy 0 to PY column.
-                            vals[rn] = 0.0
-
-                cy_vals_sheet[cy_l]  = vals
-                cy_frows_sheet[cy_l] = frows
-
-            cy_values[sn]   = cy_vals_sheet
-            cy_formulas[sn] = cy_frows_sheet
-
-    finally:
-        wb.close()
-
-    return sizes, shift_map, cy_values, cy_formulas
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  XML sheet manipulation  (regex on raw bytes — never ET.tostring)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
-                       cy_vals: dict, cy_formulas: dict) -> bytes:
-    """
-    Surgical byte-level edits on a worksheet XML:
-
-    For every row:
-      • PY cell (non-formula): replace its <v> with the CY value for that row.
-      • CY cell (constant, i.e. NOT in cy_formulas): remove its <v>.
-
-    Never calls ET.tostring — preserves all namespace prefixes exactly.
-    """
-    # Build lookup maps
-    col_info  = {}   # cy_letter → (py_letter, {row: val}, formula_row_set)
-    py_to_cy  = {}   # py_letter → cy_letter  (reverse map)
-    for cy_l, py_l in col_pairs:
-        col_info[cy_l] = (py_l,
-                          cy_vals.get(cy_l, {}),
-                          cy_formulas.get(cy_l, set()))
-        py_to_cy[py_l] = cy_l
-
-    cy_letters = set(col_info.keys())
-    py_letters = set(py_to_cy.keys())
-
-    # Build the change dict: {cell_ref_str: ("set_v", new_val_str) | ("clear_v", None)}
-    # We do this via a lightweight ET parse (read-only, no tostring ever called)
-    changes = {}
-    try:
-        root = ET.fromstring(xml_bytes)
-    except ET.ParseError:
-        return xml_bytes
-
-    sd = root.find(f"{{{_NS}}}sheetData")
-    if sd is None:
-        return xml_bytes
-
-    for row_el in sd:
-        for cell_el in row_el:
-            ref = cell_el.get("r", "")
-            m = _COL_RE.match(ref)
-            if not m:
-                continue
-            cl, rn = m.group(1), int(m.group(2))
-
-            if cl in py_letters:
-                cy_l = py_to_cy[cl]
-                py_l, vals, frows = col_info[cy_l]
-                if rn in vals:
-                    # BUG 3 FIX: Write CY value to PY cell even if PY cell
-                    # is currently a formula. PY column should be hardcoded
-                    # actuals (last year's numbers), not live formula refs.
-                    # This also fixes BS E→F where both cols are formulas.
-                    changes[ref] = ("set_v_overwrite", _fmt_num(vals[rn]))
-
-            if cl in cy_letters:
-                _, vals, frows = col_info[cl]
-                if rn in vals and rn not in frows:
-                    changes[ref] = ("clear_v", None)
-
-    if not changes:
-        return xml_bytes
-
-    # Apply changes via regex on the raw text — row by row for safety
-    text = xml_bytes.decode("utf-8", errors="replace")
-
-    def _fix_cell(cm):
-        full = cm.group(0)
-        ref_m = re.search(r'\br="([A-Z]+\d+)"', full)
-        if not ref_m:
-            return full
-        ref = ref_m.group(1)
-        if ref not in changes:
-            return full
-        action, new_val = changes[ref]
-        if action == "clear_v":
-            full = re.sub(r'<v>[^<]*</v>', '', full)
-            full = re.sub(r'<v\s*/>', '', full)
-        elif action in ("set_v", "set_v_overwrite"):
-            if action == "set_v_overwrite":
-                # Remove any <f>...</f> formula tag first (convert formula → value)
-                full = re.sub(r'<f[^>]*>.*?</f>', '', full, flags=re.DOTALL)
-                full = re.sub(r'<f[^>]*/>', '', full)
-            if '<v>' in full:
-                full = re.sub(r'<v>[^<]*</v>', f'<v>{new_val}</v>', full)
-            else:
-                full = full.replace('</c>', f'<v>{new_val}</v></c>')
-            # Remove string-type attribute — it's a number now
-            full = re.sub(r'\s*t="s"', '', full)
-        return full
-
-    def _fix_row(rm):
-        row_xml = rm.group(0)
-        # Match self-closing cells first, then paired cells
-        row_xml = re.sub(
-            r'<c\b[^>]*/>\s*|<c\b[^>]*>.*?</c>\s*',
-            _fix_cell, row_xml, flags=re.DOTALL
+# ══════════════════════════════════════════════════════════════════════════════
+#  DATABASE — PostgreSQL (Supabase) with SQLite fallback for local dev
+# ══════════════════════════════════════════════════════════════════════════════
+
+def get_db():
+    if "db" not in g:
+        if USE_POSTGRES:
+            g.db = psycopg2.connect(DATABASE_URL)
+            g.db.autocommit = False
+        else:
+            g.db = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+            g.db.row_factory = sqlite3.Row
+    return g.db
+
+@app.teardown_appcontext
+def close_db(e=None):
+    db = g.pop("db", None)
+    if db:
+        try: db.close()
+        except: pass
+
+def _db_fetchone(sql, params=()):
+    db = get_db()
+    if USE_POSTGRES:
+        cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql, params)
+        row = cur.fetchone()
+        cur.close()
+        return row
+    else:
+        return db.execute(sql, params).fetchone()
+
+def _db_fetchall(sql, params=()):
+    db = get_db()
+    if USE_POSTGRES:
+        cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    else:
+        return db.execute(sql, params).fetchall()
+
+def _db_execute(sql, params=()):
+    db = get_db()
+    if USE_POSTGRES:
+        cur = db.cursor()
+        cur.execute(sql, params)
+        cur.close()
+        db.commit()
+    else:
+        db.execute(sql, params)
+        db.commit()
+
+def _placeholder(n=1):
+    """Return the correct placeholder for the DB driver: %s for PG, ? for SQLite."""
+    return "%s" if USE_POSTGRES else "?"
+
+def _ph(sql_with_qmarks):
+    """Convert ? placeholders to %s for PostgreSQL."""
+    if USE_POSTGRES:
+        return sql_with_qmarks.replace("?", "%s")
+    return sql_with_qmarks
+
+def init_db():
+    if USE_POSTGRES:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("""CREATE TABLE IF NOT EXISTS users (
+            id            SERIAL PRIMARY KEY,
+            username      TEXT    UNIQUE NOT NULL,
+            password      TEXT    NOT NULL,
+            plan          TEXT    NOT NULL DEFAULT 'free',
+            is_admin      INTEGER NOT NULL DEFAULT 0,
+            uploads_total INTEGER NOT NULL DEFAULT 2,
+            uploads_used  INTEGER NOT NULL DEFAULT 0,
+            validity_end  TEXT,
+            created_at    TEXT    NOT NULL)""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS usage_log (
+            id           SERIAL PRIMARY KEY,
+            user_id      INTEGER NOT NULL REFERENCES users(id),
+            filename     TEXT,
+            processed_at TEXT    NOT NULL)""")
+        # Insert admin if not exists
+        cur.execute("SELECT id FROM users WHERE username=%s", (ADMIN_USERNAME,))
+        if not cur.fetchone():
+            cur.execute("""INSERT INTO users
+                (username,password,plan,is_admin,uploads_total,uploads_used,created_at)
+                VALUES (%s,%s,'firm',1,999999,0,%s)""",
+                (ADMIN_USERNAME, _hash(ADMIN_PASSWORD), datetime.utcnow().isoformat()))
+        conn.commit()
+        cur.close()
+        conn.close()
+    else:
+        db = sqlite3.connect(DB_PATH)
+        db.execute("""CREATE TABLE IF NOT EXISTS users (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            username      TEXT    UNIQUE NOT NULL,
+            password      TEXT    NOT NULL,
+            plan          TEXT    NOT NULL DEFAULT 'free',
+            is_admin      INTEGER NOT NULL DEFAULT 0,
+            uploads_total INTEGER NOT NULL DEFAULT 2,
+            uploads_used  INTEGER NOT NULL DEFAULT 0,
+            validity_end  TEXT,
+            created_at    TEXT    NOT NULL)""")
+        db.execute("""CREATE TABLE IF NOT EXISTS usage_log (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id      INTEGER NOT NULL,
+            filename     TEXT,
+            processed_at TEXT    NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id))""")
+        db.execute("""INSERT OR IGNORE INTO users
+            (username,password,plan,is_admin,uploads_total,uploads_used,created_at)
+            VALUES (?,?,'firm',1,999999,0,?)""",
+            (ADMIN_USERNAME, _hash(ADMIN_PASSWORD), datetime.utcnow().isoformat()))
+        db.commit()
+        db.close()
+
+def _hash(p): return hashlib.sha256(p.encode("utf-8")).hexdigest()
+def get_user_by_name(u): return _db_fetchone(_ph("SELECT * FROM users WHERE username=?"), (u,))
+def get_user_by_id(i):   return _db_fetchone(_ph("SELECT * FROM users WHERE id=?"), (i,))
+def uploads_remaining(user): return max(0, user["uploads_total"] - user["uploads_used"])
+
+def log_usage(user_id, filename):
+    _db_execute(_ph("UPDATE users SET uploads_used=uploads_used+1 WHERE id=?"), (user_id,))
+    _db_execute(_ph("INSERT INTO usage_log (user_id,filename,processed_at) VALUES (?,?,?)"),
+               (user_id, filename, datetime.utcnow().isoformat()))
+
+def add_uploads(user_id, plan_key):
+    user    = get_user_by_id(user_id)
+    extra   = PLANS[plan_key]["uploads"]
+    rem     = uploads_remaining(user)
+    new_tot = user["uploads_used"] + rem + extra
+    validity = (datetime.utcnow() + timedelta(days=UPLOAD_VALIDITY_DAYS)).isoformat()
+    _db_execute(_ph("UPDATE users SET plan=?,uploads_total=?,validity_end=? WHERE id=?"),
+               (plan_key, new_tot, validity, user_id))
+
+def create_user(username, password, plan_key):
+    uploads  = PLANS[plan_key]["uploads"]
+    validity = None if plan_key == "free" else (datetime.utcnow() + timedelta(days=UPLOAD_VALIDITY_DAYS)).isoformat()
+    _db_execute(_ph("""INSERT INTO users
+        (username,password,plan,is_admin,uploads_total,uploads_used,validity_end,created_at)
+        VALUES (?,?,?,0,?,0,?,?)"""),
+        (username, _hash(password), plan_key, uploads, validity, datetime.utcnow().isoformat()))
+
+def del_user(uid):
+    _db_execute(_ph("DELETE FROM usage_log WHERE user_id=?"), (uid,))
+    _db_execute(_ph("DELETE FROM users WHERE id=?"), (uid,))
+
+def all_users(): return _db_fetchall("SELECT * FROM users ORDER BY id")
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  AUTH DECORATORS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def login_required(f):
+    @wraps(f)
+    def dec(*a, **kw):
+        if "uid" not in session: return redirect(url_for("login_page"))
+        return f(*a, **kw)
+    return dec
+
+def admin_required(f):
+    @wraps(f)
+    def dec(*a, **kw):
+        if "uid" not in session: return redirect(url_for("login_page"))
+        u = get_user_by_id(session["uid"])
+        if not u or not u["is_admin"]: return "Access denied.", 403
+        return f(*a, **kw)
+    return dec
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SHARED CSS
+# ══════════════════════════════════════════════════════════════════════════════
+
+BASE_CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--brand:#1D4ED8;--brand-d:#1e40af;--accent:#F59E0B;--green:#10B981;--red:#EF4444;
+      --ink:#111827;--muted:#6B7280;--border:#E5E7EB;--bg:#F9FAFB;--white:#fff;
+      --radius:12px;--shadow:0 4px 24px rgba(0,0,0,.08)}
+body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
+nav{background:var(--white);border-bottom:1px solid var(--border);padding:0 24px;
+    display:flex;align-items:center;justify-content:space-between;height:60px;
+    position:sticky;top:0;z-index:100;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.logo{font-size:20px;font-weight:800;color:var(--brand);letter-spacing:-.5px;text-decoration:none}
+.logo span{color:var(--accent)}
+.nav-right{display:flex;align-items:center;gap:14px}
+.nav-user{font-size:13px;color:var(--muted)}
+.nav-user strong{color:var(--ink)}
+.nav-btn{background:var(--brand);color:#fff;padding:7px 16px;border-radius:8px;
+         font-size:13px;font-weight:600;text-decoration:none;transition:background .2s}
+.nav-btn:hover{background:var(--brand-d)}
+.nav-link{font-size:13px;color:var(--muted);text-decoration:none;font-weight:500}
+.nav-link:hover{color:var(--red)}
+.badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;
+       border-radius:99px;text-transform:uppercase;letter-spacing:.04em}
+.b-free{background:#F3F4F6;color:var(--muted)}
+.b-starter{background:#ECFDF5;color:#065F46}
+.b-standard{background:#EFF6FF;color:var(--brand)}
+.b-pro{background:#FFFBEB;color:#92400E}
+.b-firm{background:#F5F3FF;color:#5B21B6}
+footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:24px;font-size:12px}
+footer a{color:#6B7280;text-decoration:none}
+.footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:6px}
+"""
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  LOGIN PAGE
+# ══════════════════════════════════════════════════════════════════════════════
+
+LOGIN_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Login – CA Toolkit</title>
+<style>
+""" + BASE_CSS + """
+body{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}
+.auth-card{background:var(--white);border:1px solid var(--border);border-radius:var(--radius);
+           box-shadow:var(--shadow);width:100%;max-width:420px;padding:40px}
+.auth-logo{font-size:22px;font-weight:800;color:var(--brand);margin-bottom:4px}
+.auth-logo span{color:var(--accent)}
+.auth-sub{font-size:13px;color:var(--muted);margin-bottom:28px}
+h2{font-size:20px;font-weight:700;margin-bottom:4px}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;
+      letter-spacing:.04em;color:var(--muted);margin-bottom:5px}
+.field{margin-bottom:18px}
+input{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:10px 14px;
+      font-family:inherit;font-size:14px;color:var(--ink);background:var(--white);
+      outline:none;transition:border-color .2s}
+input:focus{border-color:var(--brand)}
+.btn{width:100%;background:var(--brand);color:#fff;border:none;border-radius:8px;
+     padding:12px;font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;transition:background .2s}
+.btn:hover{background:var(--brand-d)}
+.alert{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:18px}
+.ae{background:#FEF2F2;border:1px solid #FECACA;color:#991B1B}
+.lr{text-align:center;margin-top:16px;font-size:13px;color:var(--muted)}
+.lr a{color:var(--brand);text-decoration:none;font-weight:500}
+</style></head><body>
+<div class="auth-card">
+  <div class="auth-logo">CA<span>Toolkit</span></div>
+  <div class="auth-sub">Professional tools for Indian CAs &amp; Accountants</div>
+  <h2>Sign in</h2>
+  <p style="font-size:13px;color:var(--muted);margin-bottom:24px">Enter your credentials to continue</p>
+  {% if error %}<div class="alert ae">{{ error }}</div>{% endif %}
+  <form method="POST" action="/login">
+    <div class="field"><label>Username</label>
+      <input type="text" name="username" placeholder="Enter username" required autocomplete="username"/></div>
+    <div class="field"><label>Password</label>
+      <input type="password" name="password" placeholder="Enter password" required autocomplete="current-password"/></div>
+    <button class="btn" type="submit">Sign In →</button>
+  </form>
+  <div class="lr">Need access? <a href="mailto:{{ email }}">Contact admin</a></div>
+</div></body></html>"""
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  DASHBOARD — tool selection homepage
+# ══════════════════════════════════════════════════════════════════════════════
+
+DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dashboard – CA Toolkit</title>
+<style>
+""" + BASE_CSS + """
+.hero{text-align:center;padding:56px 24px 40px;max-width:680px;margin:0 auto}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#EFF6FF;
+            color:var(--brand);border:1px solid #BFDBFE;border-radius:99px;
+            padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:18px}
+.hero h1{font-size:clamp(24px,4vw,38px);font-weight:800;line-height:1.2;
+         letter-spacing:-.5px;margin-bottom:12px}
+.hero h1 em{font-style:normal;color:var(--brand)}
+.hero p{font-size:15px;color:var(--muted);line-height:1.7}
+
+.tools-grid{max-width:1200px;margin:0 auto;padding:0 24px 56px;
+            display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+@media(max-width:900px){.tools-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:540px){.tools-grid{grid-template-columns:1fr}}
+
+.tool-card{background:var(--white);border:1.5px solid var(--border);
+           border-radius:var(--radius);padding:22px 20px;
+           text-decoration:none;color:var(--ink);
+           transition:all .2s;position:relative;overflow:hidden;display:block}
+.tool-card:hover{border-color:var(--brand);box-shadow:0 8px 32px rgba(29,78,216,.12);transform:translateY(-2px)}
+.tool-card.disabled{cursor:default;opacity:.7}
+.tool-card.disabled:hover{border-color:var(--border);box-shadow:none;transform:none}
+
+.tool-icon{width:44px;height:44px;border-radius:10px;display:flex;
+           align-items:center;justify-content:center;font-size:22px;
+           margin-bottom:12px}
+.tool-card h2{font-size:14px;font-weight:700;margin-bottom:5px}
+.tool-card p{font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:14px}
+
+.tool-tag{display:inline-flex;align-items:center;gap:5px;font-size:11px;
+          font-weight:600;padding:3px 10px;border-radius:99px}
+.tag-live{background:#ECFDF5;color:#065F46}
+.tag-soon{background:#F3F4F6;color:var(--muted)}
+
+.tool-card .arrow{position:absolute;right:20px;top:50%;transform:translateY(-50%);
+                  font-size:20px;color:var(--brand);opacity:0;transition:opacity .2s}
+.tool-card:not(.disabled):hover .arrow{opacity:1}
+
+.usage-strip{max-width:960px;margin:0 auto 8px;padding:0 24px}
+.usage-box{background:var(--white);border:1px solid var(--border);border-radius:var(--radius);
+           padding:14px 20px;display:flex;align-items:center;justify-content:space-between;
+           flex-wrap:wrap;gap:12px}
+.usage-info{font-size:13px}
+.usage-info strong{color:var(--ink)}
+.usage-info span{color:var(--muted)}
+.usage-bar-bg{flex:1;max-width:200px;background:#F3F4F6;border-radius:99px;height:6px;overflow:hidden}
+.usage-bar-fill{height:100%;border-radius:99px;transition:width .4s}
+.upgrade-link{font-size:12px;font-weight:600;color:var(--brand);text-decoration:none}
+.upgrade-link:hover{text-decoration:underline}
+</style></head><body>
+
+<nav>
+  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <div class="nav-right">
+    <span class="nav-user">👤 <strong>{{ username }}</strong>
+      <span class="badge b-{{ plan }}">{{ plan_label }}</span>
+      {% if is_admin %}<span class="badge" style="background:#EFF6FF;color:var(--brand);margin-left:4px">Admin</span>{% endif %}
+    </span>
+    {% if username %}
+    {% if is_admin %}<a href="/admin" class="nav-btn">Admin Panel</a>{% endif %}
+    <a href="/logout" class="nav-link">Sign out</a>
+    {% else %}
+    <a href="/login" class="nav-btn">Sign In</a>
+    {% endif %}
+  </div>
+</nav>
+
+<div class="hero">
+  <div class="hero-badge">🇮🇳 Made for Indian CAs &amp; Accountants</div>
+  <h1>Your Complete <em>CA Toolkit</em></h1>
+  <p>Professional tools built by CA Article — designed to save hours of manual work every year.</p>
+</div>
+
+{% if username %}
+<!-- Upload usage strip -->
+<div class="usage-strip">
+  <div class="usage-box">
+    <div class="usage-info">
+      <strong>{{ uploads_remaining }} uploads</strong>
+      <span> remaining ({{ uploads_used }} / {{ uploads_total }} used)</span>
+      {% if validity_end %}<span style="margin-left:8px;color:#9CA3AF">· Valid till {{ validity_end[:10] }}</span>{% endif %}
+    </div>
+    <div class="usage-bar-bg">
+      <div class="usage-bar-fill"
+           style="width:{{ bar_pct }}%;background:{{ '#EF4444' if uploads_remaining==0 else '#F59E0B' if uploads_remaining<=3 else '#10B981' }}">
+      </div>
+    </div>
+    <a href="/tool/converter#pricing" class="upgrade-link">Upgrade plan →</a>
+  </div>
+</div>
+{% endif %}
+
+<!-- Tools grid -->
+<div class="tools-grid">
+
+  <!-- PREMIUM: Login required -->
+  {% if username %}
+  <a href="/tool/converter" class="tool-card">
+  {% else %}
+  <a href="/login" class="tool-card">
+  {% endif %}
+    {% if not username %}<div style="position:absolute;top:12px;right:12px;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🔒 Login Required</div>{% endif %}
+    <div class="tool-icon" style="background:#EFF6FF">📊</div>
+    <h2>Balance Sheet Year-Shift</h2>
+    <p>Roll over your comparative Excel balance sheet to any new financial year in seconds. Shifts CY→PY, clears CY, restores all formulas and updates every date.</p>
+    <span class="tool-tag tag-live">✓ Live · Premium</span>
+    <div class="arrow">→</div>
+  </a>
+
+  <!-- PREMIUM: Login required -->
+  <div class="tool-card disabled" style="position:relative">
+    <div style="position:absolute;top:12px;right:12px;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🔒 Premium</div>
+    <div class="tool-icon" style="background:#F0FDF4">📋</div>
+    <h2>Balance Sheet from Trial Balance</h2>
+    <p>Generate a formatted comparative balance sheet directly from your trial balance data. No manual formatting required.</p>
+    <span class="tool-tag tag-soon">🔜 Coming Soon</span>
+  </div>
+
+  <!-- FREE: No login needed -->
+  <a href="/tool/tax-calculator" class="tool-card">
+    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
+    <div class="tool-icon" style="background:#FFFBEB">🧮</div>
+    <h2>Income Tax Calculator</h2>
+    <p>Calculate income tax under old and new regime for PY 2025-26. Income under 5 heads, TDS/TCS, surcharge &amp; cess — all built in.</p>
+    <span class="tool-tag tag-live">✓ Live · Free</span>
+    <div class="arrow">→</div>
+  </a>
+
+  <!-- FREE: No login needed -->
+  <a href="/tool/tds-calculator" class="tool-card">
+    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
+    <div class="tool-icon" style="background:#EFF6FF">📑</div>
+    <h2>TDS / TCS Calculator</h2>
+    <p>Calculate TDS or TCS as per IT Act 2025 (Sec 393/394). New payment codes, rates, late deposit interest — all in one tool.</p>
+    <span class="tool-tag tag-live">✓ Live · Free</span>
+    <div class="arrow">→</div>
+  </a>
+
+  <!-- FREE: No login needed -->
+  <a href="/tool/depreciation-calculator" class="tool-card">
+    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
+    <div class="tool-icon" style="background:#F5F3FF">🏭</div>
+    <h2>Depreciation Calculator</h2>
+    <p>Calculate depreciation under Companies Act 2013 (WDV/SLM) and Income Tax Act. Get full schedule with opening/closing WDV.</p>
+    <span class="tool-tag tag-live">✓ Live · Free</span>
+    <div class="arrow">→</div>
+  </a>
+
+  <!-- FREE: No login needed -->
+  <a href="/tool/msme-calculator" class="tool-card" style="position:relative">
+    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
+    <div class="tool-icon" style="background:#FEF2F2">📄</div>
+    <h2>MSME Disallowance Calculator</h2>
+    <p>Upload creditors list and check MSME payment compliance under Sec 43B(h). Overdue payments highlighted with total disallowance amount.</p>
+    <span class="tool-tag tag-live">✓ Live · Free</span>
+    <div class="arrow">→</div>
+  </a>
+
+  <!-- FREE: No login needed -->
+  <a href="/tool/capital-gains-calculator" class="tool-card" style="position:relative">
+    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
+    <div class="tool-icon" style="background:#F5F3FF">💰</div>
+    <h2>Capital Gains Calculator</h2>
+    <p>Calculate LTCG/STCG on property, shares, MF and more. Compare old vs new regime, indexation benefit, and find zero-tax sale price with reverse calculator.</p>
+    <span class="tool-tag tag-live">✓ Live · Free</span>
+    <div class="arrow">→</div>
+  </a>
+
+  <div class="tool-card disabled">
+    <div class="tool-icon" style="background:#FEF2F2">🚀</div>
+    <h2>More Tools Coming Soon</h2>
+    <p>We're building more tools for Indian CAs. Stay tuned — new utilities added regularly based on your feedback.</p>
+    <span class="tool-tag tag-soon">Stay Tuned</span>
+  </div>
+
+</div>
+
+<footer>
+  <p class="footer-brand">CA Toolkit</p>
+  <p>Built for Indian Chartered Accountants · Saves hours every year</p>
+  <p style="margin-top:6px">Created by CA Article</p>
+  <p style="margin-top:12px;font-size:11px">© 2026 CA Toolkit · Your data is never stored · <span style="color:#EF4444">No refund after first upload is used</span></p>
+</footer>
+</body></html>"""
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  BALANCE SHEET CONVERTER TOOL PAGE
+# ══════════════════════════════════════════════════════════════════════════════
+
+CONVERTER_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Balance Sheet Year-Shift – CA Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+<style>
+""" + BASE_CSS + """
+.nav-links{display:flex;gap:20px;list-style:none}
+.nav-links a{text-decoration:none;color:var(--muted);font-size:13px;font-weight:500;transition:color .2s}
+.nav-links a:hover{color:var(--brand)}
+.hero{text-align:center;padding:56px 24px 40px;max-width:700px;margin:0 auto}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#EFF6FF;
+            color:var(--brand);border:1px solid #BFDBFE;border-radius:99px;
+            padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:18px}
+h1{font-size:clamp(24px,4vw,40px);font-weight:800;line-height:1.15;
+   letter-spacing:-.5px;margin-bottom:14px}
+h1 em{font-style:normal;color:var(--brand)}
+.hero p{font-size:15px;color:var(--muted);line-height:1.7;max-width:520px;margin:0 auto 28px}
+.stats{display:flex;justify-content:center;gap:36px;flex-wrap:wrap;
+       padding:16px 24px;background:var(--white);
+       border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.stat-n{font-size:20px;font-weight:800;color:var(--brand)}
+.stat-l{font-size:11px;color:var(--muted);margin-top:2px}
+.main{max-width:1080px;margin:0 auto;padding:40px 24px;
+      display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start}
+@media(max-width:768px){.main{grid-template-columns:1fr}}
+.card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
+      box-shadow:var(--shadow);overflow:hidden}
+.card-head{padding:16px 20px;border-bottom:1px solid var(--border);
+           display:flex;align-items:center;gap:10px}
+.card-head .icon{width:32px;height:32px;border-radius:8px;display:flex;
+                 align-items:center;justify-content:center;font-size:16px}
+.card-head h2{font-size:14px;font-weight:700}
+.card-head p{font-size:12px;color:var(--muted);margin-top:1px}
+.card-body{padding:20px}
+.usage-row{display:flex;justify-content:space-between;align-items:center;
+           font-size:12px;font-weight:600;margin-bottom:5px}
+.usage-bar-bg{background:#F3F4F6;border-radius:99px;height:6px;overflow:hidden;margin-bottom:14px}
+.usage-bar-fill{height:100%;border-radius:99px;transition:width .4s}
+.field{margin-bottom:16px}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;
+      letter-spacing:.04em;color:var(--muted);margin-bottom:5px}
+.hint{font-size:11px;color:var(--muted);margin-top:4px}
+.dropzone{border:2px dashed var(--border);border-radius:10px;padding:24px 14px;
+          text-align:center;cursor:pointer;transition:all .2s;position:relative;background:var(--bg)}
+.dropzone:hover,.dropzone.drag{border-color:var(--brand);background:#EFF6FF}
+.dropzone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.dz-icon{font-size:26px;margin-bottom:6px}
+.dz-text{font-size:12px;color:var(--muted)}
+.dz-text strong{color:var(--brand)}
+.dz-file{font-size:12px;font-weight:600;color:var(--green);margin-top:5px;display:none}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+input[type=number],input[type=text]{width:100%;border:1.5px solid var(--border);
+  border-radius:8px;padding:9px 12px;font-family:inherit;font-size:13px;
+  color:var(--ink);background:var(--white);transition:border-color .2s;outline:none}
+input:focus{border-color:var(--brand)}
+.btn{width:100%;background:var(--brand);color:#fff;border:none;border-radius:10px;
+     padding:12px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;
+     transition:background .2s;display:flex;align-items:center;justify-content:center;gap:8px}
+.btn:hover{background:var(--brand-d)}
+.btn:disabled{background:#93C5FD;cursor:not-allowed}
+.spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.3);
+         border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+#status{margin-top:12px;border-radius:8px;padding:12px 14px;font-size:13px;display:none;line-height:1.6}
+#status.success{background:#ECFDF5;border:1px solid #A7F3D0;color:#065F46}
+#status.error{background:#FEF2F2;border:1px solid #FECACA;color:#991B1B}
+.log-list{margin-top:6px;padding-left:14px;font-size:11px;color:#374151;line-height:2}
+.dl-btn{display:none;margin-top:10px;width:100%;background:var(--green);color:#fff;
+        border:none;border-radius:10px;padding:11px;font-family:inherit;font-size:13px;
+        font-weight:600;cursor:pointer;text-decoration:none;text-align:center;transition:background .2s}
+.dl-btn:hover{background:#059669}
+.steps{padding:0;list-style:none;counter-reset:step}
+.steps li{display:flex;gap:10px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--border)}
+.steps li:last-child{border:none}
+.steps li::before{counter-increment:step;content:counter(step);min-width:24px;height:24px;
+                  background:var(--brand);color:#fff;border-radius:50%;display:flex;
+                  align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px}
+.steps li strong{display:block;font-size:12px;font-weight:600;margin-bottom:2px}
+.steps li span{font-size:11px;color:var(--muted)}
+.features{max-width:1080px;margin:0 auto;padding:0 24px 40px;
+          display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+@media(max-width:640px){.features{grid-template-columns:1fr}}
+.feat{background:var(--white);border:1px solid var(--border);border-radius:var(--radius);
+      padding:20px;text-align:center}
+.feat .fi{font-size:26px;margin-bottom:8px}
+.feat h3{font-size:13px;font-weight:700;margin-bottom:4px}
+.feat p{font-size:12px;color:var(--muted);line-height:1.6}
+.pricing-section{background:var(--white);border-top:1px solid var(--border);
+                 border-bottom:1px solid var(--border);padding:48px 24px}
+.pricing-section h2{text-align:center;font-size:24px;font-weight:800;margin-bottom:6px}
+.psub{text-align:center;color:var(--muted);font-size:13px;margin-bottom:32px}
+.plans{max-width:980px;margin:0 auto;
+       display:grid;grid-template-columns:repeat(5,1fr);gap:14px}
+@media(max-width:900px){.plans{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:480px){.plans{grid-template-columns:1fr}}
+.plan{border:1.5px solid var(--border);border-radius:var(--radius);padding:20px 16px;position:relative}
+.plan.pop{border-color:var(--brand)}
+.plan-badge{position:absolute;top:-10px;left:50%;transform:translateX(-50%);
+            background:var(--brand);color:#fff;font-size:10px;font-weight:700;
+            padding:2px 10px;border-radius:99px;white-space:nowrap}
+.plan-name{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
+           letter-spacing:.06em;margin-bottom:6px}
+.plan-price{font-size:24px;font-weight:800;color:var(--ink);margin-bottom:2px}
+.plan-uploads{font-size:12px;font-weight:700;color:var(--brand);margin-bottom:2px}
+.plan-validity{font-size:10px;color:var(--muted);margin-bottom:14px}
+.plan ul{list-style:none;margin-bottom:16px}
+.plan ul li{font-size:11px;padding:3px 0;display:flex;gap:5px}
+.plan ul li::before{content:"✓";color:var(--green);font-weight:700}
+.plan-btn{display:block;text-align:center;padding:8px;border-radius:7px;
+          font-size:11px;font-weight:600;text-decoration:none;transition:all .2s;
+          border:1.5px solid var(--brand);color:var(--brand)}
+.plan-btn:hover{background:var(--brand);color:#fff}
+.plan.pop .plan-btn{background:var(--brand);color:#fff}
+.no-refund-note{text-align:center;font-size:11px;color:var(--muted);margin-top:14px;font-weight:500}
+.faq-section{max-width:720px;margin:0 auto;padding:40px 24px}
+.faq-section h2{font-size:20px;font-weight:800;text-align:center;margin-bottom:24px}
+details{border:1px solid var(--border);border-radius:10px;margin-bottom:8px}
+summary{padding:12px 16px;font-size:13px;font-weight:600;cursor:pointer;
+        list-style:none;display:flex;justify-content:space-between;align-items:center}
+summary::after{content:"＋";color:var(--muted)}
+details[open] summary::after{content:"－"}
+details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
+.contact-section{background:#EFF6FF;border-top:1px solid #BFDBFE;padding:36px 24px;text-align:center}
+.contact-section h2{font-size:18px;font-weight:800;margin-bottom:6px}
+.contact-section p{font-size:13px;color:var(--muted);margin-bottom:14px}
+.contact-grid{display:flex;justify-content:center;gap:20px;flex-wrap:wrap}
+.contact-item{background:var(--white);border:1px solid var(--border);border-radius:10px;
+              padding:14px 20px;font-size:13px}
+.contact-item strong{display:block;font-size:10px;text-transform:uppercase;
+                     letter-spacing:.05em;color:var(--muted);margin-bottom:3px}
+.contact-item a{color:var(--brand);text-decoration:none;font-weight:600}
+.limit-banner{max-width:640px;margin:0 auto 0;padding:0 24px}
+.limit-box{background:#FEF2F2;border:1px solid #FECACA;border-radius:var(--radius);
+           padding:20px 24px;text-align:center;margin-top:16px}
+.limit-box h3{font-size:15px;font-weight:700;color:#991B1B;margin-bottom:8px}
+.limit-box p{font-size:13px;color:#7F1D1D;line-height:1.7;margin-bottom:10px}
+.limit-box a{color:var(--brand);font-weight:600;text-decoration:none}
+.toast{position:fixed;bottom:24px;right:24px;background:var(--ink);color:#fff;
+       padding:11px 18px;border-radius:10px;font-size:13px;font-weight:500;
+       transform:translateY(80px);transition:transform .3s;z-index:999}
+.toast.show{transform:translateY(0)}
+@media(max-width:480px){.row2{grid-template-columns:1fr}}
+</style></head><body>
+
+<nav>
+  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <ul class="nav-links">
+    <li><a href="#tool">Tool</a></li>
+    <li><a href="#pricing">Pricing</a></li>
+    <li><a href="#faq">FAQ</a></li>
+    <li><a href="#contact">Contact</a></li>
+  </ul>
+  <div class="nav-right">
+    <span class="nav-user">👤 <strong>{{ username }}</strong>
+      <span class="badge b-{{ plan }}">{{ plan_label }}</span>
+      {% if is_admin %}<span class="badge" style="background:#EFF6FF;color:var(--brand);margin-left:4px">Admin</span>{% endif %}
+    </span>
+    {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
+    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
+    {% if username %}<a href="/logout" class="nav-link">Sign out</a>
+    {% else %}<a href="/login" class="nav-btn">Sign In</a>{% endif %}
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-badge">🇮🇳 CA Tool · Balance Sheet Year-Shift</div>
+  <h1>Roll Over to <em>Any Financial Year</em><br/>in Seconds</h1>
+  <p>Upload your comparative Excel balance sheet — shifts CY→PY, clears CY column, restores all formulas, and updates every date automatically.</p>
+</section>
+
+{% if uploads_left == 0 %}
+<div class="limit-banner">
+  <div class="limit-box">
+    <h3>🔒 No uploads remaining</h3>
+    <p>You've used all your uploads. Contact us to recharge your account.<br/>
+       Pay via UPI and email your screenshot — upgraded within a few hours.</p>
+    <p>📧 <a href="mailto:{{ contact_email }}">{{ contact_email }}</a> &nbsp;|&nbsp;
+       💳 UPI: <strong>{{ contact_upi }}</strong></p>
+    <p style="font-size:11px;color:#9CA3AF;margin-top:8px">No refund after first upload is used.</p>
+  </div>
+</div>
+{% endif %}
+
+<div class="stats">
+  <div class="stat"><div class="stat-n">100%</div><div class="stat-l">Formatting preserved</div></div>
+  <div class="stat"><div class="stat-n">All sheets</div><div class="stat-l">Processed at once</div></div>
+  <div class="stat"><div class="stat-n">&lt;10 sec</div><div class="stat-l">Processing time</div></div>
+  <div class="stat"><div class="stat-n">Any format</div><div class="stat-l">Works with all CA templates</div></div>
+</div>
+
+<div class="main" id="tool">
+  <div class="card">
+    <div class="card-head">
+      <div class="icon" style="background:#EFF6FF">📊</div>
+      <div>
+        <h2>Process Your Balance Sheet</h2>
+        <p>{{ plan_label }} · {{ uploads_left }} upload{{ 's' if uploads_left != 1 else '' }} remaining</p>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="usage-row">
+        <span style="color:var(--muted)">Uploads used</span>
+        <span><strong>{{ uploads_used }}</strong> / {{ uploads_total }}
+          {% if validity_end %}<span style="color:#9CA3AF;font-weight:400"> · expires {{ validity_end[:10] }}</span>{% endif %}
+        </span>
+      </div>
+      <div class="usage-bar-bg">
+        <div class="usage-bar-fill"
+             style="width:{{ bar_pct }}%;background:{{ '#EF4444' if uploads_left==0 else '#F59E0B' if uploads_left<=3 else '#10B981' }}">
+        </div>
+      </div>
+      <div class="field">
+        <label>Upload Excel File (.xlsx / .xls)</label>
+        <div class="dropzone" id="dropzone">
+          <input type="file" id="xlFile" accept=".xlsx,.xls" {{ 'disabled' if uploads_left==0 else '' }}/>
+          <div class="dz-icon">📁</div>
+          <div class="dz-text"><strong>Click to browse</strong> or drag &amp; drop</div>
+          <div class="dz-text" style="margin-top:3px">.xlsx or .xls · Max 20 MB</div>
+          <div class="dz-file" id="dzFile"></div>
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>Closing Year (CY)</label>
+          <input type="number" id="closingYear" placeholder="e.g. 2025" min="2000" max="2100"
+                 {{ 'disabled' if uploads_left==0 else '' }}/>
+          <p class="hint">Year ending 31.03.YYYY</p>
+        </div>
+        <div class="field">
+          <label>New Year</label>
+          <input type="number" id="newYear" placeholder="Auto-filled" readonly/>
+          <p class="hint">Auto-filled</p>
+        </div>
+      </div>
+      <div class="field">
+        <label>Output Filename <span style="font-weight:400;text-transform:none;color:var(--muted)">(optional)</span></label>
+        <input type="text" id="outputName" placeholder="e.g. ClientName_BS"
+               {{ 'disabled' if uploads_left==0 else '' }}/>
+        <p class="hint">Leave blank to auto-generate</p>
+      </div>
+      <button class="btn" id="processBtn" onclick="processFile()"
+              {{ 'disabled' if uploads_left==0 else '' }}>
+        <span id="btnText">⚡ Process &amp; Download</span>
+        <div class="spinner" id="spinner"></div>
+      </button>
+      <div id="status"></div>
+      <a id="dlBtn" class="dl-btn" href="#">⬇&nbsp; Download Processed File</a>
+    </div>
+  </div>
+
+  <div>
+    <div class="card" style="margin-bottom:18px">
+      <div class="card-head">
+        <div class="icon" style="background:#F0FDF4">✅</div>
+        <div><h2>How It Works</h2><p>4 steps, fully automatic</p></div>
+      </div>
+      <div class="card-body">
+        <ol class="steps">
+          <li><strong>Upload your Excel file</strong>
+              <span>Your FY comparative balance sheet with CY and PY columns</span></li>
+          <li><strong>Auto-detects all CY/PY columns</strong>
+              <span>Scans every sheet and finds correct data columns automatically</span></li>
+          <li><strong>Shifts CY → PY, clears CY</strong>
+              <span>Values become PY. Formulas and cross-sheet links restored. CY cleared for fresh entry</span></li>
+          <li><strong>Updates every date</strong>
+              <span>All date strings across every sheet updated in one shot</span></li>
+        </ol>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#FFFBEB">🔒</div>
+        <div><h2>Your Data is Safe</h2><p>Privacy first</p></div>
+      </div>
+      <div class="card-body">
+        <ul class="steps">
+          <li><strong>Deleted immediately after download</strong>
+              <span>File removed from server the moment processing completes</span></li>
+          <li><strong>HTTPS encrypted</strong><span>All transfers encrypted end-to-end</span></li>
+          <li><strong>No data stored</strong><span>We never read, store, or share your financial data</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="features">
+  <div class="feat"><div class="fi">🧮</div><h3>Formulas Preserved</h3><p>Every SUM and cross-sheet reference in the PY column is snapshotted and restored automatically.</p></div>
+  <div class="feat"><div class="fi">🎨</div><h3>Formatting Intact</h3><p>Fonts, borders, colors, merged cells, column widths — everything preserved exactly.</p></div>
+  <div class="feat"><div class="fi">📅</div><h3>All Dates Updated</h3><p>Every date string across every sheet updated in one shot.</p></div>
+  <div class="feat"><div class="fi">🗂️</div><h3>All Sheets at Once</h3><p>BS, P&L, Notes, Capital, Fixed Assets — every sheet processed together.</p></div>
+  <div class="feat"><div class="fi">🔄</div><h3>Any CA Template</h3><p>Auto-detects column positions. Works with any firm's template.</p></div>
+  <div class="feat"><div class="fi">⚡</div><h3>Instant Results</h3><p>What took 30–45 minutes of manual work now takes under 10 seconds.</p></div>
+</div>
+
+<section class="pricing-section" id="pricing">
+  <h2>Simple Pricing</h2>
+  <p class="psub">Upload-based · 3-month validity · Uploads stack when you recharge</p>
+  <div class="plans">
+    <div class="plan">
+      <div class="plan-name">Free</div>
+      <div class="plan-price">₹0</div>
+      <div class="plan-uploads">2 uploads</div>
+      <div class="plan-validity">Try it out</div>
+      <ul><li>All features</li><li>All sheet types</li><li>Up to 20 MB</li></ul>
+      <a href="#tool" class="plan-btn">Get Started</a>
+    </div>
+    <div class="plan">
+      <div class="plan-name">Starter</div>
+      <div class="plan-price">₹60</div>
+      <div class="plan-uploads">10 uploads</div>
+      <div class="plan-validity">3 month validity</div>
+      <ul><li>All features</li><li>All sheet types</li><li>Up to 20 MB</li></ul>
+      <a href="#contact" class="plan-btn">Contact to Buy</a>
+    </div>
+    <div class="plan pop">
+      <div class="plan-badge">Most Popular</div>
+      <div class="plan-name">Standard</div>
+      <div class="plan-price">₹130</div>
+      <div class="plan-uploads">25 uploads</div>
+      <div class="plan-validity">3 month validity</div>
+      <ul><li>All features</li><li>Priority support</li><li>Up to 20 MB</li></ul>
+      <a href="#contact" class="plan-btn">Contact to Buy</a>
+    </div>
+    <div class="plan">
+      <div class="plan-name">Professional</div>
+      <div class="plan-price">₹270</div>
+      <div class="plan-uploads">60 uploads</div>
+      <div class="plan-validity">3 month validity</div>
+      <ul><li>All features</li><li>Priority support</li><li>Up to 20 MB</li></ul>
+      <a href="#contact" class="plan-btn">Contact to Buy</a>
+    </div>
+    <div class="plan">
+      <div class="plan-name">Firm</div>
+      <div class="plan-price">₹600</div>
+      <div class="plan-uploads">150 uploads</div>
+      <div class="plan-validity">3 month validity</div>
+      <ul><li>All features</li><li>WhatsApp support</li><li>Up to 20 MB</li></ul>
+      <a href="#contact" class="plan-btn">Contact to Buy</a>
+    </div>
+  </div>
+  <p class="no-refund-note">⚠ No refund after first upload is used &nbsp;·&nbsp; Unused uploads stack when you recharge before expiry</p>
+</section>
+
+<section class="faq-section" id="faq">
+  <h2>Frequently Asked Questions</h2>
+  <details><summary>Which Excel formats are supported?</summary>
+    <p>.xlsx (Excel 2007+) and .xls (legacy Excel). Both are fully supported — .xls files are automatically converted before processing.</p></details>
+  <details><summary>Will it work with my firm's custom template?</summary>
+    <p>Yes. Auto-detects CY/PY columns by scanning date headers like "31.03.2025". Works with any Indian CA template.</p></details>
+  <details><summary>Are my formulas and formatting safe?</summary>
+    <p>Yes. Formulas in PY column are snapshotted before and restored after. Formatting is never touched.</p></details>
+  <details><summary>What happens to my uploaded file?</summary>
+    <p>Deleted from our server immediately after you download the result. We never store or share your data.</p></details>
+  <details><summary>How do I purchase a plan?</summary>
+    <p>Pay via UPI to <strong>{{ contact_upi }}</strong> and email your screenshot to <strong>{{ contact_email }}</strong>. Account upgraded within a few hours.</p></details>
+  <details><summary>Do unused uploads carry over when I recharge?</summary>
+    <p>Yes. Remaining uploads stack on top of the new plan if you recharge before expiry.</p></details>
+</section>
+
+<section class="contact-section" id="contact">
+  <h2>Purchase a Plan</h2>
+  <p>Pay via UPI and send your payment screenshot to our email. We'll upgrade your account within a few hours.</p>
+  <div class="contact-grid">
+    <div class="contact-item">
+      <strong>Email</strong>
+      <a href="mailto:{{ contact_email }}">{{ contact_email }}</a>
+    </div>
+    <div class="contact-item">
+      <strong>UPI Payment</strong>
+      <span style="font-weight:600;color:var(--ink)">{{ contact_upi }}</span>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p class="footer-brand">CA Toolkit</p>
+  <p>Built for Indian Chartered Accountants · Saves hours every year</p>
+  <p style="margin-top:6px">Created by CA Article</p>
+  <p style="margin-top:12px;font-size:11px">© 2026 CA Toolkit · Your data is never stored · <span style="color:#EF4444">No refund after first upload is used</span></p>
+</footer>
+<div class="toast" id="toast"></div>
+
+<script>
+const dz=document.getElementById('dropzone'),fi=document.getElementById('xlFile'),dzFile=document.getElementById('dzFile');
+if(dz&&fi){
+  dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag');});
+  dz.addEventListener('dragleave',()=>dz.classList.remove('drag'));
+  dz.addEventListener('drop',e=>{e.preventDefault();dz.classList.remove('drag');
+    if(e.dataTransfer.files.length){fi.files=e.dataTransfer.files;showFile(fi.files[0]);}});
+  fi.addEventListener('change',()=>{if(fi.files.length)showFile(fi.files[0]);});
+}
+function showFile(f){dzFile.textContent='✓ '+f.name;dzFile.style.display='block';}
+document.getElementById('closingYear').addEventListener('input',function(){
+  const v=parseInt(this.value);if(!isNaN(v))document.getElementById('newYear').value=v+1;});
+async function processFile(){
+  const f=fi?fi.files[0]:null,cYr=parseInt(document.getElementById('closingYear').value),
+        nYr=parseInt(document.getElementById('newYear').value),
+        oNm=document.getElementById('outputName').value.trim(),
+        btn=document.getElementById('processBtn'),sp=document.getElementById('spinner'),
+        bt=document.getElementById('btnText'),dl=document.getElementById('dlBtn');
+  if(!f){showStatus('error','✗ Please select an Excel file first.');return;}
+  if(isNaN(cYr)){showStatus('error','✗ Enter a valid closing year.');return;}
+  btn.disabled=true;sp.style.display='block';bt.textContent='Processing…';
+  dl.style.display='none';showStatus('','');
+  const fd=new FormData();
+  fd.append('file',f);fd.append('closing_year',cYr);fd.append('new_year',nYr);fd.append('output_name',oNm);
+  try{
+    const res=await fetch('/process',{method:'POST',body:fd});
+    const ct=res.headers.get('content-type')||'';
+    if(!ct.includes('application/json')){
+      showStatus('error','✗ Server error (non-JSON response). Please try again or contact support.');return;
+    }
+    const data=await res.json();
+    if(data.status==='success'){
+      const logHtml='<ul class="log-list">'+data.log.map(l=>`<li>${l}</li>`).join('')+'</ul>';
+      showStatus('success','✓ Done! Your file is ready.'+logHtml);
+      dl.href='/download/'+data.file_id+'?fn='+encodeURIComponent(data.filename);dl.download=data.filename;
+      dl.textContent='⬇  Download — '+data.filename;dl.style.display='block';
+      toast('Processed successfully!');
+    }else{showStatus('error','✗ '+data.message);}
+  }catch(e){showStatus('error','✗ Network error: '+e.message);}
+  finally{btn.disabled=false;sp.style.display='none';bt.textContent='⚡ Process & Download';}
+}
+function showStatus(t,m){const e=document.getElementById('status');e.className=t;e.innerHTML=m;e.style.display=m?'block':'none';}
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3000);}
+</script>
+</body></html>"""
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  INCOME TAX CALCULATOR — PY 2025-26 / AY 2026-27
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  INCOME TAX CALCULATOR — Multi-Year: PY 2023-24 to PY 2026-27
+# ══════════════════════════════════════════════════════════════════════════════
+
+TAX_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Income Tax Calculator – CA Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+<style>
+""" + BASE_CSS + r"""
+.nav-links{display:flex;gap:20px;list-style:none}
+.nav-links a{text-decoration:none;color:var(--muted);font-size:13px;font-weight:500;transition:color .2s}
+.nav-links a:hover{color:var(--brand)}
+
+.hero{text-align:center;padding:44px 24px 32px;max-width:700px;margin:0 auto}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#FFFBEB;
+            color:#92400E;border:1px solid #FDE68A;border-radius:99px;
+            padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:18px}
+h1{font-size:clamp(22px,3.5vw,34px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:12px}
+h1 em{font-style:normal;color:var(--brand)}
+.hero p{font-size:14px;color:var(--muted);line-height:1.7;max-width:520px;margin:0 auto}
+
+.main-wrap{max-width:1200px;margin:0 auto;padding:0 24px 48px}
+
+.regime-toggle{display:flex;justify-content:center;gap:12px;margin-bottom:28px;flex-wrap:wrap}
+.regime-btn{padding:10px 28px;border-radius:10px;border:2px solid var(--border);
+            background:var(--white);font-family:inherit;font-size:13px;font-weight:700;
+            cursor:pointer;transition:all .2s;color:var(--muted)}
+.regime-btn.active{border-color:var(--brand);background:#EFF6FF;color:var(--brand);box-shadow:0 2px 12px rgba(29,78,216,.12)}
+.regime-btn:hover{border-color:var(--brand)}
+
+.calc-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
+@media(max-width:860px){.calc-grid{grid-template-columns:1fr}}
+.card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
+      box-shadow:var(--shadow);overflow:hidden;margin-bottom:20px}
+.card-head{padding:14px 20px;border-bottom:1px solid var(--border);
+           display:flex;align-items:center;gap:10px}
+.card-head .icon{width:32px;height:32px;border-radius:8px;display:flex;
+                 align-items:center;justify-content:center;font-size:16px}
+.card-head h2{font-size:14px;font-weight:700}
+.card-head p{font-size:12px;color:var(--muted);margin-top:1px}
+.card-body{padding:20px}
+
+.section-title{font-size:12px;font-weight:700;color:var(--brand);text-transform:uppercase;
+               letter-spacing:.06em;margin:16px 0 10px;padding-bottom:6px;
+               border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px}
+.section-title:first-child{margin-top:0}
+.field{margin-bottom:12px}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;
+      letter-spacing:.04em;color:var(--muted);margin-bottom:4px}
+.hint{font-size:10px;color:var(--muted);margin-top:3px;font-style:italic}
+input[type=number]{width:100%;border:1.5px solid var(--border);border-radius:8px;
+    padding:9px 12px;font-family:inherit;font-size:13px;color:var(--ink);
+    background:var(--white);outline:none;transition:border-color .2s}
+input[type=number]:focus{border-color:var(--brand)}
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+input[type=number]{-moz-appearance:textfield}
+select{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px 12px;
+       font-family:inherit;font-size:13px;color:var(--ink);background:var(--white);outline:none}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+@media(max-width:480px){.row2,.row3{grid-template-columns:1fr}}
+
+.btn-calc{width:100%;background:var(--brand);color:#fff;border:none;border-radius:10px;
+          padding:13px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;
+          transition:all .2s;display:flex;align-items:center;justify-content:center;gap:8px;
+          margin-top:8px}
+.btn-calc:hover{background:var(--brand-d);transform:translateY(-1px);box-shadow:0 4px 16px rgba(29,78,216,.2)}
+.btn-reset{width:100%;background:#F3F4F6;color:var(--ink);border:none;border-radius:10px;
+           padding:10px;font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;
+           transition:background .2s;margin-top:8px}
+.btn-reset:hover{background:#E5E7EB}
+
+.result-panel{display:none}
+.result-panel.show{display:block}
+.result-row{display:flex;justify-content:space-between;align-items:center;
+            padding:10px 0;border-bottom:1px solid var(--border);font-size:13px}
+.result-row:last-child{border-bottom:none}
+.result-row .lbl{color:var(--muted);font-weight:500}
+.result-row .val{font-weight:700;color:var(--ink);text-align:right}
+.result-row.total{padding:14px 0;font-size:15px}
+.result-row.total .lbl{color:var(--ink);font-weight:800}
+.result-row.total .val{color:var(--brand);font-size:17px}
+.result-row.refund .val{color:var(--green)}
+.result-row.payable .val{color:var(--red)}
+.result-row.sub{font-size:12px;padding:6px 0}
+.result-row.sub .lbl{padding-left:16px;font-size:11px}
+.result-row.sub .val{font-size:12px}
+
+.compare-box{background:linear-gradient(135deg,#EFF6FF,#FFFBEB);border:2px solid var(--brand);
+             border-radius:var(--radius);padding:20px;text-align:center;margin-top:16px}
+.compare-box h3{font-size:14px;font-weight:800;margin-bottom:6px}
+.compare-box .savings{font-size:28px;font-weight:800;color:var(--green);margin:8px 0}
+.compare-box .regime-winner{font-size:13px;color:var(--muted)}
+.compare-box .regime-winner strong{color:var(--ink)}
+.compare-table{width:100%;margin-top:14px;font-size:12px;border-collapse:collapse}
+.compare-table th{text-align:center;font-size:10px;text-transform:uppercase;letter-spacing:.06em;
+                  color:var(--muted);padding:6px 8px;border-bottom:1.5px solid var(--border)}
+.compare-table td{text-align:center;padding:8px;border-bottom:1px solid var(--border);font-weight:600}
+.compare-table .winner{background:#ECFDF5;color:#065F46;border-radius:6px}
+
+.slab-table{width:100%;font-size:12px;border-collapse:collapse;margin-top:8px}
+.slab-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.06em;
+               color:var(--muted);padding:6px 8px;border-bottom:1.5px solid var(--border)}
+.slab-table td{padding:7px 8px;border-bottom:1px solid var(--border);font-size:12px}
+.slab-table tr:last-child td{border-bottom:none}
+.slab-table .amt{text-align:right;font-weight:700;font-family:'Inter',monospace}
+
+.disclaimer{font-size:11px;color:var(--muted);line-height:1.6;margin-top:16px;
+            padding:12px;background:#F9FAFB;border-radius:8px;border:1px solid var(--border)}
+.disclaimer.future{background:#FFFBEB;border-color:#FDE68A}
+.toast{position:fixed;bottom:24px;right:24px;background:var(--ink);color:#fff;
+       padding:11px 18px;border-radius:10px;font-size:13px;font-weight:500;
+       transform:translateY(80px);transition:transform .3s;z-index:999}
+.toast.show{transform:translateY(0)}
+
+.print-btn{display:inline-flex;align-items:center;gap:5px;background:#F3F4F6;color:var(--ink);
+           border:1px solid var(--border);border-radius:8px;padding:7px 14px;font-size:12px;
+           font-weight:600;cursor:pointer;font-family:inherit;transition:all .2s;margin-top:8px}
+.print-btn:hover{background:#E5E7EB}
+
+.year-pills{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.year-pill{padding:6px 14px;border-radius:8px;border:1.5px solid var(--border);background:var(--white);
+           font-size:12px;font-weight:600;cursor:pointer;transition:all .2s;color:var(--muted);font-family:inherit}
+.year-pill.active{border-color:var(--brand);background:#EFF6FF;color:var(--brand)}
+.year-pill:hover{border-color:var(--brand)}
+.year-pill .future-tag{font-size:9px;background:#FDE68A;color:#92400E;padding:1px 5px;border-radius:4px;margin-left:4px;font-weight:700}
+
+.at-group-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:12px 0 6px;padding:3px 8px;background:var(--surface);border-radius:5px;display:inline-block}
+.at-btn-row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px}
+.at-btn{padding:7px 13px;border:1.5px solid var(--border);border-radius:20px;background:#fff;font-size:12px;font-weight:500;color:var(--ink);cursor:pointer;transition:all .15s;white-space:nowrap;font-family:inherit}
+.at-btn:hover{border-color:var(--brand);color:var(--brand);background:#EFF6FF}
+.at-btn.active{border-color:var(--brand);background:var(--brand);color:#fff;font-weight:700;box-shadow:0 2px 8px rgba(37,99,235,.25)}
+
+.mat-row:last-child{border-bottom:none}
+.mat-row .ml{color:#78350F;font-weight:500}
+.mat-row .mv{font-weight:700;color:#92400E}
+.mat-row.mt{font-size:13px;padding:10px 0;border-top:1.5px solid #FDE68A;margin-top:4px}
+.mat-row.mt .ml{color:#451A03;font-weight:800}
+.mat-row.mt .mv{color:#B45309;font-size:14px}
+.mat-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;margin-top:10px}
+.mat-badge.normal{background:#ECFDF5;color:#065F46}
+.mat-badge.mat{background:#FEF3C7;color:#92400E}
+
+.at-table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:6px}
+.at-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:7px 10px;border-bottom:2px solid var(--border);background:#F9FAFB}
+.at-table td{padding:10px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.at-table tr:last-child td{border-bottom:none}
+.at-table .due{font-weight:700;color:var(--brand)}
+.at-table .pct{font-weight:800;font-size:14px;color:#1E40AF;text-align:center}
+.at-table .cumul{font-size:11px;color:var(--muted)}
+.at-table .amt-cell{font-weight:700;color:var(--ink);text-align:right}
+.at-table tr.overdue td{background:#FEF2F2}
+.at-table tr.upcoming td{background:#FFFBEB}
+.at-table tr.done td{background:#F0FDF4}
+
+.assessee-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;background:#EFF6FF;color:#1E40AF;margin-bottom:10px}
+
+/* ═══════════════════════════════════════════
+   ANIMATIONS & MICRO-INTERACTIONS
+   ═══════════════════════════════════════════ */
+
+/* ── Scroll-reveal cards ── */
+.reveal{opacity:0;transform:translateY(28px);transition:opacity .55s cubic-bezier(.22,1,.36,1),transform .55s cubic-bezier(.22,1,.36,1)}
+.reveal.visible{opacity:1;transform:translateY(0)}
+.reveal-delay-1{transition-delay:.08s}
+.reveal-delay-2{transition-delay:.16s}
+.reveal-delay-3{transition-delay:.24s}
+.reveal-delay-4{transition-delay:.32s}
+
+/* ── Result panel slide-in ── */
+@keyframes slideUp{from{opacity:0;transform:translateY(32px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.result-panel.show{animation:slideUp .5s cubic-bezier(.22,1,.36,1) forwards}
+.result-row{animation:fadeIn .3s ease both}
+
+/* ── Calculate button states ── */
+.btn-calc{position:relative;overflow:hidden}
+.btn-calc .btn-text{transition:opacity .2s}
+.btn-calc .btn-spinner{position:absolute;display:none;width:18px;height:18px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.btn-calc.loading .btn-text{opacity:0}
+.btn-calc.loading .btn-spinner{display:block}
+.btn-calc .ripple{position:absolute;border-radius:50%;background:rgba(255,255,255,.35);transform:scale(0);animation:rippleAnim .55s linear;pointer-events:none}
+@keyframes rippleAnim{to{transform:scale(4);opacity:0}}
+
+/* ── Progress bar ── */
+#calcProgress{position:fixed;top:0;left:0;width:0;height:3px;background:linear-gradient(90deg,var(--brand),#60A5FA,var(--green));z-index:9999;transition:width .35s ease;border-radius:0 3px 3px 0;box-shadow:0 0 8px rgba(37,99,235,.5)}
+
+/* ── Number counter ── */
+.count-anim{display:inline-block;transition:transform .1s}
+
+/* ── Tax Donut Chart ── */
+#taxChartWrap{margin-top:20px;padding:16px;background:#F9FAFB;border-radius:12px;border:1px solid var(--border)}
+#taxChartWrap h3{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:14px;text-align:center}
+.donut-container{display:flex;align-items:center;gap:20px;flex-wrap:wrap;justify-content:center}
+.donut-svg{flex-shrink:0;filter:drop-shadow(0 4px 12px rgba(0,0,0,.08))}
+.donut-legend{display:flex;flex-direction:column;gap:8px;min-width:140px}
+.donut-legend-item{display:flex;align-items:center;gap:8px;font-size:12px}
+.donut-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.donut-label{color:var(--muted);font-weight:500}
+.donut-val{font-weight:700;color:var(--ink);margin-left:auto}
+.donut-segment{transition:stroke-dasharray .8s cubic-bezier(.22,1,.36,1),stroke-dashoffset .8s cubic-bezier(.22,1,.36,1)}
+
+/* ── Regime bar chart ── */
+#regimeChartWrap{margin-top:16px;padding:16px;background:#F9FAFB;border-radius:12px;border:1px solid var(--border)}
+#regimeChartWrap h3{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:14px;text-align:center}
+.bar-chart{display:flex;flex-direction:column;gap:10px}
+.bar-row{display:flex;align-items:center;gap:10px;font-size:12px}
+.bar-label{width:90px;font-weight:600;color:var(--muted);font-size:11px;text-align:right;flex-shrink:0}
+.bar-track{flex:1;height:22px;background:#E5E7EB;border-radius:6px;overflow:hidden;position:relative}
+.bar-fill{height:100%;border-radius:6px;width:0;transition:width 1s cubic-bezier(.22,1,.36,1);display:flex;align-items:center;justify-content:flex-end;padding-right:8px}
+.bar-fill span{font-size:10px;font-weight:700;color:#fff;white-space:nowrap}
+.bar-val{width:90px;font-weight:700;font-size:11px;color:var(--ink);flex-shrink:0}
+
+/* ── Confetti ── */
+.confetti-piece{position:fixed;width:8px;height:8px;top:-10px;border-radius:2px;pointer-events:none;z-index:9998;animation:confettiFall linear forwards}
+@keyframes confettiFall{0%{transform:translateY(0) rotate(0deg);opacity:1}100%{transform:translateY(110vh) rotate(720deg);opacity:0}}
+
+/* ── Assessee button pop ── */
+.at-btn{transition:all .18s cubic-bezier(.34,1.56,.64,1)}
+.at-btn.active{transform:scale(1.05)}
+.at-btn:active{transform:scale(.95)}
+
+/* ── Input focus ring glow ── */
+input[type=number]:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+select:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(37,99,235,.12);outline:none}
+
+/* ── Card hover lift ── */
+.card{transition:box-shadow .25s,transform .25s}
+.card:hover{box-shadow:0 8px 32px rgba(0,0,0,.10);transform:translateY(-2px)}
+
+/* ── Year pill bounce ── */
+.year-pill{transition:all .2s cubic-bezier(.34,1.56,.64,1)}
+.year-pill.active{transform:scale(1.06)}
+
+/* ── Regime btn pop ── */
+.regime-btn{transition:all .2s cubic-bezier(.34,1.56,.64,1)}
+.regime-btn.active{transform:scale(1.04)}
+
+/* ── Result row stagger ── */
+@keyframes rowIn{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:translateX(0)}}
+.result-row{animation:rowIn .3s ease both}
+
+/* ── Total row pulse ── */
+@keyframes totalPulse{0%{transform:scale(1)}50%{transform:scale(1.02)}100%{transform:scale(1)}}
+.result-row.total{animation:rowIn .4s ease both, totalPulse .4s ease .5s}
+
+/* ── Toast slide & bounce ── */
+@keyframes toastIn{0%{transform:translateY(80px) scale(.9)}70%{transform:translateY(-4px) scale(1.02)}100%{transform:translateY(0) scale(1)}}
+.toast.show{animation:toastIn .4s cubic-bezier(.34,1.56,.64,1) forwards}
+
+/* ── Hero text shimmer on load ── */
+@keyframes shimmer{0%{background-position:200% center}100%{background-position:-200% center}}
+.hero-shimmer{background:linear-gradient(90deg,var(--brand) 0%,#60A5FA 40%,var(--brand) 80%);background-size:200% auto;-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;animation:shimmer 3s linear infinite}
+
+/* ── Nav scroll shadow ── */
+nav{transition:box-shadow .3s}
+nav.scrolled{box-shadow:0 4px 24px rgba(0,0,0,.10)}
+
+@media print{nav,footer,.hero,.regime-toggle,.card:first-child,.btn-calc,.btn-reset,.print-btn,.toast,.year-pills,#calcProgress{display:none!important}
+             .result-panel{display:block!important}.calc-grid{display:block!important}
+             .card{box-shadow:none!important;border:1px solid #ccc!important}}
+</style></head><body>
+
+<div id="calcProgress"></div>
+<nav>
+  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <ul class="nav-links">
+    <li><a href="#input">Calculator</a></li>
+    <li><a href="#result-section">Results</a></li>
+  </ul>
+  <div class="nav-right">
+    <span class="nav-user">👤 <strong>{{ username }}</strong>
+      <span class="badge b-{{ plan }}">{{ plan_label }}</span>
+      {% if is_admin %}<span class="badge" style="background:#EFF6FF;color:var(--brand);margin-left:4px">Admin</span>{% endif %}
+    </span>
+    {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
+    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
+    <a href="/logout" class="nav-link">Sign out</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-badge">🧮 Multi-Year · PY 2023-24 to PY 2026-27</div>
+  <h1>Income Tax <em class="hero-shimmer">Calculator</em></h1>
+  <p>Calculate tax under Old &amp; New Regime for any year from PY 2023-24 to PY 2026-27. Income under 5 heads, deductions, TDS/TCS — instant comparison with slab-wise breakup.</p>
+</section>
+
+<div class="main-wrap">
+
+<!-- Regime Toggle -->
+<div class="regime-toggle">
+  <button class="regime-btn active" onclick="setRegime('new')" id="btn-new">🆕 New Regime (Default)</button>
+  <button class="regime-btn" onclick="setRegime('old')" id="btn-old">📜 Old Regime</button>
+  <button class="regime-btn" onclick="setRegime('both')" id="btn-both">⚖️ Compare Both</button>
+</div>
+
+<div class="calc-grid" id="input">
+  <!-- LEFT: Input Section -->
+  <div>
+    <!-- ──── BASIC INFO ──── -->
+    <div class="card reveal reveal-delay-1">
+      <div class="card-head">
+        <div class="icon" style="background:#EFF6FF">👤</div>
+        <div><h2>Basic Information</h2><p>Assessee details &amp; Assessment Year</p></div>
+      </div>
+      <div class="card-body">
+        <div class="field">
+          <label>Assessment Year</label>
+          <div class="year-pills" id="yearPills">
+            <button class="year-pill" onclick="setYear('2023-24')">PY 2023-24<br/><span style="font-size:10px;font-weight:400;color:var(--muted)">AY 2024-25</span></button>
+            <button class="year-pill" onclick="setYear('2024-25')">PY 2024-25<br/><span style="font-size:10px;font-weight:400;color:var(--muted)">AY 2025-26</span></button>
+            <button class="year-pill active" onclick="setYear('2025-26')">PY 2025-26<br/><span style="font-size:10px;font-weight:400;color:var(--muted)">AY 2026-27</span></button>
+            <button class="year-pill" onclick="setYear('2026-27')">PY 2026-27<br/><span style="font-size:10px;font-weight:400;color:var(--muted)">AY 2027-28</span><span class="future-tag">Upcoming</span></button>
+          </div>
+          <div id="futureYearNote" style="display:none;margin-top:6px;padding:8px 12px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;font-size:11px;color:#92400E;font-weight:500">
+            ⚠️ PY 2026-27 rates are based on Union Budget 2026 (no changes from PY 2025-26). Final rates subject to any future amendments.
+          </div>
+        </div>
+        <div class="field">
+          <label>Assessee Name <span style="font-weight:400;text-transform:none">(optional)</span></label>
+          <input type="text" id="assesseeName" placeholder="e.g. Rajesh Kumar / ABC Pvt Ltd" style="border:1.5px solid var(--border);border-radius:8px;padding:9px 12px;font-family:inherit;font-size:13px;width:100%"/>
+        </div>
+
+        <!-- ── TYPE OF ASSESSEE — visible button grid ── -->
+        <div class="field">
+          <label>Type of Assessee</label>
+          <!-- hidden select keeps existing JS logic intact -->
+          <select id="assesseeType" onchange="onAssesseeTypeChange()" style="display:none">
+            <option value="individual_below60" selected>Individual – Below 60 yrs</option>
+            <option value="individual_senior">Individual – Senior Citizen (60–80)</option>
+            <option value="individual_supersenior">Individual – Super Senior Citizen (80+)</option>
+            <option value="individual_nri">Individual – Non-Resident (NRI)</option>
+            <option value="huf">HUF (Hindu Undivided Family)</option>
+            <option value="firm">Partnership Firm / LLP</option>
+            <option value="company_domestic">Domestic Company</option>
+            <option value="company_foreign">Foreign Company</option>
+            <option value="company_mfg_new">Domestic Company – New Mfg (Sec 115BAB)</option>
+            <option value="company_small">Domestic Company – Small (≤ ₹400 Cr, Sec 115BA)</option>
+            <option value="aop_boi">AOP / BOI</option>
+            <option value="cooperative">Co-operative Society</option>
+            <option value="trust_aop">Trust / AOP (Registered)</option>
+            <option value="local_authority">Local Authority</option>
+            <option value="artificial_person">Artificial Juridical Person</option>
+          </select>
+
+          <!-- Group: Individuals -->
+          <div class="at-group-label">👤 Individual</div>
+          <div class="at-btn-row">
+            <button class="at-btn active" data-val="individual_below60" onclick="selectAssessee(this,'individual_below60')">Below 60 yrs</button>
+            <button class="at-btn" data-val="individual_senior" onclick="selectAssessee(this,'individual_senior')">Senior (60–80)</button>
+            <button class="at-btn" data-val="individual_supersenior" onclick="selectAssessee(this,'individual_supersenior')">Super Senior (80+)</button>
+            <button class="at-btn" data-val="individual_nri" onclick="selectAssessee(this,'individual_nri')">NRI</button>
+          </div>
+
+          <!-- Group: HUF -->
+          <div class="at-group-label">🏠 HUF</div>
+          <div class="at-btn-row">
+            <button class="at-btn" data-val="huf" onclick="selectAssessee(this,'huf')">HUF (Hindu Undivided Family)</button>
+          </div>
+
+          <!-- Group: Firm / LLP -->
+          <div class="at-group-label">🤝 Firm / LLP</div>
+          <div class="at-btn-row">
+            <button class="at-btn" data-val="firm" onclick="selectAssessee(this,'firm')">Partnership Firm / LLP</button>
+          </div>
+
+          <!-- Group: Companies -->
+          <div class="at-group-label">🏢 Company</div>
+          <div class="at-btn-row">
+            <button class="at-btn" data-val="company_domestic" onclick="selectAssessee(this,'company_domestic')">Domestic Co.</button>
+            <button class="at-btn" data-val="company_foreign" onclick="selectAssessee(this,'company_foreign')">Foreign Co.</button>
+            <button class="at-btn" data-val="company_mfg_new" onclick="selectAssessee(this,'company_mfg_new')">New Mfg Co. (115BAB)</button>
+            <button class="at-btn" data-val="company_small" onclick="selectAssessee(this,'company_small')">Small Co. (115BA)</button>
+          </div>
+
+          <!-- Group: Others -->
+          <div class="at-group-label">🏛️ Others</div>
+          <div class="at-btn-row">
+            <button class="at-btn" data-val="aop_boi" onclick="selectAssessee(this,'aop_boi')">AOP / BOI</button>
+            <button class="at-btn" data-val="cooperative" onclick="selectAssessee(this,'cooperative')">Co-operative Society</button>
+            <button class="at-btn" data-val="trust_aop" onclick="selectAssessee(this,'trust_aop')">Trust</button>
+            <button class="at-btn" data-val="local_authority" onclick="selectAssessee(this,'local_authority')">Local Authority</button>
+            <button class="at-btn" data-val="artificial_person" onclick="selectAssessee(this,'artificial_person')">Artificial Juridical Person</button>
+          </div>
+        </div>
+
+        <!-- Individual-only fields -->
+        <div id="individualFields">
+          <div class="row2">
+            <div class="field">
+              <label>Age Category</label>
+              <div id="ageBadge" style="padding:8px 14px;background:#EFF6FF;border-radius:8px;font-size:12px;font-weight:600;color:#1E40AF;display:inline-block">Below 60 years</div>
+            </div>
+            <div class="field">
+              <label>Residential Status</label>
+              <select id="residentialStatus">
+                <option value="resident">Resident</option>
+                <option value="nri">Non-Resident</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Company-specific info -->
+        <div id="companyFields" style="display:none">
+          <div id="matInfo" style="padding:10px 14px;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;font-size:11px;color:#1E40AF;margin-top:4px">
+            <strong>ℹ️ MAT u/s 115JB:</strong> Tax payable is higher of normal tax or 15% of Book Profit (+ surcharge + cess). Enter Book Profit in the MAT section below.
+          </div>
+        </div>
+        <!-- Firm info -->
+        <div id="firmFields" style="display:none">
+          <div style="padding:10px 14px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:11px;color:#065F46;margin-top:4px">
+            <strong>ℹ️ Firm / LLP:</strong> Flat 30% on total income + surcharge (12% if income &gt; ₹1 Cr) + cess 4%. AMT @ 18.5% of Adjusted Total Income applies u/s 115JC.
+          </div>
+        </div>
+        <!-- AOP / Co-op info -->
+        <div id="aopFields" style="display:none">
+          <div style="padding:10px 14px;background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;font-size:11px;color:#92400E;margin-top:4px">
+            <strong>ℹ️ AOP / BOI / Co-op / Trust:</strong> Taxed at applicable slab rates as per specific provisions. AMT @ 18.5% may apply u/s 115JC.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ──── INCOME HEADS (Dynamic per assessee) ──── -->
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#F0FDF4">💰</div>
+        <div><h2>Income Details</h2><p id="incomeCardSub">Gross Total Income computation</p></div>
+      </div>
+      <div class="card-body">
+
+        <!-- ═══ INDIVIDUAL / HUF / AOP / TRUST (all 5 heads) ═══ -->
+        <div id="inc_individual">
+          <div class="section-title">📋 1. Income from Salary</div>
+          <div class="row2">
+            <div class="field">
+              <label>Gross Salary</label>
+              <input type="number" id="grossSalary" placeholder="0" min="0"/>
+            </div>
+            <div class="field">
+              <label>Exempt Allowances (HRA, LTA etc.)</label>
+              <input type="number" id="exemptAllow" placeholder="0" min="0"/>
+              <p class="hint">Old regime: HRA, LTA etc. New regime: mostly nil</p>
+            </div>
+          </div>
+          <div class="field">
+            <label>Standard Deduction</label>
+            <input type="number" id="stdDeduction" value="75000" placeholder="75000" min="0"/>
+            <p class="hint" id="stdDedHint">₹75,000 for PY 2024-25 onwards. ₹50,000 for PY 2023-24.</p>
+          </div>
+
+          <div class="section-title">🏠 2. Income from House Property</div>
+          <div class="row2">
+            <div class="field">
+              <label>Net Annual Value / Rental Income</label>
+              <input type="number" id="houseIncome" placeholder="0"/>
+              <p class="hint">Can be negative for self-occupied (loss)</p>
+            </div>
+            <div class="field">
+              <label>Interest on Home Loan (Sec 24b)</label>
+              <input type="number" id="homeLoanInterest" placeholder="0" min="0"/>
+              <p class="hint">Max ₹2L self-occupied</p>
+            </div>
+          </div>
+
+          <div class="section-title">💼 3. Profits from Business / Profession</div>
+          <div class="field">
+            <label>Net Profit from Business / Profession</label>
+            <input type="number" id="businessIncome" placeholder="0"/>
+            <p class="hint">After all business deductions. Can be loss (negative)</p>
+          </div>
+
+          <div class="section-title">📈 4. Capital Gains</div>
+          <div id="transitionalNotice" style="display:none;margin-bottom:12px;padding:10px 14px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;font-size:11px;color:#92400E;line-height:1.6">
+            <strong>⚠️ PY 2024-25 Transitional Year:</strong> Budget 2024 changed capital gains rates from 23 July 2024. Enter gains sold <strong>before 23 July</strong> separately from gains sold <strong>on/after 23 July</strong>.
+          </div>
+          <div id="preJulyFields" style="display:none">
+            <div style="font-size:11px;font-weight:700;color:#92400E;text-transform:uppercase;letter-spacing:.05em;margin:8px 0 8px;padding:4px 10px;background:#FFFBEB;border-radius:6px;display:inline-block">📅 Pre-23 July 2024 (Old Rates)</div>
+            <div class="row2">
+              <div class="field">
+                <label>STCG 111A — Pre-July (equity) @ 15%</label>
+                <input type="number" id="stcg111aPreJuly" placeholder="0" min="0"/>
+              </div>
+              <div class="field">
+                <label>LTCG 112A — Pre-July (equity) @ 10%</label>
+                <input type="number" id="ltcg112aPreJuly" placeholder="0" min="0"/>
+                <p class="hint">Exempt up to ₹1 lakh (old limit)</p>
+              </div>
+            </div>
+            <div class="row2">
+              <div class="field">
+                <label>LTCG Other — Pre-July @ 20%</label>
+                <input type="number" id="ltcgOtherPreJuly" placeholder="0" min="0"/>
+                <p class="hint">With indexation benefit (pre-July rule)</p>
+              </div>
+              <div class="field"></div>
+            </div>
+            <div style="font-size:11px;font-weight:700;color:var(--brand);text-transform:uppercase;letter-spacing:.05em;margin:12px 0 8px;padding:4px 10px;background:#EFF6FF;border-radius:6px;display:inline-block">📅 Post-23 July 2024 (New Rates)</div>
+          </div>
+          <div class="row2">
+            <div class="field">
+              <label id="stcg111aLabel">STCG u/s 111A (equity, STT paid)</label>
+              <input type="number" id="stcg111a" placeholder="0" min="0"/>
+              <p class="hint" id="stcgRateHint">Rate varies by year</p>
+            </div>
+            <div class="field">
+              <label>STCG — Other (non-equity)</label>
+              <input type="number" id="stcgOther" placeholder="0" min="0"/>
+              <p class="hint">Taxed at slab rates</p>
+            </div>
+          </div>
+          <div class="row2">
+            <div class="field">
+              <label id="ltcg112aLabel">LTCG u/s 112A (equity, STT paid)</label>
+              <input type="number" id="ltcg112a" placeholder="0" min="0"/>
+              <p class="hint" id="ltcgRateHint">Rate &amp; exemption varies by year</p>
+            </div>
+            <div class="field">
+              <label id="ltcgOtherLabel">LTCG — Other (property, debt etc.)</label>
+              <input type="number" id="ltcgOther" placeholder="0" min="0"/>
+              <p class="hint" id="ltcgOtherHint">Rate varies by year</p>
+            </div>
+          </div>
+
+          <div class="section-title">📦 5. Income from Other Sources</div>
+          <div class="row2">
+            <div class="field">
+              <label>Interest / Dividends / Other Income</label>
+              <input type="number" id="otherIncome" placeholder="0" min="0"/>
+            </div>
+            <div class="field">
+              <label>Winnings (lottery, games etc.)</label>
+              <input type="number" id="winningsIncome" placeholder="0" min="0"/>
+              <p class="hint">Taxed at 30% flat</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══ COMPANY ═══ -->
+        <div id="inc_company" style="display:none">
+          <div style="margin-bottom:14px;padding:10px 14px;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;font-size:11px;color:#1E40AF">
+            <strong>ℹ️ Company Income:</strong> Enter net taxable income computed as per IT Act provisions (after all allowable business deductions, depreciation, etc.).
+          </div>
+
+          <div class="section-title">💼 Business / Profession Income</div>
+          <div class="field">
+            <label>Net Taxable Business Income (₹)</label>
+            <input type="number" id="co_businessIncome" placeholder="0"/>
+            <p class="hint">Net profit after all IT Act allowable deductions &amp; depreciation</p>
+          </div>
+
+          <div class="section-title">📈 Capital Gains</div>
+          <div class="row2">
+            <div class="field">
+              <label>STCG u/s 111A (equity, STT paid)</label>
+              <input type="number" id="co_stcg111a" placeholder="0" min="0"/>
+            </div>
+            <div class="field">
+              <label>STCG — Other assets</label>
+              <input type="number" id="co_stcgOther" placeholder="0" min="0"/>
+            </div>
+          </div>
+          <div class="row2">
+            <div class="field">
+              <label>LTCG u/s 112A (equity)</label>
+              <input type="number" id="co_ltcg112a" placeholder="0" min="0"/>
+            </div>
+            <div class="field">
+              <label>LTCG — Other assets</label>
+              <input type="number" id="co_ltcgOther" placeholder="0" min="0"/>
+            </div>
+          </div>
+
+          <div class="section-title">📦 Other Sources</div>
+          <div class="field">
+            <label>Interest / Dividend / Other Income (₹)</label>
+            <input type="number" id="co_otherIncome" placeholder="0" min="0"/>
+          </div>
+
+          <div class="section-title">⚖️ MAT — Book Profit (Sec 115JB)</div>
+          <div class="row2">
+            <div class="field">
+              <label>Book Profit u/s 115JB (₹)</label>
+              <input type="number" id="co_bookProfit" placeholder="0" min="0" oninput="syncMatBookProfit()"/>
+              <p class="hint">Net profit per P&amp;L + mandatory add-backs as per Sch VII</p>
+            </div>
+            <div class="field">
+              <label>Turnover / Gross Receipts (₹)</label>
+              <input type="number" id="co_turnover" placeholder="0" min="0"/>
+              <p class="hint">For reference / threshold checks</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══ FIRM / LLP ═══ -->
+        <div id="inc_firm" style="display:none">
+          <div style="margin-bottom:14px;padding:10px 14px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:11px;color:#065F46">
+            <strong>ℹ️ Firm / LLP Income:</strong> Firms are not allowed salary to partners for tax purposes beyond limits. Enter total firm income after all deductions. Remuneration &amp; interest to partners allowed u/s 40(b) already deducted.
+          </div>
+
+          <div class="section-title">💼 Business / Profession Income</div>
+          <div class="field">
+            <label>Net Taxable Business Income (₹)</label>
+            <input type="number" id="firm_businessIncome" placeholder="0"/>
+            <p class="hint">Firm profit after partner remuneration / interest u/s 40(b)</p>
+          </div>
+
+          <div class="section-title">📈 Capital Gains</div>
+          <div class="row2">
+            <div class="field">
+              <label>STCG (equity u/s 111A)</label>
+              <input type="number" id="firm_stcg111a" placeholder="0" min="0"/>
+            </div>
+            <div class="field">
+              <label>LTCG (equity u/s 112A)</label>
+              <input type="number" id="firm_ltcg112a" placeholder="0" min="0"/>
+            </div>
+          </div>
+          <div class="row2">
+            <div class="field">
+              <label>STCG — Other</label>
+              <input type="number" id="firm_stcgOther" placeholder="0" min="0"/>
+            </div>
+            <div class="field">
+              <label>LTCG — Other</label>
+              <input type="number" id="firm_ltcgOther" placeholder="0" min="0"/>
+            </div>
+          </div>
+
+          <div class="section-title">📦 Other Sources</div>
+          <div class="field">
+            <label>Interest / Other Income (₹)</label>
+            <input type="number" id="firm_otherIncome" placeholder="0" min="0"/>
+          </div>
+
+          <div class="section-title">⚖️ AMT — Adjusted Total Income (Sec 115JC)</div>
+          <div class="field">
+            <label>Adjusted Total Income for AMT (₹)</label>
+            <input type="number" id="firm_amtAti" placeholder="0" min="0" oninput="syncAmtAti()"/>
+            <p class="hint">GTI + deductions claimed u/s 10AA / 35AD / 80H–80RRB added back</p>
+          </div>
+        </div>
+
+        <!-- ═══ CO-OPERATIVE SOCIETY ═══ -->
+        <div id="inc_coop" style="display:none">
+          <div style="margin-bottom:14px;padding:10px 14px;background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;font-size:11px;color:#92400E">
+            <strong>ℹ️ Co-operative Society:</strong> Taxed on slab — 10% up to ₹10K / 20% up to ₹20K / 30% above. Surcharge 12% if income &gt; ₹1 Cr. Cess 4%.
+          </div>
+          <div class="section-title">💼 Business Income</div>
+          <div class="field">
+            <label>Net Taxable Income (₹)</label>
+            <input type="number" id="coop_businessIncome" placeholder="0"/>
+          </div>
+          <div class="section-title">📦 Other Sources</div>
+          <div class="field">
+            <label>Interest / Dividend / Other (₹)</label>
+            <input type="number" id="coop_otherIncome" placeholder="0" min="0"/>
+          </div>
+        </div>
+
+        <!-- ═══ LOCAL AUTHORITY ═══ -->
+        <div id="inc_local" style="display:none">
+          <div style="margin-bottom:14px;padding:10px 14px;background:#F5F3FF;border:1px solid #DDD6FE;border-radius:8px;font-size:11px;color:#4C1D95">
+            <strong>ℹ️ Local Authority:</strong> Flat 30% on total income + 4% cess. No surcharge.
+          </div>
+          <div class="section-title">💼 Business / Property / Other Income</div>
+          <div class="field">
+            <label>Net Taxable Income (₹)</label>
+            <input type="number" id="local_income" placeholder="0"/>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ──── DEDUCTIONS (OLD REGIME) ──── -->
+    <div class="card" id="deductions-card">
+      <div class="card-head">
+        <div class="icon" style="background:#FFFBEB">🧾</div>
+        <div><h2>Deductions (Chapter VI-A)</h2><p>Applicable in Old Regime only (except 80CCD(2))</p></div>
+      </div>
+      <div class="card-body">
+        <div class="row2">
+          <div class="field">
+            <label>80C (PPF, LIC, ELSS, etc.)</label>
+            <input type="number" id="ded80c" placeholder="0" min="0" max="150000"/>
+            <p class="hint">Max ₹1,50,000</p>
+          </div>
+          <div class="field">
+            <label>80CCD(1B) — NPS Extra</label>
+            <input type="number" id="ded80ccd1b" placeholder="0" min="0" max="50000"/>
+            <p class="hint">Max ₹50,000</p>
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label>80CCD(2) — Employer NPS</label>
+            <input type="number" id="ded80ccd2" placeholder="0" min="0"/>
+            <p class="hint">Available in both regimes</p>
+          </div>
+          <div class="field">
+            <label>80D — Medical Insurance</label>
+            <input type="number" id="ded80d" placeholder="0" min="0"/>
+            <p class="hint">₹25K self + ₹25K/₹50K parents</p>
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label>80E — Education Loan Interest</label>
+            <input type="number" id="ded80e" placeholder="0" min="0"/>
+          </div>
+          <div class="field">
+            <label>80G — Donations</label>
+            <input type="number" id="ded80g" placeholder="0" min="0"/>
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label>80TTA/80TTB — Savings Interest</label>
+            <input type="number" id="ded80tta" placeholder="0" min="0"/>
+            <p class="hint">₹10K (80TTA) / ₹50K seniors (80TTB)</p>
+          </div>
+          <div class="field">
+            <label>Other Deductions (80DD, 80DDB, etc.)</label>
+            <input type="number" id="dedOther" placeholder="0" min="0"/>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ──── MAT / AMT ──── -->
+    <div class="card" id="matAmtCard" style="display:none">
+      <div class="card-head">
+        <div class="icon" style="background:#FEF3C7">⚖️</div>
+        <div><h2 id="matAmtCardTitle">MAT / AMT Computation</h2><p id="matAmtCardSub">Minimum Alternate Tax u/s 115JB / 115JC</p></div>
+      </div>
+      <div class="card-body">
+        <!-- MAT (Companies) -->
+        <div id="matSection">
+          <div class="section-title">📋 MAT u/s 115JB — Companies</div>
+          <div class="row2">
+            <div class="field">
+              <label>Book Profit u/s 115JB (₹)</label>
+              <input type="number" id="matBookProfit" placeholder="0" min="0" oninput="computeMatAmt()"/>
+              <p class="hint">Net profit per P&amp;L + mandatory add-backs (Sch VII items)</p>
+            </div>
+            <div class="field">
+              <label>MAT Rate</label>
+              <select id="matRate" onchange="computeMatAmt()">
+                <option value="0.15" selected>15% – Domestic Company (general)</option>
+                <option value="0.09">9% – New Mfg Co. u/s 115BAB</option>
+                <option value="0.075">7.5% – Co. in IFSC u/s 115A(4)</option>
+              </select>
+            </div>
+          </div>
+          <div id="matResult" style="display:none;margin-top:12px;padding:14px;background:#FFFBEB;border:1.5px solid #FDE68A;border-radius:10px">
+            <div style="font-size:12px;font-weight:700;color:#92400E;margin-bottom:8px">MAT Computation</div>
+            <div id="matResultRows"></div>
+          </div>
+        </div>
+        <!-- AMT (Non-companies) -->
+        <div id="amtSection" style="display:none">
+          <div class="section-title">📋 AMT u/s 115JC — Firms / LLPs / Individuals / HUF / AOP</div>
+          <div class="field">
+            <label>Adjusted Total Income (ATI) for AMT (₹)</label>
+            <input type="number" id="amtAti" placeholder="0" min="0" oninput="computeMatAmt()"/>
+            <p class="hint">GTI + deductions claimed u/s 10AA / 35AD / 80H–80RRB added back (u/s 115JC)</p>
+          </div>
+          <div id="amtResult" style="display:none;margin-top:12px;padding:14px;background:#FFFBEB;border:1.5px solid #FDE68A;border-radius:10px">
+            <div style="font-size:12px;font-weight:700;color:#92400E;margin-bottom:8px">AMT Computation</div>
+            <div id="amtResultRows"></div>
+          </div>
+        </div>
+        <div style="margin-top:12px;padding:10px 14px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:11px;color:#065F46">
+          <strong>📌 Credit:</strong> If normal tax &gt; MAT/AMT, MAT/AMT credit u/s 115JAA/115JD is carried forward for up to 15 years and can be set off in future years when normal tax exceeds MAT/AMT.
+        </div>
+      </div>
+    </div>
+
+    <!-- ──── TDS / TCS / ADVANCE TAX ──── -->
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#F5F3FF">🏦</div>
+        <div><h2>Tax Already Paid</h2><p>TDS, TCS &amp; Advance Tax</p></div>
+      </div>
+      <div class="card-body">
+        <div class="row3">
+          <div class="field">
+            <label>TDS (Estimated)</label>
+            <input type="number" id="tds" placeholder="0" min="0"/>
+          </div>
+          <div class="field">
+            <label>TCS (Estimated)</label>
+            <input type="number" id="tcs" placeholder="0" min="0"/>
+          </div>
+          <div class="field">
+            <label>Advance Tax Paid</label>
+            <input type="number" id="advanceTax" placeholder="0" min="0"/>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <button class="btn-calc" id="calcBtn" onclick="calculateTax(event)">
+      <span class="btn-text">🧮 Calculate Tax</span>
+      <div class="btn-spinner"></div>
+    </button>
+    <button class="btn-reset" onclick="resetForm()">↺ Reset All Fields</button>
+  </div>
+
+  <!-- RIGHT: Results Section -->
+  <div id="result-section">
+    <div class="result-panel" id="resultPanel">
+
+      <div class="card" id="singleResult" style="display:none">
+        <div class="card-head">
+          <div class="icon" style="background:#ECFDF5">📊</div>
+          <div><h2 id="resultTitle">Tax Computation</h2><p id="resultSubtitle"></p></div>
+        </div>
+        <div class="card-body">
+          <div id="resultBody"></div>
+          <!-- Donut chart -->
+          <div id="taxChartWrap" style="display:none">
+            <h3>Tax Breakdown</h3>
+            <div class="donut-container">
+              <svg class="donut-svg" width="140" height="140" viewBox="0 0 140 140">
+                <circle cx="70" cy="70" r="54" fill="none" stroke="#F3F4F6" stroke-width="22"/>
+                <circle id="donut-base" class="donut-segment" cx="70" cy="70" r="54" fill="none" stroke="#2563EB" stroke-width="22" stroke-dasharray="0 339.3" stroke-dashoffset="84.8" stroke-linecap="round"/>
+                <circle id="donut-surcharge" class="donut-segment" cx="70" cy="70" r="54" fill="none" stroke="#F59E0B" stroke-width="22" stroke-dasharray="0 339.3" stroke-dashoffset="84.8" stroke-linecap="round"/>
+                <circle id="donut-cess" class="donut-segment" cx="70" cy="70" r="54" fill="none" stroke="#10B981" stroke-width="22" stroke-dasharray="0 339.3" stroke-dashoffset="84.8" stroke-linecap="round"/>
+                <text x="70" y="65" text-anchor="middle" font-size="10" fill="#6B7280" font-weight="600" font-family="Inter,sans-serif">Total Tax</text>
+                <text id="donut-center-val" x="70" y="82" text-anchor="middle" font-size="13" fill="#111827" font-weight="800" font-family="Inter,sans-serif">₹0</text>
+              </svg>
+              <div class="donut-legend" id="donutLegend"></div>
+            </div>
+          </div>
+          <button class="print-btn" onclick="window.print()">🖨️ Print / Save PDF</button>
+        </div>
+      </div>
+
+      <div id="compareResult" style="display:none">
+        <div class="compare-box">
+          <h3>⚖️ Regime Comparison — <span id="compareYearLabel"></span></h3>
+          <div class="regime-winner" id="regimeWinner"></div>
+          <div class="savings" id="savingsAmt"></div>
+          <table class="compare-table">
+            <thead><tr><th></th><th>🆕 New Regime</th><th>📜 Old Regime</th></tr></thead>
+            <tbody id="compareBody"></tbody>
+          </table>
+        </div>
+
+        <!-- Regime bar chart -->
+        <div id="regimeChartWrap">
+          <h3>📊 Visual Comparison</h3>
+          <div class="bar-chart" id="regimeBarChart"></div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="card-head">
+            <div class="icon" style="background:#EFF6FF">📊</div>
+            <div><h2>New Regime — Detailed</h2></div>
+          </div>
+          <div class="card-body"><div id="newRegimeDetail"></div></div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="card-head">
+            <div class="icon" style="background:#FFFBEB">📊</div>
+            <div><h2>Old Regime — Detailed</h2></div>
+          </div>
+          <div class="card-body"><div id="oldRegimeDetail"></div></div>
+        </div>
+
+        <button class="print-btn" onclick="window.print()">🖨️ Print / Save PDF</button>
+      </div>
+
+      <div class="card" style="margin-top:16px" id="slabCard">
+        <div class="card-head">
+          <div class="icon" style="background:#F0FDF4">📋</div>
+          <div><h2>Slab-wise Tax Breakup</h2><p id="slabRegimeLabel"></p></div>
+        </div>
+        <div class="card-body" id="slabBody"></div>
+      </div>
+
+      <div class="disclaimer" id="disclaimerBox">
+        <strong>⚠ Disclaimer:</strong> This calculator is for estimation purposes only. Actual tax liability may differ
+        based on specific exemptions, deductions, and interpretations. Always consult a qualified Chartered Accountant
+        for final tax computation. Surcharge marginal relief is indicative. Special rate incomes (capital gains, winnings)
+        are not eligible for Section 87A rebate.
+      </div>
+      <div class="disclaimer future" id="futureDisclaimer" style="display:none;margin-top:8px">
+        <strong>📅 Future Year Note:</strong> PY 2026-27 (AY 2027-28) rates are based on the Union Budget 2026 which
+        retained PY 2025-26 slab rates without changes. These rates are subject to any future amendments or notifications
+        by the Government. Always verify with the latest Finance Act before finalizing.
+      </div>
+
+      <!-- ──── MAT/AMT RESULT IN RESULTS PANEL ──── -->
+      <div id="matAmtResultCard" style="display:none;margin-top:16px">
+        <div class="card">
+          <div class="card-head">
+            <div class="icon" style="background:#FEF3C7">⚖️</div>
+            <div><h2 id="matAmtResTitle">MAT / AMT Summary</h2><p>Minimum Alternate Tax computation result</p></div>
+          </div>
+          <div class="card-body" id="matAmtResBody"></div>
+        </div>
+      </div>
+
+      <!-- ──── ADVANCE TAX SCHEDULE (PY 2026-27 only) ──── -->
+      <div id="advanceTaxCard" style="display:none;margin-top:16px">
+        <div class="card">
+          <div class="card-head">
+            <div class="icon" style="background:#EFF6FF">📅</div>
+            <div><h2>Advance Tax Schedule — PY 2026-27</h2><p>Instalment-wise liability u/s 208 &amp; 211</p></div>
+          </div>
+          <div class="card-body">
+            <div style="padding:10px 14px;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;font-size:11px;color:#1E40AF;margin-bottom:14px">
+              <strong>ℹ️ Who must pay?</strong> Every assessee whose estimated tax liability for the year is ₹10,000 or more (after TDS/TCS) must pay advance tax. Senior citizens (60+) with no business income are exempt u/s 207.
+            </div>
+            <div id="advanceTaxTable"></div>
+            <div style="margin-top:14px;padding:10px 14px;background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;font-size:11px;color:#92400E">
+              <strong>⚠️ Interest for default:</strong> u/s 234B — 1% per month on 90% of assessed tax not paid as advance tax. u/s 234C — 1% per month for 3 months on shortfall per instalment (single month for last instalment). u/s 234A — 1% per month on self-assessment tax if return filed late.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Before calculation: show slab reference -->
+    <div id="preCalcInfo">
+      <div class="card" id="refSlabCard">
+        <div class="card-head">
+          <div class="icon" style="background:#EFF6FF">📋</div>
+          <div><h2 id="refSlabTitle">New Regime Slab Rates</h2><p id="refSlabSub"></p></div>
+        </div>
+        <div class="card-body" id="refSlabBody"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="icon" style="background:#FFFBEB">📋</div>
+          <div><h2>Old Regime Slab Rates</h2><p>Unchanged across all years</p></div>
+        </div>
+        <div class="card-body">
+          <table class="slab-table">
+            <thead><tr><th>Income Slab</th><th style="text-align:right">Rate</th></tr></thead>
+            <tbody>
+              <tr><td>Up to ₹2,50,000</td><td class="amt">Nil</td></tr>
+              <tr><td>₹2,50,001 – ₹5,00,000</td><td class="amt">5%</td></tr>
+              <tr><td>₹5,00,001 – ₹10,00,000</td><td class="amt">20%</td></tr>
+              <tr><td>Above ₹10,00,000</td><td class="amt">30%</td></tr>
+            </tbody>
+          </table>
+          <p class="hint" style="margin-top:10px">Senior citizens (60-80): exempt up to ₹3L. Super seniors (80+): exempt up to ₹5L. Rebate u/s 87A: up to ₹5L → max ₹12,500.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="icon" style="background:#F5F3FF">📋</div>
+          <div><h2>Special Rate Incomes</h2><p id="refSpecialSub"></p></div>
+        </div>
+        <div class="card-body" id="refSpecialBody"></div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<footer>
+  <p class="footer-brand">CA Toolkit</p>
+  <p>Built for Indian Chartered Accountants · Saves hours every year</p>
+  <p style="margin-top:6px">Created by CA Article</p>
+  <p style="margin-top:12px;font-size:11px">© 2026 CA Toolkit · <span style="color:var(--accent)">Income Tax Calculator — PY 2023-24 to PY 2026-27</span></p>
+</footer>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════
+   INCOME TAX CALCULATOR — Multi-Year Engine (Enhanced)
+   PY 2023-24 | PY 2024-25 | PY 2025-26 | PY 2026-27 (upcoming)
+   Features: All Assessee Types · MAT/AMT · Advance Tax Schedule
+   ═══════════════════════════════════════════════════════════════════════ */
+
+let currentRegime = 'new';
+let currentYear = '2025-26';
+
+/* ── ASSESSEE TYPE CONFIGURATION ──────────────────────────────────── */
+const ASSESSEE_CFG = {
+  // Individuals
+  individual_below60:    { label:'Individual – Below 60', group:'individual', age:'below60', canAmt:true },
+  individual_senior:     { label:'Individual – Senior Citizen (60–80)', group:'individual', age:'senior', canAmt:true },
+  individual_supersenior:{ label:'Individual – Super Senior (80+)', group:'individual', age:'supersenior', canAmt:true },
+  individual_nri:        { label:'Individual – NRI', group:'individual', age:'below60', isNRI:true, canAmt:true },
+  // HUF
+  huf:                   { label:'HUF', group:'individual', age:'below60', canAmt:true },
+  // Firms / LLPs
+  firm:                  { label:'Firm / LLP', group:'firm', flatRate:0.30, surchargeThreshold:1e7, surchargeRate:0.12, canAmt:true },
+  // Companies
+  company_domestic:      { label:'Domestic Company', group:'company', flatRate:0.22, surchargeThreshold:1e7, surchargeRateLow:0.07, surchargeRateHigh:0.12, canMat:true },
+  company_foreign:       { label:'Foreign Company', group:'company', flatRate:0.40, surchargeRateLow:0.02, surchargeRateHigh:0.05, surchargeThreshold:1e7, canMat:true },
+  company_mfg_new:       { label:'New Mfg Co. u/s 115BAB', group:'company', flatRate:0.15, surchargeRate:0.10, matRate:0.09, canMat:true },
+  company_small:         { label:'Domestic Co. ≤₹400Cr (Sec 115BA)', group:'company', flatRate:0.25, surchargeRateLow:0.07, surchargeRateHigh:0.12, surchargeThreshold:1e7, canMat:true },
+  // Others
+  aop_boi:               { label:'AOP / BOI', group:'individual', age:'below60', canAmt:true },
+  cooperative:           { label:'Co-operative Society', group:'coop', canAmt:true },
+  trust_aop:             { label:'Trust / AOP (Registered)', group:'individual', age:'below60', canAmt:true },
+  local_authority:       { label:'Local Authority', group:'local', flatRate:0.30, canAmt:false },
+  artificial_person:     { label:'Artificial Juridical Person', group:'individual', age:'below60', canAmt:true },
+};
+
+function getAssesseeCfg() {
+  const t = document.getElementById('assesseeType').value;
+  return ASSESSEE_CFG[t] || ASSESSEE_CFG['individual_below60'];
+}
+
+/* ── Assessee button selector ─────────────────────────────────────── */
+function selectAssessee(btn, val) {
+  document.querySelectorAll('.at-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('assesseeType').value = val;
+  onAssesseeTypeChange();
+}
+
+function onAssesseeTypeChange() {
+  const t = document.getElementById('assesseeType').value;
+  const ac = ASSESSEE_CFG[t];
+
+  const isInd  = ac.group === 'individual';
+  const isCo   = ac.group === 'company';
+  const isFirm = ac.group === 'firm';
+  const isCoop = ac.group === 'coop';
+  const isLocal= ac.group === 'local';
+
+  // ── Income panel visibility ──────────────────────────────────────
+  document.getElementById('inc_individual').style.display = (isInd) ? 'block' : 'none';
+  document.getElementById('inc_company').style.display    = isCo   ? 'block' : 'none';
+  document.getElementById('inc_firm').style.display       = isFirm ? 'block' : 'none';
+  document.getElementById('inc_coop').style.display       = isCoop ? 'block' : 'none';
+  document.getElementById('inc_local').style.display      = isLocal? 'block' : 'none';
+
+  // Card subtitle
+  const subMap = {
+    individual:'All 5 Heads of Income', huf:'All 5 Heads of Income',
+    firm:'Business, Capital Gains & Other Sources',
+    company_domestic:'Business, Capital Gains & MAT',
+    company_foreign:'Business, Capital Gains & MAT',
+    company_mfg_new:'Business, Capital Gains & MAT',
+    company_small:'Business, Capital Gains & MAT',
+    aop_boi:'All applicable Heads of Income',
+    cooperative:'Business & Other Sources',
+    trust_aop:'All applicable Heads of Income',
+    local_authority:'Net Taxable Income',
+    artificial_person:'All 5 Heads of Income',
+  };
+  document.getElementById('incomeCardSub').textContent = subMap[t] || 'Gross Total Income computation';
+
+  // ── Age badge for individuals ────────────────────────────────────
+  const ageBadge = document.getElementById('ageBadge');
+  if (ageBadge) {
+    const ageMap = {
+      individual_below60:'Below 60 years', individual_senior:'Senior Citizen (60–80)',
+      individual_supersenior:'Super Senior Citizen (80+)', individual_nri:'Non-Resident (NRI)', huf:'HUF',
+      aop_boi:'AOP / BOI', trust_aop:'Trust', artificial_person:'Juridical Person',
+    };
+    ageBadge.textContent = ageMap[t] || '';
+  }
+
+  // ── Show/hide Basic Info sub-sections ───────────────────────────
+  document.getElementById('individualFields').style.display  = isInd  ? 'block' : 'none';
+  document.getElementById('companyFields').style.display     = isCo   ? 'block' : 'none';
+  document.getElementById('firmFields').style.display        = isFirm ? 'block' : 'none';
+  document.getElementById('aopFields').style.display         = (isCoop || isLocal) ? 'block' : 'none';
+
+  // ── Regime toggle visibility ─────────────────────────────────────
+  const regimeToggle = document.querySelector('.regime-toggle');
+  if (isCo || isFirm || isLocal) {
+    regimeToggle.style.display = 'none';
+    currentRegime = 'new';
+  } else {
+    regimeToggle.style.display = 'flex';
+  }
+
+  // ── Deductions card ──────────────────────────────────────────────
+  const dc = document.getElementById('deductions-card');
+  if (isCo || isFirm || isCoop || isLocal) {
+    dc.style.display = 'none';
+  } else {
+    dc.style.display = 'block';
+    dc.style.opacity = currentRegime === 'new' ? '0.4' : '1';
+    dc.style.pointerEvents = currentRegime === 'new' ? 'none' : 'auto';
+  }
+
+  // ── MAT / AMT card ───────────────────────────────────────────────
+  const matCard = document.getElementById('matAmtCard');
+  if (ac.canMat) {
+    matCard.style.display = 'block';
+    document.getElementById('matSection').style.display = 'block';
+    document.getElementById('amtSection').style.display = 'none';
+    document.getElementById('matAmtCardTitle').textContent = 'MAT Computation';
+    document.getElementById('matAmtCardSub').textContent = 'Minimum Alternate Tax u/s 115JB';
+    const mr = document.getElementById('matRate');
+    if (t === 'company_mfg_new') mr.value = '0.09';
+    else mr.value = '0.15';
+  } else if (ac.canAmt && (isFirm || isCoop)) {
+    matCard.style.display = 'block';
+    document.getElementById('matSection').style.display = 'none';
+    document.getElementById('amtSection').style.display = 'block';
+    document.getElementById('matAmtCardTitle').textContent = 'AMT Computation';
+    document.getElementById('matAmtCardSub').textContent = 'Alternate Minimum Tax u/s 115JC';
+  } else {
+    matCard.style.display = 'none';
+  }
+
+  // ── NRI auto-set ─────────────────────────────────────────────────
+  if (ac.isNRI) {
+    const rs = document.getElementById('residentialStatus');
+    if (rs) rs.value = 'nri';
+  }
+
+  computeMatAmt();
+}
+
+/* ── YEAR-SPECIFIC TAX CONFIGURATIONS ─────────────────────────────── */
+const YEAR_CONFIG = {
+  '2023-24': {
+    label: 'PY 2023-24 (AY 2024-25)',
+    ayLabel: 'AY 2024-25',
+    isFuture: false,
+    stdDeduction: 50000,
+    newSlabs: [
+      { upto: 300000,  rate: 0 },
+      { upto: 600000,  rate: 0.05 },
+      { upto: 900000,  rate: 0.10 },
+      { upto: 1200000, rate: 0.15 },
+      { upto: 1500000, rate: 0.20 },
+      { upto: Infinity, rate: 0.30 },
+    ],
+    rebateNew: { limit: 700000, max: 25000 },
+    rebateOld: { limit: 500000, max: 12500 },
+    stcg111aRate: 0.15,
+    ltcg112aRate: 0.10,
+    ltcg112aExempt: 100000,
+    ltcgOtherRate: 0.20,
+    ltcgOtherLabel: '20% (with indexation)',
+    maxSurchargeNew: 0.25,
+  },
+  '2024-25': {
+    label: 'PY 2024-25 (AY 2025-26)',
+    ayLabel: 'AY 2025-26',
+    isFuture: false,
+    stdDeduction: 75000,
+    hasTransitional: true,
+    newSlabs: [
+      { upto: 300000,  rate: 0 },
+      { upto: 700000,  rate: 0.05 },
+      { upto: 1000000, rate: 0.10 },
+      { upto: 1200000, rate: 0.15 },
+      { upto: 1500000, rate: 0.20 },
+      { upto: Infinity, rate: 0.30 },
+    ],
+    rebateNew: { limit: 700000, max: 25000 },
+    rebateOld: { limit: 500000, max: 12500 },
+    stcg111aRate: 0.20,
+    ltcg112aRate: 0.125,
+    ltcg112aExempt: 125000,
+    ltcgOtherRate: 0.125,
+    ltcgOtherLabel: '12.5% (post July 2024)',
+    stcg111aRateOld: 0.15,
+    ltcg112aRateOld: 0.10,
+    ltcg112aExemptOld: 100000,
+    ltcgOtherRateOld: 0.20,
+    ltcgOtherLabelOld: '20% with indexation (pre July 2024)',
+    maxSurchargeNew: 0.25,
+  },
+  '2025-26': {
+    label: 'PY 2025-26 (AY 2026-27)',
+    ayLabel: 'AY 2026-27',
+    isFuture: false,
+    stdDeduction: 75000,
+    newSlabs: [
+      { upto: 400000,  rate: 0 },
+      { upto: 800000,  rate: 0.05 },
+      { upto: 1200000, rate: 0.10 },
+      { upto: 1600000, rate: 0.15 },
+      { upto: 2000000, rate: 0.20 },
+      { upto: 2400000, rate: 0.25 },
+      { upto: Infinity, rate: 0.30 },
+    ],
+    rebateNew: { limit: 1200000, max: 60000 },
+    rebateOld: { limit: 500000, max: 12500 },
+    stcg111aRate: 0.20,
+    ltcg112aRate: 0.125,
+    ltcg112aExempt: 125000,
+    ltcgOtherRate: 0.125,
+    ltcgOtherLabel: '12.5%',
+    maxSurchargeNew: 0.25,
+  },
+  '2026-27': {
+    label: 'PY 2026-27 (AY 2027-28)',
+    ayLabel: 'AY 2027-28',
+    isFuture: true,
+    stdDeduction: 75000,
+    newSlabs: [
+      { upto: 400000,  rate: 0 },
+      { upto: 800000,  rate: 0.05 },
+      { upto: 1200000, rate: 0.10 },
+      { upto: 1600000, rate: 0.15 },
+      { upto: 2000000, rate: 0.20 },
+      { upto: 2400000, rate: 0.25 },
+      { upto: Infinity, rate: 0.30 },
+    ],
+    rebateNew: { limit: 1200000, max: 60000 },
+    rebateOld: { limit: 500000, max: 12500 },
+    stcg111aRate: 0.20,
+    ltcg112aRate: 0.125,
+    ltcg112aExempt: 125000,
+    ltcgOtherRate: 0.125,
+    ltcgOtherLabel: '12.5%',
+    maxSurchargeNew: 0.25,
+  },
+};
+
+/* ── OLD REGIME SLABS ─────────────────────────────────────────────── */
+const OLD_SLABS_BELOW60 = [
+  { upto: 250000,  rate: 0 },
+  { upto: 500000,  rate: 0.05 },
+  { upto: 1000000, rate: 0.20 },
+  { upto: Infinity, rate: 0.30 },
+];
+const OLD_SLABS_SENIOR = [
+  { upto: 300000,  rate: 0 },
+  { upto: 500000,  rate: 0.05 },
+  { upto: 1000000, rate: 0.20 },
+  { upto: Infinity, rate: 0.30 },
+];
+const OLD_SLABS_SUPERSENIOR = [
+  { upto: 500000,  rate: 0 },
+  { upto: 1000000, rate: 0.20 },
+  { upto: Infinity, rate: 0.30 },
+];
+/* Co-operative Society slabs */
+const COOP_SLABS = [
+  { upto: 10000,  rate: 0.10 },
+  { upto: 20000,  rate: 0.20 },
+  { upto: Infinity, rate: 0.30 },
+];
+
+function getOldSlabs() {
+  const ac = getAssesseeCfg();
+  if (ac.group === 'coop') return COOP_SLABS;
+  const age = ac.age || 'below60';
+  if (age === 'supersenior') return OLD_SLABS_SUPERSENIOR;
+  if (age === 'senior') return OLD_SLABS_SENIOR;
+  return OLD_SLABS_BELOW60;
+}
+
+function cfg() { return YEAR_CONFIG[currentYear]; }
+
+/* ── UI: Year selection ───────────────────────────────────────────── */
+function setYear(yr) {
+  currentYear = yr;
+  document.querySelectorAll('.year-pill').forEach(b => b.classList.remove('active'));
+  event.currentTarget.classList.add('active');
+
+  const c = cfg();
+  document.getElementById('stdDeduction').value = c.stdDeduction;
+  document.getElementById('stdDedHint').textContent =
+    c.stdDeduction === 50000 ? '₹50,000 for PY 2023-24' : '₹75,000 for PY 2024-25 onwards';
+
+  const isTrans = c.hasTransitional || false;
+  document.getElementById('transitionalNotice').style.display = isTrans ? 'block' : 'none';
+  document.getElementById('preJulyFields').style.display = isTrans ? 'block' : 'none';
+
+  if (isTrans) {
+    document.getElementById('stcg111aLabel').textContent = 'STCG 111A — Post-July (equity) @ 20%';
+    document.getElementById('ltcg112aLabel').textContent = 'LTCG 112A — Post-July (equity) @ 12.5%';
+    document.getElementById('ltcgOtherLabel').textContent = 'LTCG Other — Post-July @ 12.5%';
+  } else {
+    document.getElementById('stcg111aLabel').textContent = 'STCG u/s 111A (equity, STT paid)';
+    document.getElementById('ltcg112aLabel').textContent = 'LTCG u/s 112A (equity, STT paid)';
+    document.getElementById('ltcgOtherLabel').textContent = 'LTCG — Other (property, debt etc.)';
+  }
+
+  document.getElementById('stcgRateHint').textContent =
+    'Taxed at ' + (c.stcg111aRate * 100) + '%' + (isTrans ? ' (post 23 July 2024)' : '');
+  document.getElementById('ltcgRateHint').textContent =
+    (c.ltcg112aRate * 100) + '% above ₹' + (c.ltcg112aExempt / 100000).toFixed(2).replace('.00','') + ' lakh exemption';
+  document.getElementById('ltcgOtherHint').textContent = c.ltcgOtherLabel;
+
+  document.getElementById('futureYearNote').style.display = c.isFuture ? 'block' : 'none';
+
+  if (!isTrans) {
+    ['stcg111aPreJuly','ltcg112aPreJuly','ltcgOtherPreJuly'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+  }
+
+  updateRefSlabs();
+  document.getElementById('resultPanel').classList.remove('show');
+  document.getElementById('preCalcInfo').style.display = 'block';
+  // Hide advance tax card until recalculated
+  document.getElementById('advanceTaxCard').style.display = 'none';
+  document.getElementById('matAmtResultCard').style.display = 'none';
+}
+
+function setRegime(r) {
+  currentRegime = r;
+  document.querySelectorAll('.regime-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('btn-' + r).classList.add('active');
+  const dc = document.getElementById('deductions-card');
+  if (r === 'new') { dc.style.opacity = '0.4'; dc.style.pointerEvents = 'none'; }
+  else { dc.style.opacity = '1'; dc.style.pointerEvents = 'auto'; }
+}
+
+function updateRefSlabs() {
+  const c = cfg();
+  const slabs = c.newSlabs;
+  document.getElementById('refSlabTitle').textContent = 'New Regime Slab Rates';
+  document.getElementById('refSlabSub').textContent = c.label + (c.isFuture ? ' (Estimated)' : '');
+  let h = '<table class="slab-table"><thead><tr><th>Income Slab</th><th style="text-align:right">Rate</th></tr></thead><tbody>';
+  let prev = 0;
+  for (const s of slabs) {
+    const from = '₹' + prev.toLocaleString('en-IN');
+    const to = s.upto === Infinity ? '& above' : '₹' + s.upto.toLocaleString('en-IN');
+    const label = s.upto === Infinity ? 'Above ' + from : from + ' – ' + to;
+    h += '<tr><td>' + (prev === 0 ? 'Up to ' + to : label) + '</td><td class="amt">' + (s.rate === 0 ? 'Nil' : (s.rate*100)+'%') + '</td></tr>';
+    prev = s.upto;
+  }
+  h += '</tbody></table>';
+  const rebateInfo = c.rebateNew.limit >= 1200000
+    ? 'Rebate u/s 87A: Income up to ₹' + (c.rebateNew.limit/100000) + ' lakh → zero tax (max rebate ₹' + c.rebateNew.max.toLocaleString('en-IN') + ').'
+    : 'Rebate u/s 87A: Income up to ₹' + (c.rebateNew.limit/100000) + ' lakh → zero tax (max rebate ₹' + c.rebateNew.max.toLocaleString('en-IN') + ').';
+  h += '<p class="hint" style="margin-top:10px">' + rebateInfo + ' Standard deduction ₹' + c.stdDeduction.toLocaleString('en-IN') + ' for salaried.</p>';
+  document.getElementById('refSlabBody').innerHTML = h;
+
+  document.getElementById('refSpecialSub').textContent = c.label;
+  let sp = '<table class="slab-table"><thead><tr><th>Type</th><th style="text-align:right">Rate</th></tr></thead><tbody>';
+  sp += '<tr><td>STCG u/s 111A (equity, STT paid)</td><td class="amt">' + (c.stcg111aRate*100) + '%</td></tr>';
+  sp += '<tr><td>LTCG u/s 112A (equity) above ₹' + (c.ltcg112aExempt/100000).toFixed(2).replace('.00','') + 'L</td><td class="amt">' + (c.ltcg112aRate*100) + '%</td></tr>';
+  sp += '<tr><td>LTCG — Other assets</td><td class="amt">' + c.ltcgOtherLabel + '</td></tr>';
+  sp += '<tr><td>Winnings (lottery, games, etc.)</td><td class="amt">30%</td></tr>';
+  sp += '</tbody></table>';
+  sp += '<p class="hint" style="margin-top:10px">Health &amp; Education Cess @ 4% on tax + surcharge. Max surcharge under new regime: 25%.</p>';
+  document.getElementById('refSpecialBody').innerHTML = sp;
+}
+
+function syncMatBookProfit() {
+  const v = document.getElementById('co_bookProfit').value;
+  const el = document.getElementById('matBookProfit');
+  if (el) el.value = v;
+  computeMatAmt();
+}
+function syncAmtAti() {
+  const v = document.getElementById('firm_amtAti').value;
+  const el = document.getElementById('amtAti');
+  if (el) el.value = v;
+  computeMatAmt();
+}
+
+/* helper: read value by id safely */
+function v(id) { return parseFloat(document.getElementById(id).value) || 0; }
+function fmt(n) {
+  if (n < 0) return '-₹' + Math.abs(Math.round(n)).toLocaleString('en-IN');
+  return '₹' + Math.round(n).toLocaleString('en-IN');
+}
+
+/* ── Slab-based tax ───────────────────────────────────────────────── */
+function calcSlabTax(taxableIncome, slabs) {
+  let tax = 0, prev = 0;
+  const breakup = [];
+  for (const slab of slabs) {
+    if (taxableIncome <= prev) break;
+    const chunk = Math.min(taxableIncome, slab.upto) - prev;
+    const t = chunk * slab.rate;
+    breakup.push({ from: prev, to: Math.min(taxableIncome, slab.upto), rate: slab.rate, amount: chunk, tax: t });
+    tax += t;
+    prev = slab.upto;
+  }
+  return { tax, breakup };
+}
+
+/* ── Surcharge ────────────────────────────────────────────────────── */
+function calcSurcharge(tax, totalIncome, isNewRegime) {
+  if (totalIncome <= 5000000) return 0;
+  let rate = 0;
+  const maxNew = cfg().maxSurchargeNew;
+  if (isNewRegime) {
+    if (totalIncome <= 10000000) rate = 0.10;
+    else if (totalIncome <= 20000000) rate = 0.15;
+    else rate = maxNew;
+  } else {
+    if (totalIncome <= 10000000) rate = 0.10;
+    else if (totalIncome <= 20000000) rate = 0.15;
+    else if (totalIncome <= 50000000) rate = 0.25;
+    else rate = 0.37;
+  }
+  let surcharge = tax * rate;
+  const thresholds = [5000000, 10000000, 20000000, 50000000];
+  for (const th of thresholds) {
+    if (totalIncome > th && totalIncome <= th * 1.2) {
+      const excess = totalIncome - th;
+      const slabs = isNewRegime ? cfg().newSlabs : getOldSlabs();
+      const taxAtTh = calcSlabTax(th, slabs).tax;
+      const surchAtTh = calcSurcharge(taxAtTh, th, isNewRegime);
+      const maxTax = taxAtTh + surchAtTh + excess;
+      if (tax + surcharge > maxTax) {
+        surcharge = maxTax - tax;
+        if (surcharge < 0) surcharge = 0;
+      }
+    }
+  }
+  return surcharge;
+}
+
+function calcSurchargeCapped(tax, totalIncome) {
+  if (totalIncome <= 5000000) return 0;
+  let rate = Math.min(0.15, totalIncome > 10000000 ? 0.15 : 0.10);
+  return tax * rate;
+}
+
+/* ── Company / Firm tax computation ───────────────────────────────── */
+function computeForCompanyFirm(ac, totalIncome) {
+  const flatRate = ac.flatRate;
+  let baseTax = totalIncome * flatRate;
+
+  // Surcharge for companies
+  let surcharge = 0;
+  if (ac.group === 'company') {
+    const low = ac.surchargeRateLow || 0;
+    const high = ac.surchargeRateHigh || 0;
+    const th = ac.surchargeThreshold || 1e7;
+    if (totalIncome > th) surcharge = baseTax * high;
+    else if (totalIncome > 1e7) surcharge = baseTax * low;
+    else surcharge = baseTax * low;
+  } else if (ac.group === 'firm') {
+    if (totalIncome > 1e7) surcharge = baseTax * (ac.surchargeRate || 0.12);
+  }
+  const cess = (baseTax + surcharge) * 0.04;
+  const totalTax = baseTax + surcharge + cess;
+  return { baseTax, surcharge, cess, totalTax, flatRate };
+}
+
+/* ── MAT / AMT Computation ────────────────────────────────────────── */
+function computeMatAmt() {
+  const t = document.getElementById('assesseeType').value;
+  const ac = ASSESSEE_CFG[t];
+  if (!ac) return;
+
+  if (ac.canMat) {
+    const bookProfit = parseFloat(document.getElementById('matBookProfit').value) || 0;
+    if (!bookProfit) { document.getElementById('matResult').style.display='none'; return; }
+    const matRate = parseFloat(document.getElementById('matRate').value) || 0.15;
+    const matBase = bookProfit * matRate;
+    let surcharge = 0;
+    if (ac.surchargeRateLow) surcharge = matBase * (bookProfit > 1e7 ? (ac.surchargeRateHigh||0) : (ac.surchargeRateLow||0));
+    const matCess = (matBase + surcharge) * 0.04;
+    const matTotal = matBase + surcharge + matCess;
+    let h = '';
+    h += `<div class="mat-row"><span class="ml">Book Profit u/s 115JB</span><span class="mv">${fmt(bookProfit)}</span></div>`;
+    h += `<div class="mat-row"><span class="ml">MAT Rate</span><span class="mv">${(matRate*100).toFixed(1)}%</span></div>`;
+    h += `<div class="mat-row"><span class="ml">MAT (before surcharge/cess)</span><span class="mv">${fmt(matBase)}</span></div>`;
+    if (surcharge) h += `<div class="mat-row"><span class="ml">Surcharge</span><span class="mv">${fmt(surcharge)}</span></div>`;
+    h += `<div class="mat-row"><span class="ml">Cess @ 4%</span><span class="mv">${fmt(matCess)}</span></div>`;
+    h += `<div class="mat-row mt"><span class="ml">Total MAT Payable</span><span class="mv">${fmt(matTotal)}</span></div>`;
+    h += `<p style="font-size:11px;margin-top:8px;color:#78350F">Tax payable = <strong>MAX(Normal Tax, MAT)</strong>. If MAT &gt; Normal Tax, excess = MAT Credit u/s 115JAA (carry fwd 15 yrs).</p>`;
+    document.getElementById('matResultRows').innerHTML = h;
+    document.getElementById('matResult').style.display = 'block';
+
+  } else if (ac.canAmt && document.getElementById('amtSection').style.display !== 'none') {
+    const ati = parseFloat(document.getElementById('amtAti').value) || 0;
+    if (!ati) { document.getElementById('amtResult').style.display='none'; return; }
+    const amtBase = ati * 0.185;
+    let surcharge = 0;
+    if (ac.group === 'firm' && ati > 1e7) surcharge = amtBase * 0.12;
+    const amtCess = (amtBase + surcharge) * 0.04;
+    const amtTotal = amtBase + surcharge + amtCess;
+    let h = '';
+    h += `<div class="mat-row"><span class="ml">Adjusted Total Income (ATI)</span><span class="mv">${fmt(ati)}</span></div>`;
+    h += `<div class="mat-row"><span class="ml">AMT Rate</span><span class="mv">18.5%</span></div>`;
+    h += `<div class="mat-row"><span class="ml">AMT (before surcharge/cess)</span><span class="mv">${fmt(amtBase)}</span></div>`;
+    if (surcharge) h += `<div class="mat-row"><span class="ml">Surcharge</span><span class="mv">${fmt(surcharge)}</span></div>`;
+    h += `<div class="mat-row"><span class="ml">Cess @ 4%</span><span class="mv">${fmt(amtCess)}</span></div>`;
+    h += `<div class="mat-row mt"><span class="ml">Total AMT Payable</span><span class="mv">${fmt(amtTotal)}</span></div>`;
+    h += `<p style="font-size:11px;margin-top:8px;color:#78350F">Tax payable = <strong>MAX(Normal Tax, AMT)</strong>. If AMT &gt; Normal Tax, excess = AMT Credit u/s 115JD (carry fwd 15 yrs).</p>`;
+    document.getElementById('amtResultRows').innerHTML = h;
+    document.getElementById('amtResult').style.display = 'block';
+  }
+}
+
+/* ── Advance Tax Schedule ─────────────────────────────────────────── */
+function renderAdvanceTaxSchedule(totalTax, tdsPaid, tcsPaid) {
+  // Only for PY 2026-27
+  if (currentYear !== '2026-27') {
+    document.getElementById('advanceTaxCard').style.display = 'none';
+    return;
+  }
+  const netLiability = Math.max(0, totalTax - tdsPaid - tcsPaid);
+  if (netLiability < 10000) {
+    document.getElementById('advanceTaxCard').style.display = 'none';
+    return;
+  }
+
+  // Instalments for PY 2026-27 (u/s 211)
+  const today = new Date();
+  const instalments = [
+    { due: new Date('2026-06-15'), cumPct: 15,  pct: 15,  label: '1st Instalment' },
+    { due: new Date('2026-09-15'), cumPct: 45,  pct: 30,  label: '2nd Instalment' },
+    { due: new Date('2026-12-15'), cumPct: 75,  pct: 30,  label: '3rd Instalment' },
+    { due: new Date('2027-03-15'), cumPct: 100, pct: 25,  label: '4th Instalment' },
+  ];
+
+  // For presumptive income assessees (Sec 44AD/44ADA) — single instalment
+  const isPrespumptive = false; // could add toggle later
+
+  let h = `<div style="margin-bottom:12px;padding:10px 14px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:11px;color:#065F46">
+    <strong>💡 Total Tax Liability (after TDS/TCS):</strong> ${fmt(netLiability)} — Advance Tax required (≥ ₹10,000)
+  </div>`;
+
+  h += `<table class="at-table">
+    <thead>
+      <tr>
+        <th>Instalment</th>
+        <th style="text-align:center">% of Tax</th>
+        <th>Due Date</th>
+        <th style="text-align:right">Amount Due</th>
+        <th style="text-align:right">Cumulative</th>
+      </tr>
+    </thead>
+    <tbody>`;
+
+  let cumAmount = 0;
+  instalments.forEach((inst, idx) => {
+    const amt = Math.round(netLiability * inst.pct / 100);
+    const cumAmt = Math.round(netLiability * inst.cumPct / 100);
+    cumAmount = cumAmt;
+
+    const isPast = today > inst.due;
+    const isNext = !isPast && (idx === 0 || today > instalments[idx-1].due);
+    const rowClass = isPast ? 'overdue' : (isNext ? 'upcoming' : '');
+    const statusBadge = isPast
+      ? '<span style="font-size:10px;background:#FEE2E2;color:#B91C1C;padding:2px 7px;border-radius:10px;margin-left:6px;font-weight:700">Due</span>'
+      : (isNext ? '<span style="font-size:10px;background:#FEF3C7;color:#92400E;padding:2px 7px;border-radius:10px;margin-left:6px;font-weight:700">Next</span>' : '');
+
+    const dueDateStr = inst.due.toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' });
+
+    h += `<tr class="${rowClass}">
+      <td><strong>${inst.label}</strong>${statusBadge}</td>
+      <td class="pct">${inst.pct}%</td>
+      <td class="due">${dueDateStr}</td>
+      <td class="amt-cell">${fmt(amt)}</td>
+      <td class="amt-cell"><span class="cumul">Cumul: </span>${fmt(cumAmt)}</td>
+    </tr>`;
+  });
+
+  h += `</tbody>
+    <tfoot>
+      <tr style="background:#EFF6FF;font-weight:800">
+        <td colspan="3" style="padding:10px;font-size:12px">Total Advance Tax</td>
+        <td></td>
+        <td class="amt-cell" style="color:var(--brand);font-size:13px">${fmt(netLiability)}</td>
+      </tr>
+    </tfoot>
+  </table>`;
+
+  h += `<div style="margin-top:12px;font-size:11px;color:var(--muted);line-height:1.7">
+    <strong>📌 Notes:</strong>
+    <ul style="margin:6px 0 0 16px;padding:0">
+      <li>Instalments calculated on <em>estimated</em> total income for PY 2026-27.</li>
+      <li>Assessees under Sec 44AD / 44ADA (presumptive) may pay <strong>entire advance tax by 15 March 2027</strong> (single instalment).</li>
+      <li>Senior citizens (60+) with <em>no</em> business income are <strong>exempt</strong> from advance tax u/s 207.</li>
+      <li>If advance tax paid &lt; 90% of assessed tax → interest u/s 234B @ 1%/month on shortfall.</li>
+      <li>Shortfall in each instalment → interest u/s 234C @ 1%/month for 3 months (1 month for last instalment).</li>
+    </ul>
+  </div>`;
+
+  document.getElementById('advanceTaxTable').innerHTML = h;
+  document.getElementById('advanceTaxCard').style.display = 'block';
+}
+
+/* ── Main Computation ─────────────────────────────────────────────── */
+function computeForRegime(isNew) {
+  const c = cfg();
+  const ac = getAssesseeCfg();
+  const t = document.getElementById('assesseeType').value;
+  const name = document.getElementById('assesseeName').value.trim();
+  const isResident = (ac.isNRI || (document.getElementById('residentialStatus') && document.getElementById('residentialStatus').value === 'nri')) ? false : true;
+
+  const isCo   = ac.group === 'company';
+  const isFirm = ac.group === 'firm';
+  const isCoop = ac.group === 'coop';
+  const isLocal= ac.group === 'local';
+  const isInd  = ac.group === 'individual';
+
+  /* ── Read income from the right panel ── */
+  let grossSalary=0, exemptAllow=0, stdDed=0, salaryIncome=0;
+  let houseRaw=0, loanInt=0, houseIncome=0, houseLossCapped=0;
+  let businessIncome=0;
+  let stcg111a=0, stcgOther=0, ltcg112a=0, ltcgOther=0;
+  let stcg111aPreJuly=0, ltcg112aPreJuly=0, ltcgOtherPreJuly=0;
+  let ltcg112aPreJulyExemptAmt=0;
+  let otherIncome=0, winnings=0;
+
+  if (isInd) {
+    grossSalary  = v('grossSalary');
+    exemptAllow  = isNew ? 0 : v('exemptAllow');
+    stdDed       = v('stdDeduction');
+    salaryIncome = Math.max(0, grossSalary - exemptAllow - stdDed);
+    houseRaw     = v('houseIncome');
+    loanInt      = v('homeLoanInterest');
+    houseIncome  = houseRaw - loanInt;
+    houseLossCapped = Math.max(Math.min(0, houseIncome), -200000);
+    businessIncome= v('businessIncome');
+    stcg111a     = v('stcg111a');
+    stcgOther    = v('stcgOther');
+    ltcg112a     = v('ltcg112a');
+    ltcgOther    = v('ltcgOther');
+    const isTrans= c.hasTransitional || false;
+    if (isTrans) {
+      stcg111aPreJuly = v('stcg111aPreJuly');
+      ltcg112aPreJuly = v('ltcg112aPreJuly');
+      ltcgOtherPreJuly= v('ltcgOtherPreJuly');
+      ltcg112aPreJulyExemptAmt = Math.min(ltcg112aPreJuly, c.ltcg112aExemptOld||100000);
+    }
+    otherIncome  = v('otherIncome');
+    winnings     = v('winningsIncome');
+
+  } else if (isCo) {
+    businessIncome= v('co_businessIncome');
+    stcg111a     = v('co_stcg111a');
+    stcgOther    = v('co_stcgOther');
+    ltcg112a     = v('co_ltcg112a');
+    ltcgOther    = v('co_ltcgOther');
+    otherIncome  = v('co_otherIncome');
+    // Sync book profit to MAT field
+    const bp = v('co_bookProfit');
+    const matEl = document.getElementById('matBookProfit');
+    if (matEl && bp) matEl.value = bp;
+
+  } else if (isFirm) {
+    businessIncome= v('firm_businessIncome');
+    stcg111a     = v('firm_stcg111a');
+    stcgOther    = v('firm_stcgOther');
+    ltcg112a     = v('firm_ltcg112a');
+    ltcgOther    = v('firm_ltcgOther');
+    otherIncome  = v('firm_otherIncome');
+    const ati = v('firm_amtAti');
+    const amtEl = document.getElementById('amtAti');
+    if (amtEl && ati) amtEl.value = ati;
+
+  } else if (isCoop) {
+    businessIncome= v('coop_businessIncome');
+    otherIncome  = v('coop_otherIncome');
+
+  } else if (isLocal) {
+    businessIncome= v('local_income');
+  }
+
+  const isTrans = c.hasTransitional || false;
+
+  const normalIncome = salaryIncome + Math.max(0, houseIncome) + businessIncome + stcgOther + otherIncome;
+  const normalAfterLoss = Math.max(0, normalIncome + houseLossCapped);
+
+  // Deductions (only individuals, not companies/firms/coop/local)
+  let totalDeductions = 0;
+  if (isInd) {
+    const ded80ccd2 = v('ded80ccd2');
+    if (isNew) {
+      totalDeductions = ded80ccd2;
+    } else {
+      totalDeductions = Math.min(v('ded80c'), 150000) + Math.min(v('ded80ccd1b'), 50000) +
+        ded80ccd2 + v('ded80d') + v('ded80e') + v('ded80g') + v('ded80tta') + v('dedOther');
+    }
+  }
+
+  const normalTaxable = Math.max(0, normalAfterLoss - totalDeductions);
+
+  let normalTax, surchargeNormal, surchargeSpecial, totalSurcharge, slabResult;
+  let rebate87a = 0;
+
+  if (isCo || isFirm || isLocal) {
+    const flatRes = computeForCompanyFirm(ac, normalTaxable);
+    normalTax = flatRes.baseTax;
+    surchargeNormal = flatRes.surcharge;
+    surchargeSpecial = 0;
+    totalSurcharge = flatRes.surcharge;
+    slabResult = { tax: flatRes.baseTax, breakup: [{ from:0, to:normalTaxable, rate:ac.flatRate, amount:normalTaxable, tax:flatRes.baseTax }] };
+
+    // Special rate taxes for company/firm
+    const taxSTCG111A = stcg111a * c.stcg111aRate;
+    const taxLTCG112A = Math.max(0, ltcg112a - c.ltcg112aExempt) * c.ltcg112aRate;
+    const taxLTCGOther= ltcgOther * c.ltcgOtherRate;
+    const totalSpecialTax = taxSTCG111A + taxLTCG112A + taxLTCGOther;
+    const ltcg112aExemptAmt = Math.min(ltcg112a, c.ltcg112aExempt);
+    const totalIncome = normalTaxable + stcg111a + ltcg112a + ltcgOther;
+    const flatRes2 = computeForCompanyFirm(ac, normalTaxable);
+    const cess = flatRes2.cess;
+    const totalTax = flatRes2.totalTax + totalSpecialTax;
+    const tdsPaid = v('tds'); const tcsPaid = v('tcs'); const advTax = v('advanceTax');
+    const totalPrepaid = tdsPaid + tcsPaid + advTax;
+    const netPayable = totalTax - totalPrepaid;
+
+    return {
+      yearLabel:c.label, ayLabel:c.ayLabel, isFuture:c.isFuture, isTrans:false,
+      name, isNew, isResident, c, ac, assesseeType:t,
+      grossSalary:0, exemptAllow:0, stdDed:0, salaryIncome:0,
+      houseRaw:0, loanInt:0, houseIncome:0, houseLossCapped:0,
+      businessIncome, stcg111a, stcgOther, ltcg112a, ltcg112aExemptAmt, ltcgOther,
+      stcg111aPreJuly:0, ltcg112aPreJuly:0, ltcg112aPreJulyExemptAmt:0, ltcgOtherPreJuly:0,
+      otherIncome, winnings:0,
+      normalIncome:normalAfterLoss, totalDeductions:0, normalTaxable,
+      slabResult:{ tax:flatRes2.baseTax, breakup:[{ from:0, to:normalTaxable, rate:ac.flatRate, amount:normalTaxable, tax:flatRes2.baseTax }] },
+      normalTax:flatRes2.baseTax, rebate87a:0, normalTaxAfterRebate:flatRes2.baseTax,
+      taxSTCG111A, taxLTCG112A, taxLTCGOther, taxWinnings:0,
+      taxSTCG111APreJuly:0, taxLTCG112APreJuly:0, taxLTCGOtherPreJuly:0,
+      totalSpecialTax, totalIncome, surchargeNormal:flatRes2.surcharge, surchargeSpecial:0, totalSurcharge:flatRes2.surcharge,
+      cess, totalTax, tdsPaid, tcsPaid, advTax, totalPrepaid, netPayable,
+      isFlatRate:true, flatRate:ac.flatRate,
+    };
+  }
+
+  if (isCoop) {
+    // Co-operative society slabs
+    slabResult = calcSlabTax(normalTaxable, COOP_SLABS);
+    normalTax  = slabResult.tax;
+    const surcharge = normalTaxable > 1e7 ? normalTax * 0.12 : 0;
+    const cess = (normalTax + surcharge) * 0.04;
+    const totalTax = normalTax + surcharge + cess;
+    const tdsPaid = v('tds'); const tcsPaid = v('tcs'); const advTax = v('advanceTax');
+    const totalPrepaid = tdsPaid + tcsPaid + advTax;
+    const netPayable = totalTax - totalPrepaid;
+    return {
+      yearLabel:c.label, ayLabel:c.ayLabel, isFuture:c.isFuture, isTrans:false,
+      name, isNew:false, isResident, c, ac, assesseeType:t,
+      grossSalary:0, exemptAllow:0, stdDed:0, salaryIncome:0,
+      houseRaw:0, loanInt:0, houseIncome:0, houseLossCapped:0,
+      businessIncome, stcg111a:0, stcgOther:0, ltcg112a:0, ltcg112aExemptAmt:0, ltcgOther:0,
+      stcg111aPreJuly:0, ltcg112aPreJuly:0, ltcg112aPreJulyExemptAmt:0, ltcgOtherPreJuly:0,
+      otherIncome, winnings:0,
+      normalIncome:normalAfterLoss, totalDeductions:0, normalTaxable,
+      slabResult, normalTax, rebate87a:0, normalTaxAfterRebate:normalTax,
+      taxSTCG111A:0, taxLTCG112A:0, taxLTCGOther:0, taxWinnings:0,
+      taxSTCG111APreJuly:0, taxLTCG112APreJuly:0, taxLTCGOtherPreJuly:0,
+      totalSpecialTax:0, totalIncome:normalTaxable,
+      surchargeNormal:surcharge, surchargeSpecial:0, totalSurcharge:surcharge,
+      cess, totalTax, tdsPaid, tcsPaid, advTax, totalPrepaid, netPayable,
+    };
+  }
+
+  // Individual / HUF / AOP / Trust / Artificial Person — slab-based
+  const slabs = isNew ? c.newSlabs : getOldSlabs();
+  slabResult = calcSlabTax(normalTaxable, slabs);
+  normalTax  = slabResult.tax;
+
+  if (isResident) {
+    const rebateCfg = isNew ? c.rebateNew : c.rebateOld;
+    if (normalTaxable <= rebateCfg.limit) {
+      rebate87a = Math.min(normalTax, rebateCfg.max);
+    }
+  }
+  normalTax = Math.max(0, normalTax - rebate87a);
+
+  const taxSTCG111A = stcg111a * c.stcg111aRate;
+  const taxLTCG112A = Math.max(0, ltcg112a - c.ltcg112aExempt) * c.ltcg112aRate;
+  const taxLTCGOther= ltcgOther * c.ltcgOtherRate;
+  const taxWinnings = winnings * 0.30;
+
+  let taxSTCG111APreJuly=0, taxLTCG112APreJuly=0, taxLTCGOtherPreJuly=0;
+  if (isTrans) {
+    taxSTCG111APreJuly = stcg111aPreJuly * (c.stcg111aRateOld||0.15);
+    taxLTCG112APreJuly = Math.max(0, ltcg112aPreJuly - ltcg112aPreJulyExemptAmt) * (c.ltcg112aRateOld||0.10);
+    taxLTCGOtherPreJuly= ltcgOtherPreJuly * (c.ltcgOtherRateOld||0.20);
+  }
+
+  const totalSpecialTax = taxSTCG111A + taxLTCG112A + taxLTCGOther + taxWinnings +
+                          taxSTCG111APreJuly + taxLTCG112APreJuly + taxLTCGOtherPreJuly;
+
+  const totalIncome = normalTaxable + stcg111a + stcg111aPreJuly + ltcg112a + ltcg112aPreJuly +
+                      ltcgOther + ltcgOtherPreJuly + winnings;
+
+  surchargeNormal  = calcSurcharge(normalTax, totalIncome, isNew);
+  surchargeSpecial = calcSurchargeCapped(totalSpecialTax, totalIncome);
+  totalSurcharge   = surchargeNormal + surchargeSpecial;
+
+  const totalBeforeCess = normalTax + totalSpecialTax + totalSurcharge;
+  const cess     = totalBeforeCess * 0.04;
+  const totalTax = totalBeforeCess + cess;
+  const tdsPaid  = v('tds'); const tcsPaid = v('tcs'); const advTax = v('advanceTax');
+  const totalPrepaid = tdsPaid + tcsPaid + advTax;
+  const netPayable   = totalTax - totalPrepaid;
+  const ltcg112aExemptAmt = Math.min(ltcg112a, c.ltcg112aExempt);
+
+  return {
+    yearLabel:c.label, ayLabel:c.ayLabel, isFuture:c.isFuture, isTrans,
+    name, isNew, isResident, c, ac, assesseeType:t,
+    grossSalary, exemptAllow, stdDed, salaryIncome,
+    houseRaw, loanInt, houseIncome, houseLossCapped,
+    businessIncome,
+    stcg111a, stcgOther, ltcg112a, ltcg112aExemptAmt, ltcgOther,
+    stcg111aPreJuly, ltcg112aPreJuly, ltcg112aPreJulyExemptAmt, ltcgOtherPreJuly,
+    otherIncome, winnings,
+    normalIncome:normalAfterLoss, totalDeductions, normalTaxable,
+    slabResult,
+    normalTax: normalTax + rebate87a, rebate87a,
+    normalTaxAfterRebate: normalTax,
+    taxSTCG111A, taxLTCG112A, taxLTCGOther, taxWinnings,
+    taxSTCG111APreJuly, taxLTCG112APreJuly, taxLTCGOtherPreJuly,
+    totalSpecialTax, totalIncome,
+    surchargeNormal, surchargeSpecial, totalSurcharge,
+    cess, totalTax, tdsPaid, tcsPaid, advTax, totalPrepaid, netPayable,
+  };
+}
+
+/* ── Render result rows ────────────────────────────────────────────── */
+function row(lbl, val, cls) {
+  return '<div class="result-row '+(cls||'')+'"><span class="lbl">'+lbl+'</span><span class="val">'+val+'</span></div>';
+}
+
+function renderResult(r) {
+  const c = r.c;
+  const ac = r.ac;
+  let h = '';
+
+  // Assessee badge
+  h += `<div class="assessee-badge">👤 ${ac.label || ''}</div>`;
+
+  h += row('Gross Salary', fmt(r.grossSalary));
+  if (!r.isNew && !r.isFlatRate) h += row('Less: Exempt Allowances', fmt(-r.exemptAllow), 'sub');
+  if (!r.isFlatRate) h += row('Less: Standard Deduction (₹'+c.stdDeduction.toLocaleString('en-IN')+')', fmt(-r.stdDed), 'sub');
+  h += row('Net Salary Income (Head 1)', fmt(r.salaryIncome));
+  h += '<div style="height:6px"></div>';
+  h += row('House Property Income (Head 2)', fmt(r.houseIncome));
+  if (r.houseLossCapped < 0) h += row('Loss set-off (max ₹2L)', fmt(r.houseLossCapped), 'sub');
+  h += row('Business Income (Head 3)', fmt(r.businessIncome));
+
+  if (r.stcg111a || r.stcgOther || r.ltcg112a || r.ltcgOther || r.stcg111aPreJuly || r.ltcg112aPreJuly || r.ltcgOtherPreJuly) {
+    const totalCG = r.stcg111a + r.stcgOther + r.ltcg112a + r.ltcgOther + r.stcg111aPreJuly + r.ltcg112aPreJuly + r.ltcgOtherPreJuly;
+    h += row('Capital Gains (Head 4)', fmt(totalCG));
+  }
+  if (r.isTrans && (r.stcg111aPreJuly || r.ltcg112aPreJuly || r.ltcgOtherPreJuly)) {
+    if (r.stcg111aPreJuly) h += row('STCG 111A pre-July @ '+(c.stcg111aRateOld*100)+'%', fmt(r.stcg111aPreJuly), 'sub');
+    if (r.ltcg112aPreJuly) h += row('LTCG 112A pre-July (exempt ₹'+(c.ltcg112aExemptOld/100000)+'L) @ '+(c.ltcg112aRateOld*100)+'%', fmt(r.ltcg112aPreJuly), 'sub');
+    if (r.ltcgOtherPreJuly) h += row('LTCG Other pre-July @ '+c.ltcgOtherLabelOld, fmt(r.ltcgOtherPreJuly), 'sub');
+  }
+  if (r.stcg111a) h += row((r.isTrans?'STCG 111A post-July':'STCG u/s 111A')+' @ '+(c.stcg111aRate*100)+'%', fmt(r.stcg111a), 'sub');
+  if (r.stcgOther) h += row('STCG — Other (slab rate)', fmt(r.stcgOther), 'sub');
+  if (r.ltcg112a) h += row((r.isTrans?'LTCG 112A post-July':'LTCG u/s 112A')+' (exempt ₹'+(c.ltcg112aExempt/100000)+'L)', fmt(r.ltcg112a), 'sub');
+  if (r.ltcgOther) h += row((r.isTrans?'LTCG Other post-July':'LTCG — Other')+' @ '+c.ltcgOtherLabel, fmt(r.ltcgOther), 'sub');
+
+  h += row('Other Sources (Head 5)', fmt(r.otherIncome + r.winnings));
+  if (r.winnings) h += row('Winnings @ 30%', fmt(r.winnings), 'sub');
+
+  h += '<div style="height:4px;border-top:2px solid var(--border);margin:10px 0"></div>';
+  const gtiTotal = r.normalIncome + r.stcg111a + r.ltcg112a + r.ltcgOther + r.winnings + r.stcg111aPreJuly + r.ltcg112aPreJuly + r.ltcgOtherPreJuly;
+  h += row('Gross Total Income', fmt(gtiTotal), 'total');
+  if (r.totalDeductions > 0) h += row('Less: Deductions Ch VI-A', fmt(-r.totalDeductions));
+  h += row('Total Taxable Income (Normal)', fmt(r.normalTaxable), 'total');
+
+  h += '<div style="height:4px;border-top:2px solid var(--border);margin:10px 0"></div>';
+  if (r.isFlatRate) {
+    h += row('Tax @ '+(r.flatRate*100)+'% (flat)', fmt(r.normalTax));
+  } else {
+    h += row('Tax on Normal Income (slab)', fmt(r.normalTax));
+    if (r.rebate87a > 0) h += row('Less: Rebate u/s 87A', fmt(-r.rebate87a), 'sub');
+    h += row('Tax after Rebate', fmt(r.normalTaxAfterRebate));
+  }
+
+  if (r.totalSpecialTax > 0) {
+    h += '<div style="height:6px"></div>';
+    if (r.taxSTCG111APreJuly) h += row('Tax STCG 111A pre-July @ '+(c.stcg111aRateOld*100)+'%', fmt(r.taxSTCG111APreJuly), 'sub');
+    if (r.taxLTCG112APreJuly) h += row('Tax LTCG 112A pre-July @ '+(c.ltcg112aRateOld*100)+'%', fmt(r.taxLTCG112APreJuly), 'sub');
+    if (r.taxLTCGOtherPreJuly) h += row('Tax LTCG Other pre-July @ '+(c.ltcgOtherRateOld*100)+'%', fmt(r.taxLTCGOtherPreJuly), 'sub');
+    if (r.taxSTCG111A) h += row('Tax '+(r.isTrans?'STCG 111A post-July':'STCG 111A')+' @ '+(c.stcg111aRate*100)+'%', fmt(r.taxSTCG111A), 'sub');
+    if (r.taxLTCG112A) h += row('Tax '+(r.isTrans?'LTCG 112A post-July':'LTCG 112A')+' @ '+(c.ltcg112aRate*100)+'%', fmt(r.taxLTCG112A), 'sub');
+    if (r.taxLTCGOther) h += row('Tax '+(r.isTrans?'LTCG Other post-July':'LTCG Other')+' @ '+c.ltcgOtherLabel, fmt(r.taxLTCGOther), 'sub');
+    if (r.taxWinnings) h += row('Tax on Winnings @ 30%', fmt(r.taxWinnings), 'sub');
+    h += row('Total Special Rate Tax', fmt(r.totalSpecialTax));
+  }
+
+  if (r.totalSurcharge > 0) h += row('Surcharge', fmt(r.totalSurcharge));
+  h += row('Health & Education Cess @ 4%', fmt(r.cess));
+  h += row('Total Tax Liability', fmt(r.totalTax), 'total');
+
+  h += '<div style="height:4px;border-top:2px solid var(--border);margin:10px 0"></div>';
+  if (r.tdsPaid) h += row('Less: TDS', fmt(-r.tdsPaid), 'sub');
+  if (r.tcsPaid) h += row('Less: TCS', fmt(-r.tcsPaid), 'sub');
+  if (r.advTax) h += row('Less: Advance Tax', fmt(-r.advTax), 'sub');
+
+  const cls = r.netPayable > 0 ? 'payable' : 'refund';
+  const lbl = r.netPayable > 0 ? 'Net Tax Payable' : 'Refund Due';
+  h += row(lbl, fmt(Math.abs(r.netPayable)), 'total ' + cls);
+  return h;
+}
+
+function renderSlabs(result) {
+  const slabs = result.slabResult.breakup;
+  let h = '<table class="slab-table"><thead><tr><th>Slab</th><th style="text-align:right">Income</th><th style="text-align:right">Rate</th><th style="text-align:right">Tax</th></tr></thead><tbody>';
+  for (const s of slabs) {
+    h += '<tr><td>₹'+Math.round(s.from).toLocaleString('en-IN')+' – ₹'+(s.to===Infinity?'∞':Math.round(s.to).toLocaleString('en-IN'))+'</td>';
+    h += '<td class="amt">'+fmt(s.amount)+'</td><td class="amt">'+(s.rate*100).toFixed(0)+'%</td><td class="amt">'+fmt(s.tax)+'</td></tr>';
+  }
+  h += '<tr style="font-weight:800;border-top:2px solid var(--border)"><td>Total</td><td></td><td></td><td class="amt">'+fmt(result.slabResult.tax)+'</td></tr>';
+  h += '</tbody></table>';
+  return h;
+}
+
+/* ── MAT/AMT in results panel ─────────────────────────────────────── */
+function renderMatAmtResult(result) {
+  const t = document.getElementById('assesseeType').value;
+  const ac = ASSESSEE_CFG[t];
+  const matCard = document.getElementById('matAmtResultCard');
+
+  if (ac.canMat) {
+    const bookProfit = parseFloat(document.getElementById('matBookProfit').value) || 0;
+    if (!bookProfit) { matCard.style.display = 'none'; return; }
+    const matRate = parseFloat(document.getElementById('matRate').value) || 0.15;
+    const matBase = bookProfit * matRate;
+    let surcharge = 0;
+    if (ac.surchargeRateLow && bookProfit > (ac.surchargeThreshold||1e7)) surcharge = matBase * (ac.surchargeRateHigh||0);
+    const matCess = (matBase + surcharge) * 0.04;
+    const matTotal = matBase + surcharge + matCess;
+    const normalTax = result.totalTax;
+    const isMatApplicable = matTotal > normalTax;
+
+    document.getElementById('matAmtResTitle').textContent = 'MAT Summary u/s 115JB';
+    let h = '';
+    h += `<div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:120px;padding:12px;background:#EFF6FF;border-radius:10px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Normal Tax</div>
+        <div style="font-size:16px;font-weight:800;color:var(--brand)">${fmt(normalTax)}</div>
+      </div>
+      <div style="flex:1;min-width:120px;padding:12px;background:#FEF3C7;border-radius:10px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">MAT</div>
+        <div style="font-size:16px;font-weight:800;color:#B45309">${fmt(matTotal)}</div>
+      </div>
+      <div style="flex:1;min-width:120px;padding:12px;background:${isMatApplicable?'#FEF3C7':'#F0FDF4'};border-radius:10px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Tax Payable</div>
+        <div style="font-size:16px;font-weight:800;color:${isMatApplicable?'#B45309':'#065F46'}">${fmt(Math.max(normalTax, matTotal))}</div>
+      </div>
+    </div>`;
+    if (isMatApplicable) {
+      h += `<div style="padding:10px 14px;background:#FEF3C7;border:1px solid #FDE68A;border-radius:8px;font-size:12px;color:#92400E;font-weight:600">
+        ⚠️ MAT applies — MAT (${fmt(matTotal)}) &gt; Normal Tax (${fmt(normalTax)}). MAT Credit u/s 115JAA = ${fmt(matTotal - normalTax)} (carry fwd up to 15 years).
+      </div>`;
+    } else {
+      h += `<div style="padding:10px 14px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:12px;color:#065F46;font-weight:600">
+        ✅ Normal Tax (${fmt(normalTax)}) &gt; MAT (${fmt(matTotal)}). Normal tax provisions apply.
+      </div>`;
+    }
+    document.getElementById('matAmtResBody').innerHTML = h;
+    matCard.style.display = 'block';
+  } else {
+    matCard.style.display = 'none';
+  }
+}
+
+/* ── CALCULATE ────────────────────────────────────────────────────── */
+function calculateTax() {
+  const c = cfg();
+  const panel = document.getElementById('resultPanel');
+  const preInfo = document.getElementById('preCalcInfo');
+  const ac = getAssesseeCfg();
+  const isCo  = ac.group === 'company';
+  const isFirm = ac.group === 'firm';
+
+  if (currentRegime === 'both' && !isCo && !isFirm) {
+    const rNew = computeForRegime(true);
+    const rOld = computeForRegime(false);
+
+    document.getElementById('singleResult').style.display = 'none';
+    document.getElementById('compareResult').style.display = 'block';
+    document.getElementById('compareYearLabel').textContent = c.label + (c.isFuture ? ' (Estimated)' : '');
+
+    const diff = Math.abs(rNew.totalTax - rOld.totalTax);
+    const winner = rNew.totalTax <= rOld.totalTax ? 'New Regime' : 'Old Regime';
+    document.getElementById('regimeWinner').innerHTML = '<strong>' + winner + '</strong> saves you more tax';
+    document.getElementById('savingsAmt').textContent = 'Save ' + fmt(diff);
+
+    let ct = '';
+    ct += cmpRow('Taxable Income', rNew.normalTaxable, rOld.normalTaxable, true);
+    ct += cmpRow('Tax on Normal Income', rNew.normalTaxAfterRebate, rOld.normalTaxAfterRebate, true);
+    ct += cmpRow('Tax on Special Income', rNew.totalSpecialTax, rOld.totalSpecialTax, true);
+    ct += cmpRow('Surcharge', rNew.totalSurcharge, rOld.totalSurcharge, true);
+    ct += cmpRow('Cess', rNew.cess, rOld.cess, true);
+    ct += cmpRow('Total Tax', rNew.totalTax, rOld.totalTax, true);
+    ct += cmpRow('Net Payable/Refund', rNew.netPayable, rOld.netPayable, true);
+    document.getElementById('compareBody').innerHTML = ct;
+
+    document.getElementById('newRegimeDetail').innerHTML = renderResult(rNew);
+    document.getElementById('oldRegimeDetail').innerHTML = renderResult(rOld);
+
+    document.getElementById('slabRegimeLabel').textContent = c.label;
+    document.getElementById('slabBody').innerHTML =
+      '<h3 style="font-size:13px;font-weight:700;margin-bottom:8px">🆕 New Regime Slabs</h3>' +
+      renderSlabs(rNew) +
+      '<div style="height:16px"></div>' +
+      '<h3 style="font-size:13px;font-weight:700;margin-bottom:8px">📜 Old Regime Slabs</h3>' +
+      renderSlabs(rOld);
+
+    // Regime bar chart
+    setTimeout(() => renderRegimeBarChart(rNew, rOld), 400);
+
+    // Advance tax for 2026-27
+    renderAdvanceTaxSchedule(rNew.totalTax, rNew.tdsPaid, rNew.tcsPaid);
+    renderMatAmtResult(rNew);
+  } else {
+    const isNew = currentRegime === 'new' || isCo || isFirm;
+    const result = computeForRegime(isNew);
+
+    document.getElementById('singleResult').style.display = 'block';
+    document.getElementById('compareResult').style.display = 'none';
+
+    let label = '';
+    if (isCo) label = '🏢 Company';
+    else if (isFirm) label = '🤝 Firm / LLP';
+    else label = isNew ? '🆕 New Regime' : '📜 Old Regime';
+
+    document.getElementById('resultTitle').textContent = 'Tax Computation — ' + label;
+    document.getElementById('resultSubtitle').textContent =
+      (result.name ? result.name + ' · ' : '') + c.label + (c.isFuture ? ' (Estimated)' : '');
+
+    document.getElementById('resultBody').innerHTML = renderResult(result);
+    document.getElementById('slabRegimeLabel').textContent = (isCo ? 'Company' : isFirm ? 'Firm/LLP' : (isNew ? 'New Regime' : 'Old Regime')) + ' · ' + c.label;
+    document.getElementById('slabBody').innerHTML = renderSlabs(result);
+
+    // Advance tax for 2026-27
+    renderAdvanceTaxSchedule(result.totalTax, result.tdsPaid, result.tcsPaid);
+    renderMatAmtResult(result);
+  }
+
+  document.getElementById('futureDisclaimer').style.display = c.isFuture ? 'block' : 'none';
+
+  panel.classList.add('show');
+  preInfo.style.display = 'none';
+  document.getElementById('slabCard').style.display = 'block';
+  document.getElementById('result-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  toast('Tax calculated for ' + c.label + '!');
+}
+
+function cmpRow(label, valNew, valOld, lowerBetter) {
+  const nw = fmt(valNew), ol = fmt(valOld);
+  let nCls = '', oCls = '';
+  if (lowerBetter) {
+    if (valNew < valOld) nCls = 'winner'; else if (valOld < valNew) oCls = 'winner';
+  }
+  return '<tr><td style="text-align:left;font-weight:500">'+label+'</td><td class="'+nCls+'">'+nw+'</td><td class="'+oCls+'">'+ol+'</td></tr>';
+}
+
+function resetForm() {
+  document.querySelectorAll('input[type=number]').forEach(i => {
+    if (i.id === 'stdDeduction') i.value = cfg().stdDeduction;
+    else i.value = '';
+  });
+  document.getElementById('assesseeName').value = '';
+  // Reset assessee buttons
+  document.querySelectorAll('.at-btn').forEach(b => b.classList.remove('active'));
+  const firstBtn = document.querySelector('.at-btn[data-val="individual_below60"]');
+  if (firstBtn) firstBtn.classList.add('active');
+  document.getElementById('assesseeType').value = 'individual_below60';
+  document.getElementById('resultPanel').classList.remove('show');
+  document.getElementById('preCalcInfo').style.display = 'block';
+  document.getElementById('singleResult').style.display = 'none';
+  document.getElementById('compareResult').style.display = 'none';
+  document.getElementById('advanceTaxCard').style.display = 'none';
+  document.getElementById('matAmtResultCard').style.display = 'none';
+  onAssesseeTypeChange();
+  setRegime('new');
+  toast('Form reset');
+}
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+// Initialize
+setRegime('new');
+updateRefSlabs();
+onAssesseeTypeChange();
+
+/* ═══════════════════════════════════════════
+   ANIMATION ENGINE
+   ═══════════════════════════════════════════ */
+
+/* ── 1. Scroll reveal ── */
+function initReveal() {
+  const obs = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); obs.unobserve(e.target); } });
+  }, { threshold: 0.08 });
+  document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
+}
+initReveal();
+
+/* ── 2. Nav scroll shadow ── */
+window.addEventListener('scroll', () => {
+  document.querySelector('nav').classList.toggle('scrolled', window.scrollY > 10);
+});
+
+/* ── 3. Progress bar ── */
+function showProgress() {
+  const bar = document.getElementById('calcProgress');
+  bar.style.width = '0';
+  bar.style.transition = 'none';
+  requestAnimationFrame(() => {
+    bar.style.transition = 'width .35s ease';
+    bar.style.width = '70%';
+    setTimeout(() => { bar.style.width = '95%'; }, 350);
+  });
+}
+function finishProgress() {
+  const bar = document.getElementById('calcProgress');
+  bar.style.width = '100%';
+  setTimeout(() => { bar.style.width = '0'; bar.style.transition = 'none'; }, 400);
+}
+
+/* ── 4. Button ripple ── */
+function addRipple(btn, e) {
+  const rect = btn.getBoundingClientRect();
+  const size = Math.max(rect.width, rect.height) * 2;
+  const r = document.createElement('span');
+  r.className = 'ripple';
+  r.style.cssText = `width:${size}px;height:${size}px;left:${e.clientX - rect.left - size/2}px;top:${e.clientY - rect.top - size/2}px`;
+  btn.appendChild(r);
+  r.addEventListener('animationend', () => r.remove());
+}
+
+/* ── 5. Number counter ── */
+function animateCounter(el, target, prefix, suffix, duration) {
+  const start = performance.now();
+  const startVal = 0;
+  function update(now) {
+    const progress = Math.min((now - start) / duration, 1);
+    const ease = 1 - Math.pow(1 - progress, 3);
+    const current = Math.round(startVal + (target - startVal) * ease);
+    el.textContent = prefix + current.toLocaleString('en-IN') + suffix;
+    if (progress < 1) requestAnimationFrame(update);
+  }
+  requestAnimationFrame(update);
+}
+
+function animateAllCounters() {
+  document.querySelectorAll('.val').forEach(el => {
+    const text = el.textContent.trim();
+    const isNeg = text.startsWith('-₹');
+    const clean = text.replace(/[₹,\-]/g, '');
+    const num = parseFloat(clean);
+    if (!isNaN(num) && num > 0) {
+      animateCounter(el, num, isNeg ? '-₹' : '₹', '', 900);
+    }
+  });
+}
+
+/* ── 6. Donut chart ── */
+const CIRC = 2 * Math.PI * 54; // 339.3
+const DONUT_COLORS = ['#2563EB', '#F59E0B', '#10B981', '#EF4444'];
+const DONUT_LABELS = ['Base Tax', 'Surcharge', 'Cess', 'Special Rate Tax'];
+const DONUT_IDS    = ['donut-base', 'donut-surcharge', 'donut-cess', 'donut-special'];
+
+function renderDonutChart(baseTax, surcharge, cess, specialTax) {
+  const wrap = document.getElementById('taxChartWrap');
+  const total = baseTax + surcharge + cess + specialTax;
+  if (total <= 0) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+
+  const values = [baseTax, surcharge, cess, specialTax];
+  document.getElementById('donut-center-val').textContent = '₹' + Math.round(total).toLocaleString('en-IN');
+
+  // Build SVG segments — need 4 circles layered with correct dashoffset
+  // Remove old special segment if exists
+  const oldSpecial = document.getElementById('donut-special');
+  if (oldSpecial) oldSpecial.remove();
+
+  let offsetDeg = 0; // starts at top (adjusted by -85° in CSS)
+  const ids = ['donut-base', 'donut-surcharge', 'donut-cess'];
+  const colors = ['#2563EB', '#F59E0B', '#10B981'];
+  const mainVals = [baseTax, surcharge, cess];
+
+  // Also add special if needed
+  if (specialTax > 0) {
+    const svg = document.querySelector('.donut-svg');
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('id', 'donut-special');
+    circle.setAttribute('class', 'donut-segment');
+    circle.setAttribute('cx', '70'); circle.setAttribute('cy', '70'); circle.setAttribute('r', '54');
+    circle.setAttribute('fill', 'none'); circle.setAttribute('stroke', '#EF4444');
+    circle.setAttribute('stroke-width', '22');
+    circle.setAttribute('stroke-dasharray', '0 339.3');
+    circle.setAttribute('stroke-dashoffset', '84.8');
+    circle.setAttribute('stroke-linecap', 'round');
+    svg.appendChild(circle);
+    ids.push('donut-special'); colors.push('#EF4444'); mainVals.push(specialTax);
+  }
+
+  let cumOffset = CIRC * 0.25; // start at top
+  ids.forEach((id, i) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const pct = mainVals[i] / total;
+    const dash = pct * CIRC;
+    const gap  = CIRC - dash;
+    el.setAttribute('stroke', colors[i]);
+    // Animate after paint
+    setTimeout(() => {
+      el.style.strokeDasharray = `${dash} ${gap}`;
+      el.style.strokeDashoffset = cumOffset;
+    }, 80 + i * 60);
+    cumOffset -= dash;
+  });
+
+  // Legend
+  const legend = document.getElementById('donutLegend');
+  const allLabels = ['Base Tax', 'Surcharge', 'Cess', 'Special Rate'];
+  legend.innerHTML = ids.map((id, i) => {
+    if (mainVals[i] <= 0) return '';
+    const pct = ((mainVals[i] / total) * 100).toFixed(1);
+    return `<div class="donut-legend-item">
+      <span class="donut-dot" style="background:${colors[i]}"></span>
+      <span class="donut-label">${allLabels[i]}</span>
+      <span class="donut-val">${pct}%</span>
+    </div>`;
+  }).join('');
+}
+
+/* ── 7. Regime bar chart ── */
+function renderRegimeBarChart(rNew, rOld) {
+  const wrap = document.getElementById('regimeChartWrap');
+  const chart = document.getElementById('regimeBarChart');
+  const maxVal = Math.max(rNew.totalTax, rOld.totalTax, 1);
+
+  const rows = [
+    { label: 'Taxable Income', nv: rNew.normalTaxable, ov: rOld.normalTaxable },
+    { label: 'Base Tax', nv: rNew.normalTaxAfterRebate, ov: rOld.normalTaxAfterRebate },
+    { label: 'Total Tax', nv: rNew.totalTax, ov: rOld.totalTax },
+    { label: 'Net Payable', nv: Math.max(0,rNew.netPayable), ov: Math.max(0,rOld.netPayable) },
+  ];
+
+  const maxAll = Math.max(...rows.map(r => Math.max(r.nv, r.ov)), 1);
+
+  chart.innerHTML = rows.map(r => {
+    const nPct = (r.nv / maxAll * 100).toFixed(1);
+    const oPct = (r.ov / maxAll * 100).toFixed(1);
+    const nWinner = r.nv <= r.ov;
+    return `<div style="margin-bottom:14px">
+      <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">${r.label}</div>
+      <div class="bar-row">
+        <div class="bar-label" style="color:#2563EB;font-size:10px">🆕 New</div>
+        <div class="bar-track">
+          <div class="bar-fill" style="background:${nWinner?'#2563EB':'#93C5FD'}" data-pct="${nPct}">
+            <span>₹${Math.round(r.nv/1000)}K</span>
+          </div>
+        </div>
+        <div class="bar-val" style="color:${nWinner?'#2563EB':'var(--muted)'}">₹${Math.round(r.nv).toLocaleString('en-IN')}</div>
+      </div>
+      <div class="bar-row" style="margin-top:4px">
+        <div class="bar-label" style="color:#F59E0B;font-size:10px">📜 Old</div>
+        <div class="bar-track">
+          <div class="bar-fill" style="background:${!nWinner?'#F59E0B':'#FCD34D'}" data-pct="${oPct}">
+            <span>₹${Math.round(r.ov/1000)}K</span>
+          </div>
+        </div>
+        <div class="bar-val" style="color:${!nWinner?'#F59E0B':'var(--muted)'}">₹${Math.round(r.ov).toLocaleString('en-IN')}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Animate bars after DOM paint
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      document.querySelectorAll('.bar-fill').forEach(bar => {
+        bar.style.width = bar.dataset.pct + '%';
+      });
+    }, 100);
+  });
+}
+
+/* ── 8. Confetti burst ── */
+function fireConfetti() {
+  const colors = ['#2563EB','#10B981','#F59E0B','#EF4444','#8B5CF6','#EC4899'];
+  for (let i = 0; i < 60; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'confetti-piece';
+    piece.style.cssText = `
+      left: ${Math.random()*100}vw;
+      background: ${colors[Math.floor(Math.random()*colors.length)]};
+      width: ${4+Math.random()*6}px;
+      height: ${4+Math.random()*6}px;
+      border-radius: ${Math.random()>.5?'50%':'2px'};
+      animation-duration: ${1.5+Math.random()*2}s;
+      animation-delay: ${Math.random()*.5}s;
+      opacity: 1;
+    `;
+    document.body.appendChild(piece);
+    piece.addEventListener('animationend', () => piece.remove());
+  }
+}
+
+/* ── Override calculateTax to wire animations ── */
+const _origCalc = calculateTax;
+calculateTax = function(e) {
+  const btn = document.getElementById('calcBtn');
+
+  // Ripple
+  if (e && btn) addRipple(btn, e);
+
+  // Spinner
+  if (btn) btn.classList.add('loading');
+
+  // Progress bar
+  showProgress();
+
+  // Small delay to show spinner, then compute
+  setTimeout(() => {
+    _origCalc();
+    if (btn) btn.classList.remove('loading');
+    finishProgress();
+
+    // Counter animation
+    setTimeout(animateAllCounters, 200);
+
+    // Add reveal to result cards
+    document.querySelectorAll('#resultPanel .card, #resultPanel > div').forEach((el, i) => {
+      el.classList.add('reveal');
+      el.style.transitionDelay = (i * 0.07) + 's';
+      setTimeout(() => el.classList.add('visible'), 50 + i * 70);
+    });
+
+    // Wire up donut chart from result data
+    // (called from calculateTax internals via hook below)
+
+  }, 380);
+};
+
+/* Hook into renderResult to trigger donut */
+const _origRenderResult = renderResult;
+renderResult = function(r) {
+  const html = _origRenderResult(r);
+  // Schedule donut render
+  setTimeout(() => {
+    const baseTax = r.normalTaxAfterRebate || r.normalTax || 0;
+    const surcharge = r.totalSurcharge || 0;
+    const cess = r.cess || 0;
+    const special = r.totalSpecialTax || 0;
+    renderDonutChart(baseTax, surcharge, cess, special);
+
+    // Confetti if zero tax
+    if ((r.totalTax || 0) === 0 || (r.netPayable || 0) <= 0) {
+      fireConfetti();
+    }
+  }, 500);
+  return html;
+};
+
+/* Hook into calculateTax for regime bar chart */
+const _origCmpRow = cmpRow;
+let _lastRNew = null, _lastROld = null;
+const _origCalcTax2 = calculateTax;
+// Patch the compare path via renderResult hook on compare
+const _origCalcTaxFinal = calculateTax;
+calculateTax = (function(prev) {
+  return function(e) {
+    prev(e);
+    // Regime bar chart rendered after compute
+    setTimeout(() => {
+      if (document.getElementById('compareResult').style.display !== 'none') {
+        // bar chart data is set by calculateTax — read from compare table
+        const rows = document.querySelectorAll('#compareBody tr');
+        if (rows.length >= 3) {
+          // parse from DOM (simpler than re-running compute)
+          document.getElementById('regimeChartWrap').style.display = 'block';
+        }
+      }
+    }, 500);
+  };
+})(calculateTax);
+
+/* Store last comparison data for bar chart */
+const _origCalculateTaxInner = window.calculateTax;
+
+</script>
+</body></html>"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TDS CALCULATOR TEMPLATE
+# ══════════════════════════════════════════════════════════════════════════════
+
+TDS_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TDS / TCS Calculator (IT Act 2025) – CA Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+<style>
+""" + BASE_CSS + """
+.nav-links{display:flex;gap:20px;list-style:none}
+.nav-links a{text-decoration:none;color:var(--muted);font-size:13px;font-weight:500}
+.nav-links a:hover{color:var(--brand)}
+.hero{text-align:center;padding:32px 24px 16px;max-width:760px;margin:0 auto}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#ECFDF5;color:#065F46;
+            border:1px solid #A7F3D0;border-radius:99px;padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:12px}
+h1{font-size:clamp(20px,4vw,32px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:8px}
+h1 em{font-style:normal;color:var(--brand)}
+.hero p{font-size:13px;color:var(--muted);line-height:1.7;max-width:520px;margin:0 auto}
+.act-note{max-width:1100px;margin:0 auto;padding:0 24px 10px}
+.act-box{background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:9px 14px;
+         font-size:12px;color:#1e40af;display:flex;align-items:flex-start;gap:6px}
+/* Toggle */
+.toggle-wrap{max-width:1100px;margin:0 auto;padding:0 24px 16px;display:flex;gap:10px}
+.toggle-btn{flex:1;padding:12px;border-radius:10px;border:2px solid var(--border);
+            font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;
+            background:var(--white);color:var(--muted);transition:all .2s}
+.toggle-btn.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+.toggle-btn:hover:not(.active){border-color:var(--brand);color:var(--brand)}
+/* Layout */
+.main{max-width:1100px;margin:0 auto;padding:0 24px 48px;
+      display:grid;grid-template-columns:1.1fr 1fr;gap:20px;align-items:start}
+@media(max-width:800px){.main{grid-template-columns:1fr}}
+.card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
+      box-shadow:var(--shadow);overflow:hidden;margin-bottom:16px}
+.card:last-child{margin-bottom:0}
+.card-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.card-head .icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px}
+.card-head h2{font-size:14px;font-weight:700}
+.card-head p{font-size:12px;color:var(--muted);margin-top:1px}
+.card-body{padding:16px}
+.field{margin-bottom:13px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:4px}
+.hint{font-size:11px;color:var(--muted);margin-top:3px}
+select,input[type=number],input[type=date]{width:100%;border:1.5px solid var(--border);border-radius:8px;
+  padding:8px 11px;font-family:inherit;font-size:13px;color:var(--ink);background:var(--white);
+  transition:border-color .2s;outline:none}
+select:focus,input:focus{border-color:var(--brand)}
+.btn{width:100%;background:var(--brand);color:#fff;border:none;border-radius:8px;
+     padding:11px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;transition:background .2s}
+.btn:hover{background:var(--brand-d)}
+/* Results */
+.result-section{display:none;margin-top:14px}
+.rboxes{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.rbox{border-radius:10px;padding:14px 16px}
+.rbox-main {background:#EFF6FF;border:1.5px solid #BFDBFE}
+.rbox-int  {background:#FFFBEB;border:1.5px solid #FDE68A}
+.rbox-total{background:#1D4ED8;border:1.5px solid #1D4ED8;grid-column:1/-1}
+.rbox .val {font-size:22px;font-weight:800;margin-bottom:2px}
+.rbox .lbl {font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;opacity:.75}
+.rbox .sub {font-size:11px;margin-top:5px;opacity:.8}
+.rbox-main  .val{color:#1D4ED8}.rbox-main  .lbl{color:#1D4ED8}
+.rbox-int   .val{color:#92400E}.rbox-int   .lbl{color:#92400E}
+.rbox-total .val{color:#fff;font-size:26px}
+.rbox-total .lbl{color:rgba(255,255,255,.75)}
+.rbox-total .sub{color:rgba(255,255,255,.8);font-size:12px}
+.detail-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+.detail-table td{padding:7px 2px;border-bottom:1px solid var(--border)}
+.detail-table tr:last-child td{border:none;font-weight:700;font-size:13px}
+.detail-table td:last-child{text-align:right;font-weight:600}
+.ontime-box{background:#ECFDF5;border:1.5px solid #A7F3D0;border-radius:8px;
+            padding:12px 14px;font-size:13px;color:#065F46;font-weight:600;margin-top:14px;text-align:center}
+.note-box{background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;
+          padding:10px 12px;font-size:11px;color:#92400E;margin-top:10px;line-height:1.6}
+.info-box{background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;
+          padding:10px 12px;font-size:11px;color:#1e40af;margin-top:10px;line-height:1.6}
+/* Rate tables */
+.rate-table{width:100%;border-collapse:collapse;font-size:11px}
+.rate-table th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+               color:var(--muted);border-bottom:1.5px solid var(--border);padding:5px 6px}
+.rate-table td{padding:6px;border-bottom:1px solid var(--border);vertical-align:top;line-height:1.5}
+.rate-table tr:last-child td{border:none}
+.rate-table tr:hover td{background:#F9FAFB}
+.code{background:#EFF6FF;color:var(--brand);font-size:10px;font-weight:700;
+      padding:1px 5px;border-radius:4px;font-family:monospace;white-space:nowrap}
+.tcs-code{background:#F5F3FF;color:#5B21B6;font-size:10px;font-weight:700;
+          padding:1px 5px;border-radius:4px;font-family:monospace;white-space:nowrap}
+footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-size:12px}
+.footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:4px}
+</style></head><body>
+
+<nav>
+  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <ul class="nav-links"><li><a href="/">← All Tools</a></li></ul>
+  <div class="nav-right">
+    {% if username %}<span class="nav-user">👤 <strong>{{ username }}</strong></span>
+    {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
+    <a href="/logout" class="nav-link">Sign out</a>
+    {% else %}<a href="/login" class="nav-btn">Sign In</a>{% endif %}
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-badge">🆓 Free · No Login Required</div>
+  <h1>TDS / TCS Calculator — <em>IT Act 2025</em></h1>
+  <p>Calculate TDS or TCS liability, late deposit interest and total payable amount as per new Section 393 / Section 394 of IT Act 2025.</p>
+</section>
+
+<div class="act-note">
+  <div class="act-box">ℹ️ <span><strong>IT Act 2025 (w.e.f. 1 Apr 2026):</strong> TDS consolidated under Section 393 (non-salary) &amp; Section 392 (salary). TCS under Section 394. Numeric payment codes replace old section numbers in returns. Rates &amp; thresholds unchanged.</span></div>
+</div>
+
+<!-- TDS / TCS TOGGLE -->
+<div class="toggle-wrap">
+  <button class="toggle-btn active" id="btnTDS" onclick="switchMode('tds')">📑 TDS — Tax Deducted at Source</button>
+  <button class="toggle-btn" id="btnTCS" onclick="switchMode('tcs')">🧾 TCS — Tax Collected at Source</button>
+</div>
+
+<div class="main">
+  <!-- LEFT: INPUT -->
+  <div>
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#EFF6FF" id="formIcon">📑</div>
+        <div>
+          <h2 id="formTitle">TDS Calculator</h2>
+          <p id="formSub">IT Act 2025 · Tax Year 2026-27</p>
+        </div>
+      </div>
+      <div class="card-body">
+
+        <div class="field">
+          <label id="sectionLabel">Nature of Payment (TDS)</label>
+          <select id="mainSection" onchange="updateHint()">
+            <option value="">— Select Payment Type —</option>
+          </select>
+          <p class="hint" id="sectionHint">Select a payment type to see rate and threshold</p>
+        </div>
+
+        <div class="field">
+          <label id="amtLabel">Payment Amount (₹)</label>
+          <input type="number" id="paymentAmt" placeholder="e.g. 100000" min="0"/>
+          <p class="hint" id="amtHint">Gross payment amount before TDS deduction</p>
+        </div>
+
+        <hr style="border:none;border-top:1.5px dashed var(--border);margin:14px 0"/>
+        <p style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:12px">Late Deposit Interest (Optional)</p>
+
+        <div class="row2">
+          <div class="field">
+            <label id="d1label">Date of Deduction</label>
+            <input type="date" id="deductionDate"/>
+            <p class="hint" id="d1hint">When TDS was deducted</p>
+          </div>
+          <div class="field">
+            <label>Date of Actual Deposit</label>
+            <input type="date" id="depositDate"/>
+            <p class="hint">When you paid the challan</p>
+          </div>
+        </div>
+
+        <button class="btn" id="calcBtn" onclick="calculate()">Calculate TDS &amp; Interest →</button>
+
+        <!-- RESULTS -->
+        <div class="result-section" id="resultSection">
+          <div class="ontime-box" id="ontimeBox" style="display:none"></div>
+          <div id="lateBoxes" style="display:none">
+            <div class="rboxes">
+              <div class="rbox rbox-main">
+                <div class="lbl" id="r-main-lbl">TDS Amount</div>
+                <div class="val" id="r-main"></div>
+                <div class="sub" id="r-main-sub"></div>
+              </div>
+              <div class="rbox rbox-int">
+                <div class="lbl">Interest u/s 201(1A)</div>
+                <div class="val" id="r-int"></div>
+                <div class="sub" id="r-int-sub"></div>
+              </div>
+              <div class="rbox rbox-total">
+                <div class="lbl">Total Amount Payable</div>
+                <div class="val" id="r-total"></div>
+                <div class="sub" id="r-total-sub"></div>
+              </div>
+            </div>
+            <table class="detail-table">
+              <tr><td id="d-amt-lbl">Payment Amount</td><td id="d-payment"></td></tr>
+              <tr><td>New Section (IT Act 2025)</td><td id="d-newsec"></td></tr>
+              <tr><td>Old Section (for reference)</td><td id="d-oldsec"></td></tr>
+              <tr><td>Payment Code</td><td id="d-code"></td></tr>
+              <tr><td id="d-rate-lbl">TDS Rate</td><td id="d-rate"></td></tr>
+              <tr><td id="d-tax-lbl">TDS Amount</td><td id="d-tds"></td></tr>
+              <tr><td id="d-date1-lbl">Date of Deduction</td><td id="d-ddate"></td></tr>
+              <tr><td>Due Date for Deposit</td><td id="d-due"></td></tr>
+              <tr><td>Actual Deposit Date</td><td id="d-adate"></td></tr>
+              <tr><td>Delay (months)</td><td id="d-months"></td></tr>
+              <tr><td>Interest Rate</td><td>1.5% per month</td></tr>
+              <tr><td>Interest Amount</td><td id="d-intamt"></td></tr>
+              <tr><td id="d-total-lbl" style="color:var(--brand)">Total Payable</td><td id="d-total" style="color:var(--brand)"></td></tr>
+            </table>
+            <div class="note-box">⚠ As per IT Act 2025, a fractional month is counted as a full month for interest calculation. Interest runs from date of deduction/collection to actual date of deposit.</div>
+          </div>
+          <div id="basicBox" style="display:none">
+            <div class="rboxes">
+              <div class="rbox rbox-main" style="grid-column:1/-1">
+                <div class="lbl" id="b-main-lbl">TDS Amount</div>
+                <div class="val" id="b-main"></div>
+                <div class="sub" id="b-sub"></div>
+              </div>
+            </div>
+            <table class="detail-table">
+              <tr><td id="b-amt-lbl">Payment Amount</td><td id="b-payment"></td></tr>
+              <tr><td>New Section (IT Act 2025)</td><td id="b-newsec"></td></tr>
+              <tr><td>Old Section (for reference)</td><td id="b-oldsec"></td></tr>
+              <tr><td>Payment Code</td><td id="b-code"></td></tr>
+              <tr><td id="b-rate-lbl">TDS Rate</td><td id="b-rate"></td></tr>
+              <tr><td id="b-tax-lbl">TDS Amount</td><td id="b-tds2"></td></tr>
+              <tr><td id="b-net-lbl">Net Payment to Payee</td><td id="b-net"></td></tr>
+            </table>
+            <div class="info-box">ℹ Enter deduction and deposit dates above to also calculate late deposit interest.</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: RATE CHARTS + DUE DATES -->
+  <div>
+    <!-- TDS rate chart -->
+    <div id="tdsRateCard" class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#FFFBEB">📋</div>
+        <div><h2>TDS Quick Rate Chart</h2><p>Section 393 — IT Act 2025</p></div>
+      </div>
+      <div class="card-body" style="padding:0;overflow-x:auto">
+        <table class="rate-table">
+          <thead><tr><th>Code</th><th>Old Sec</th><th>Nature</th><th>Rate</th><th>Threshold</th></tr></thead>
+          <tbody>
+            <tr><td><span class="code">1001</span></td><td>192</td><td>Salary</td><td>Slab</td><td>Basic exemption</td></tr>
+            <tr><td><span class="code">1021</span></td><td>194A</td><td>Interest (Bank/PO)</td><td>10%</td><td>₹50,000</td></tr>
+            <tr><td><span class="code">1022</span></td><td>194A</td><td>Interest (Others)</td><td>10%</td><td>₹10,000</td></tr>
+            <tr><td><span class="code">1023</span></td><td>194C</td><td>Contractor (Ind)</td><td>1%</td><td>₹30K/₹1L pa</td></tr>
+            <tr><td><span class="code">1024</span></td><td>194C</td><td>Contractor (Others)</td><td>2%</td><td>₹30K/₹1L pa</td></tr>
+            <tr><td><span class="code">1006</span></td><td>194H</td><td>Commission/Brokerage</td><td>2%</td><td>₹20,000</td></tr>
+            <tr><td><span class="code">1008</span></td><td>194I(a)</td><td>Rent (P&amp;M)</td><td>2%</td><td>₹50K/mo</td></tr>
+            <tr><td><span class="code">1009</span></td><td>194I(b)</td><td>Rent (Land/Bldg)</td><td>10%</td><td>₹50K/mo</td></tr>
+            <tr><td><span class="code">1036</span></td><td>194IA</td><td>Immovable Property</td><td>1%</td><td>₹50L</td></tr>
+            <tr><td><span class="code">1027</span></td><td>194J(b)</td><td>Professional Fees</td><td>10%</td><td>₹50,000</td></tr>
+            <tr><td><span class="code">1026</span></td><td>194J(a)</td><td>Technical Services</td><td>2%</td><td>₹50,000</td></tr>
+            <tr><td><span class="code">1031</span></td><td>194Q</td><td>Purchase of Goods</td><td>0.1%</td><td>₹50L pa</td></tr>
+            <tr><td><span class="code">1039</span></td><td>194S</td><td>VDA/Crypto</td><td>1%</td><td>₹10,000</td></tr>
+            <tr><td><span class="code">1041</span></td><td>194T</td><td>Partner Salary</td><td>10%</td><td>₹20,000</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- TCS rate chart -->
+    <div id="tcsRateCard" class="card" style="display:none">
+      <div class="card-head">
+        <div class="icon" style="background:#F5F3FF">🧾</div>
+        <div><h2>TCS Quick Rate Chart</h2><p>Section 394 — IT Act 2025</p></div>
+      </div>
+      <div class="card-body" style="padding:0;overflow-x:auto">
+        <table class="rate-table">
+          <thead><tr><th>Code</th><th>Old Sec</th><th>Nature of Goods/Transaction</th><th>Rate</th><th>Threshold</th></tr></thead>
+          <tbody>
+            <tr><td><span class="tcs-code">2001</span></td><td>206C(1)</td><td>Alcoholic Liquor for Human Consumption</td><td>2%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2002</span></td><td>206C(1)</td><td>Tendu Leaves</td><td>2%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2003</span></td><td>206C(1)</td><td>Timber (forest lease)</td><td>2%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2004</span></td><td>206C(1)</td><td>Timber (other than forest lease)</td><td>2%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2005</span></td><td>206C(1)</td><td>Any other forest produce</td><td>2%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2006</span></td><td>206C(1)</td><td>Scrap</td><td>2%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2007</span></td><td>206C(1)</td><td>Minerals (coal/lignite/iron ore)</td><td>2%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2009</span></td><td>206C(1F)</td><td>Motor Vehicle &gt; ₹10L</td><td>1%</td><td>₹10L</td></tr>
+            <tr><td><span class="tcs-code">2010</span></td><td>206C(1G)</td><td>Foreign Remittance (LRS) — Education/Medical</td><td>2%</td><td>₹10L</td></tr>
+            <tr><td><span class="tcs-code">2011</span></td><td>206C(1G)</td><td>Foreign Remittance (LRS) — Other purposes</td><td>20%</td><td>₹10L</td></tr>
+            <tr><td><span class="tcs-code">2012</span></td><td>206C(1G)</td><td>Overseas Tour Package</td><td>2%</td><td>Nil</td></tr>
+            <tr><td><span class="tcs-code">2013</span></td><td>206C(1H)</td><td>Sale of Goods &gt; ₹50L</td><td>0.1%</td><td>₹50L pa</td></tr>
+            <tr><td><span class="tcs-code">2014</span></td><td>206C(1)</td><td>Parking lot / Toll Plaza / Mining &amp; Quarrying</td><td>2%</td><td>Nil</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Due dates -->
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#F0FDF4">📅</div>
+        <div><h2 id="dueDateTitle">TDS Deposit Due Dates</h2><p>Rule 218 — IT Rules 2026</p></div>
+      </div>
+      <div class="card-body">
+        <div id="tdsduedates" style="font-size:12px;line-height:2;color:var(--muted)">
+          <p><strong style="color:var(--ink)">April – February:</strong> 7th of the following month</p>
+          <p><strong style="color:var(--ink)">March deductions:</strong> 30th April</p>
+          <p><strong style="color:var(--ink)">Sec 194IA/194IB/194M/194S:</strong> 30 days from end of deduction month</p>
+          <p style="margin-top:8px;color:var(--red)"><strong>Late interest:</strong> 1.5% per month · Fractional month = full month</p>
+        </div>
+        <div id="tcsduedates" style="display:none;font-size:12px;line-height:2;color:var(--muted)">
+          <p><strong style="color:var(--ink)">April – February:</strong> 7th of the following month</p>
+          <p><strong style="color:var(--ink)">March collections:</strong> 30th April</p>
+          <p><strong style="color:var(--ink)">Collected by Govt office:</strong> Same day (no challan) or 7th next month (with challan)</p>
+          <p style="margin-top:8px;color:var(--red)"><strong>Late interest:</strong> 1% per month · Fractional month = full month</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <p class="footer-brand">CA Toolkit</p>
+  <p>Built for Indian CAs · Created by CA Article</p>
+  <p style="margin-top:8px;font-size:11px">© 2026 CA Toolkit · For reference only — verify with latest CBDT circulars</p>
+</footer>
+
+<script>
+// ── DATA ─────────────────────────────────────────────────────────────────────
+
+const TDS_DATA = {
+  "1001":{rate:0,    thresh:0,       label:"Salary",                       newSec:"Sec 392",                    oldSec:"Sec 192",     note:"Slab rate"},
+  "1004":{rate:10,   thresh:50000,   label:"PF Accumulated Balance",        newSec:"Sec 392(7)",                 oldSec:"Sec 192A",    note:"No PAN: 20%"},
+  "1005":{rate:2,    thresh:20000,   label:"Insurance Commission",          newSec:"Sec 393(1) Sl.1(i)",         oldSec:"Sec 194D",    note:"Ind: 2%, Others: 10%"},
+  "1006":{rate:2,    thresh:20000,   label:"Commission/Brokerage",          newSec:"Sec 393(1) Sl.1(ii)",        oldSec:"Sec 194H",    note:""},
+  "1008":{rate:2,    thresh:50000,   label:"Rent – Machinery/Plant",        newSec:"Sec 393(1) Sl.2(ii).D(a)",  oldSec:"Sec 194I(a)", note:"Monthly threshold"},
+  "1009":{rate:10,   thresh:50000,   label:"Rent – Land/Building",          newSec:"Sec 393(1) Sl.2(ii).D(b)",  oldSec:"Sec 194I(b)", note:"Monthly threshold"},
+  "1010":{rate:2,    thresh:50000,   label:"Rent by Ind/HUF",               newSec:"Sec 393(1) Sl.2(i)",         oldSec:"Sec 194IB",   note:"Per month. Reduced from 5% to 2%"},
+  "1011":{rate:10,   thresh:0,       label:"JDA Consideration",             newSec:"Sec 393(1) Sl.3(ii)",        oldSec:"Sec 194IC",   note:""},
+  "1012":{rate:10,   thresh:500000,  label:"Land Acquisition Comp.",        newSec:"Sec 393(1) Sl.3(iii)",       oldSec:"Sec 194LA",   note:"Threshold ₹5L"},
+  "1013":{rate:10,   thresh:10000,   label:"Mutual Fund Units",             newSec:"Sec 393(1) Sl.4(i)",         oldSec:"Sec 194K",    note:""},
+  "1014":{rate:10,   thresh:0,       label:"Business Trust – Interest",     newSec:"Sec 393(1) Sl.4(ii)",        oldSec:"Sec 194LBA",  note:""},
+  "1017":{rate:10,   thresh:0,       label:"Investment Fund Income",        newSec:"Sec 393(1) Sl.4(iii)",       oldSec:"Sec 194LBB",  note:""},
+  "1018":{rate:10,   thresh:0,       label:"Securitisation Trust",          newSec:"Sec 393(1) Sl.4(iv)",        oldSec:"Sec 194LBC",  note:""},
+  "1019":{rate:10,   thresh:10000,   label:"Interest on Securities",        newSec:"Sec 393(1) Sl.5(i)",         oldSec:"Sec 193",     note:""},
+  "1020":{rate:10,   thresh:100000,  label:"Interest – Senior Citizen",     newSec:"Sec 393(1) Sl.5(ii).D(a)",  oldSec:"Sec 194A",    note:"Threshold ₹1L"},
+  "1021":{rate:10,   thresh:50000,   label:"Interest – Bank/Post Office",   newSec:"Sec 393(1) Sl.5(ii).D(b)",  oldSec:"Sec 194A",    note:"Threshold ₹50K"},
+  "1022":{rate:10,   thresh:10000,   label:"Interest – Others",             newSec:"Sec 393(1) Sl.5(iii)",       oldSec:"Sec 194A",    note:"Threshold ₹10K"},
+  "1023":{rate:1,    thresh:30000,   label:"Contractor – Ind/HUF",          newSec:"Sec 393(1) Sl.6(i).D(a)",   oldSec:"Sec 194C",    note:"Single ₹30K / Annual ₹1L"},
+  "1024":{rate:2,    thresh:30000,   label:"Contractor – Others",           newSec:"Sec 393(1) Sl.6(i).D(b)",   oldSec:"Sec 194C",    note:"Single ₹30K / Annual ₹1L"},
+  "1026":{rate:2,    thresh:50000,   label:"Technical Services/Royalty",    newSec:"Sec 393(1) Sl.6(iii).D(a)", oldSec:"Sec 194J(a)", note:""},
+  "1027":{rate:10,   thresh:50000,   label:"Professional Fees",             newSec:"Sec 393(1) Sl.6(iii).D(b)", oldSec:"Sec 194J(b)", note:""},
+  "1028":{rate:10,   thresh:0,       label:"Director Remuneration",         newSec:"Sec 393(1) Sl.6(iii).D(b)", oldSec:"Sec 194J(b)", note:"No threshold"},
+  "1029":{rate:10,   thresh:10000,   label:"Dividends",                     newSec:"Sec 393(1) Sl.7",            oldSec:"Sec 194",     note:""},
+  "1030":{rate:2,    thresh:100000,  label:"Life Insurance Proceeds",       newSec:"Sec 393(1) Sl.8(i)",         oldSec:"Sec 194DA",   note:"On taxable portion"},
+  "1031":{rate:0.1,  thresh:5000000, label:"Purchase of Goods",             newSec:"Sec 393(1) Sl.8(ii)",        oldSec:"Sec 194Q",    note:"Annual > ₹50L"},
+  "1033":{rate:10,   thresh:20000,   label:"Benefit/Perquisite",            newSec:"Sec 393(1) Sl.8(iv)",        oldSec:"Sec 194R",    note:""},
+  "1035":{rate:0.1,  thresh:500000,  label:"E-Commerce Operator",           newSec:"Sec 393(1) Sl.8(vi)",        oldSec:"Sec 194O",    note:"Annual > ₹5L"},
+  "1036":{rate:1,    thresh:5000000, label:"Purchase of Immovable Property",newSec:"Sec 393(1) Sl.3(i)",         oldSec:"Sec 194IA",   note:"Threshold ₹50L"},
+  "1037":{rate:5,    thresh:5000000, label:"Contractor/Prof by Ind/HUF",    newSec:"Sec 393(1) Sl.6(iv)",        oldSec:"Sec 194M",    note:"Annual > ₹50L"},
+  "1038":{rate:2,    thresh:2000000, label:"Cash Withdrawal",               newSec:"Sec 393(1) Sl.8(vii)",       oldSec:"Sec 194N",    note:"3% if no ITR filed"},
+  "1039":{rate:1,    thresh:10000,   label:"VDA/Crypto",                    newSec:"Sec 393(1) Sl.8(viii)",      oldSec:"Sec 194S",    note:"₹50K for specified persons"},
+  "1040":{rate:30,   thresh:10000,   label:"Lottery/Puzzle Winnings",       newSec:"Sec 393(1) Sl.8(ix)",        oldSec:"Sec 194B",    note:""},
+  "1041":{rate:10,   thresh:20000,   label:"Partner Salary/Remuneration",   newSec:"Sec 393(1) Sl.6(v)",         oldSec:"Sec 194T",    note:"Threshold ₹20K pa"},
+};
+
+const TCS_DATA = {
+  "2001":{rate:2,    thresh:0,        label:"Alcoholic Liquor for Human Consumption", newSec:"Sec 394(1)(i)",   oldSec:"Sec 206C(1)(a)",  note:"Increased from 1% to 2% w.e.f. 01.04.2026"},
+  "2002":{rate:2,    thresh:0,        label:"Tendu Leaves",                           newSec:"Sec 394(1)(ii)",  oldSec:"Sec 206C(1)(b)",  note:"Reduced from 5% to 2% w.e.f. 01.04.2026"},
+  "2003":{rate:2,    thresh:0,        label:"Timber – Forest Lease",                  newSec:"Sec 394(1)(iii)", oldSec:"Sec 206C(1)(c)",  note:"Reduced from 2.5% to 2% w.e.f. 01.04.2026"},
+  "2004":{rate:2,    thresh:0,        label:"Timber – Other than Forest Lease",       newSec:"Sec 394(1)(iv)",  oldSec:"Sec 206C(1)(d)",  note:"Reduced from 2.5% to 2% w.e.f. 01.04.2026"},
+  "2005":{rate:2,    thresh:0,        label:"Any Other Forest Produce",               newSec:"Sec 394(1)(v)",   oldSec:"Sec 206C(1)(e)",  note:"Reduced from 2.5% to 2% w.e.f. 01.04.2026"},
+  "2006":{rate:2,    thresh:0,        label:"Scrap",                                  newSec:"Sec 394(1)(vi)",  oldSec:"Sec 206C(1)(f)",  note:"Increased from 1% to 2% w.e.f. 01.04.2026"},
+  "2007":{rate:2,    thresh:0,        label:"Minerals (Coal/Lignite/Iron Ore)",       newSec:"Sec 394(1)(vii)", oldSec:"Sec 206C(1)(g)",  note:"Increased from 1% to 2% w.e.f. 01.04.2026"},
+  "2009":{rate:1,    thresh:1000000,  label:"Motor Vehicle > ₹10L",                   newSec:"Sec 394(1F)",     oldSec:"Sec 206C(1F)",    note:"On sale consideration"},
+  "2010":{rate:2,    thresh:1000000,  label:"Foreign Remittance (LRS) – Education/Medical > ₹10L",newSec:"Sec 394(1G)(i)",oldSec:"Sec 206C(1G)",   note:"Reduced from 5% to 2%. Nil if loan from bank. Threshold now ₹10L"},
+  "2011":{rate:20,   thresh:1000000,  label:"Foreign Remittance (LRS) – Other > ₹10L",newSec:"Sec 394(1G)(ii)", oldSec:"Sec 206C(1G)",    note:"20% above ₹10L. Threshold changed from ₹7L to ₹10L"},
+  "2012":{rate:2,    thresh:0,        label:"Overseas Tour Package",                  newSec:"Sec 394(1G)(iii)",oldSec:"Sec 206C(1G)",    note:"Flat 2% (was 5%/20%). Threshold removed w.e.f. 01.04.2026"},
+  "2013":{rate:0.1,  thresh:5000000,  label:"Sale of Goods > ₹50L",                   newSec:"Sec 394(1H)",     oldSec:"Sec 206C(1H)",    note:"Annual turnover > ₹10Cr"},
+  "2014":{rate:2,    thresh:0,        label:"Parking Lot / Toll Plaza / Mining",       newSec:"Sec 394(1)(viii)",oldSec:"Sec 206C(1)(h)",  note:""},
+};
+
+const TDS_SPECIAL_30 = ["1036","1010","1037","1039"];
+
+let currentMode = "tds";
+
+// ── Build dropdowns ───────────────────────────────────────────────────────────
+
+function buildTDSOptions(){
+  return `<option value="">— Select Payment Type —</option>
+    <optgroup label="── Salary ──">
+      <option value="1001">Salary (Sec 392) — Slab rate</option>
+      <option value="1004">PF Accumulated Balance — 10%</option>
+    </optgroup>
+    <optgroup label="── Commission &amp; Brokerage ──">
+      <option value="1005">Insurance Commission (Old: 194D) — 2%</option>
+      <option value="1006">Commission / Brokerage (Old: 194H) — 2%</option>
+    </optgroup>
+    <optgroup label="── Rent ──">
+      <option value="1008">Rent – Machinery/Plant (Old: 194I(a)) — 2%</option>
+      <option value="1009">Rent – Land/Building (Old: 194I(b)) — 10%</option>
+      <option value="1010">Rent by Individual/HUF (Old: 194IB) — 2%</option>
+    </optgroup>
+    <optgroup label="── Property ──">
+      <option value="1011">JDA Consideration (Old: 194IC) — 10%</option>
+      <option value="1012">Compensation – Land Acquisition (Old: 194LA) — 10%</option>
+      <option value="1036">Purchase of Immovable Property (Old: 194IA) — 1%</option>
+    </optgroup>
+    <optgroup label="── Interest ──">
+      <option value="1019">Interest on Securities (Old: 193) — 10%</option>
+      <option value="1020">Interest – Senior Citizen (Old: 194A) — 10%</option>
+      <option value="1021">Interest – Bank/Post Office (Old: 194A) — 10%</option>
+      <option value="1022">Interest – Others (Old: 194A) — 10%</option>
+    </optgroup>
+    <optgroup label="── Investment Income ──">
+      <option value="1013">Mutual Fund Units (Old: 194K) — 10%</option>
+      <option value="1029">Dividends (Old: 194) — 10%</option>
+      <option value="1014">Business Trust – Interest (Old: 194LBA) — 10%</option>
+    </optgroup>
+    <optgroup label="── Contractor &amp; Professional ──">
+      <option value="1023">Contractor – Individual/HUF (Old: 194C) — 1%</option>
+      <option value="1024">Contractor – Others/Company (Old: 194C) — 2%</option>
+      <option value="1026">Technical Services/Royalty (Old: 194J(a)) — 2%</option>
+      <option value="1027">Professional Fees (Old: 194J(b)) — 10%</option>
+      <option value="1028">Director Remuneration (Old: 194J(b)) — 10%</option>
+      <option value="1037">Contractor/Prof by Ind/HUF (Old: 194M) — 5%</option>
+      <option value="1041">Partner Salary/Remuneration (Old: 194T) — 10%</option>
+    </optgroup>
+    <optgroup label="── Other Payments ──">
+      <option value="1030">Life Insurance Proceeds (Old: 194DA) — 2%</option>
+      <option value="1031">Purchase of Goods (Old: 194Q) — 0.1%</option>
+      <option value="1033">Benefit/Perquisite (Old: 194R) — 10%</option>
+      <option value="1035">E-Commerce Operator (Old: 194O) — 0.1%</option>
+      <option value="1038">Cash Withdrawal (Old: 194N) — 2%</option>
+      <option value="1039">VDA / Crypto (Old: 194S) — 1%</option>
+      <option value="1040">Lottery/Puzzle Winnings (Old: 194B) — 30%</option>
+    </optgroup>`;
+}
+
+function buildTCSOptions(){
+  return `<option value="">— Select Nature of Goods/Transaction —</option>
+    <optgroup label="── Goods (All rationalised to 2%) ──">
+      <option value="2001">Alcoholic Liquor for Human Consumption — 2%</option>
+      <option value="2002">Tendu Leaves — 2%</option>
+      <option value="2003">Timber – Forest Lease — 2%</option>
+      <option value="2004">Timber – Other than Forest Lease — 2%</option>
+      <option value="2005">Any Other Forest Produce — 2%</option>
+      <option value="2006">Scrap — 2%</option>
+      <option value="2007">Minerals (Coal/Lignite/Iron Ore) — 2%</option>
+      <option value="2014">Parking Lot / Toll Plaza / Mining &amp; Quarrying — 2%</option>
+    </optgroup>
+    <optgroup label="── High Value Transactions ──">
+      <option value="2009">Motor Vehicle Sale &gt; ₹10 Lakh — 1%</option>
+      <option value="2013">Sale of Goods &gt; ₹50L (Annual) — 0.1%</option>
+    </optgroup>
+    <optgroup label="── Foreign Remittance (LRS) ──">
+      <option value="2010">Foreign Remittance – Education/Medical &gt; ₹10L — 2%</option>
+      <option value="2011">Foreign Remittance – Other Purposes &gt; ₹10L — 20%</option>
+      <option value="2012">Overseas Tour Package — 2% (flat)</option>
+    </optgroup>`;
+}
+
+// ── Toggle mode ───────────────────────────────────────────────────────────────
+
+function switchMode(mode){
+  currentMode = mode;
+  const sel = document.getElementById("mainSection");
+  sel.innerHTML = mode==="tds" ? buildTDSOptions() : buildTCSOptions();
+  document.getElementById("sectionHint").textContent = "Select a payment type to see rate and threshold";
+
+  const isTDS = mode==="tds";
+  document.getElementById("btnTDS").className = "toggle-btn"+(isTDS?" active":"");
+  document.getElementById("btnTCS").className = "toggle-btn"+(!isTDS?" active":"");
+  document.getElementById("formIcon").textContent     = isTDS?"📑":"🧾";
+  document.getElementById("formTitle").textContent    = isTDS?"TDS Calculator":"TCS Calculator";
+  document.getElementById("formSub").textContent      = isTDS?"IT Act 2025 · Tax Year 2026-27":"IT Act 2025 · Tax Year 2026-27";
+  document.getElementById("sectionLabel").textContent = isTDS?"Nature of Payment (TDS)":"Nature of Goods / Transaction (TCS)";
+  document.getElementById("amtLabel").textContent     = isTDS?"Payment Amount (₹)":"Sale / Collection Amount (₹)";
+  document.getElementById("amtHint").textContent      = isTDS?"Gross payment amount before TDS deduction":"Gross sale/receipt amount before TCS collection";
+  document.getElementById("d1label").textContent      = isTDS?"Date of Deduction":"Date of Collection";
+  document.getElementById("d1hint").textContent       = isTDS?"When TDS was deducted":"When TCS was collected";
+  document.getElementById("calcBtn").textContent      = isTDS?"Calculate TDS & Interest →":"Calculate TCS & Interest →";
+  document.getElementById("r-main-lbl").textContent   = isTDS?"TDS Amount":"TCS Amount";
+  document.getElementById("b-main-lbl").textContent   = isTDS?"TDS Amount":"TCS Amount";
+  document.getElementById("d-rate-lbl").textContent   = isTDS?"TDS Rate":"TCS Rate";
+  document.getElementById("d-tax-lbl").textContent    = isTDS?"TDS Amount":"TCS Amount";
+  document.getElementById("d-date1-lbl").textContent  = isTDS?"Date of Deduction":"Date of Collection";
+  document.getElementById("d-amt-lbl").textContent    = isTDS?"Payment Amount":"Sale Amount";
+  document.getElementById("b-amt-lbl").textContent    = isTDS?"Payment Amount":"Sale Amount";
+  document.getElementById("b-rate-lbl").textContent   = isTDS?"TDS Rate":"TCS Rate";
+  document.getElementById("b-tax-lbl").textContent    = isTDS?"TDS Amount":"TCS Amount";
+  document.getElementById("b-net-lbl").textContent    = isTDS?"Net Payment to Payee":"Amount Receivable from Buyer";
+  document.getElementById("d-total-lbl").textContent  = isTDS?"Total Payable (TDS + Interest)":"Total Payable (TCS + Interest)";
+  document.getElementById("tdsRateCard").style.display = isTDS?"block":"none";
+  document.getElementById("tcsRateCard").style.display = !isTDS?"block":"none";
+  document.getElementById("tdsduedates").style.display = isTDS?"block":"none";
+  document.getElementById("tcsduedates").style.display = !isTDS?"block":"none";
+  document.getElementById("dueDateTitle").textContent = isTDS?"TDS Deposit Due Dates":"TCS Deposit Due Dates";
+
+  // Update interest section label for TCS
+  const intLbl = document.getElementById("r-int");
+  if(intLbl){
+    const lbl = intLbl.closest(".rbox")?.querySelector(".lbl");
+    if(lbl) lbl.textContent = isTDS?"Interest u/s 201(1A)":"Interest u/s 206C(7)";
+  }
+
+  document.getElementById("resultSection").style.display = "none";
+}
+
+// ── Hint update ───────────────────────────────────────────────────────────────
+
+function updateHint(){
+  const code = document.getElementById("mainSection").value;
+  const el   = document.getElementById("sectionHint");
+  if(!code){ el.textContent="Select a payment type to see rate and threshold"; return; }
+  const data = currentMode==="tds" ? TDS_DATA : TCS_DATA;
+  const d    = data[code];
+  if(!d) return;
+  el.textContent = (d.rate===0?"Rate: Slab rate":"Rate: "+d.rate+"%")
+    + (d.thresh?" · Threshold: ₹"+Math.round(d.thresh).toLocaleString("en-IN"):" · No threshold")
+    + (d.note?" · "+d.note:"");
+}
+
+// ── Due date calc ─────────────────────────────────────────────────────────────
+
+function getDueDate(deductDate, code, mode){
+  const d     = new Date(deductDate);
+  const month = d.getMonth();
+  const year  = d.getFullYear();
+  if(mode==="tds" && TDS_SPECIAL_30.includes(code)){
+    const endOfMonth = new Date(year, month+1, 0);
+    return new Date(endOfMonth.getTime() + 30*24*60*60*1000);
+  }
+  if(month===2) return new Date(year, 3, 30); // March → 30 April
+  return new Date(year, month+1, 7);          // Others → 7th next month
+}
+
+function calcMonthsLate(dueDate, depositDate){
+  if(new Date(depositDate) <= new Date(dueDate)) return 0;
+  let months=0, cur=new Date(dueDate);
+  while(cur < new Date(depositDate)){ cur.setMonth(cur.getMonth()+1); months++; }
+  return months;
+}
+
+// ── Main calculate ─────────────────────────────────────────────────────────────
+
+function calculate(){
+  const code   = document.getElementById("mainSection").value;
+  const amt    = parseFloat(document.getElementById("paymentAmt").value);
+  const dDate  = document.getElementById("deductionDate").value;
+  const aDate  = document.getElementById("depositDate").value;
+
+  if(!code){ alert("Please select a payment type."); return; }
+  if(!amt||amt<=0){ alert("Please enter a valid amount."); return; }
+
+  const data = currentMode==="tds" ? TDS_DATA : TCS_DATA;
+  const d    = data[code];
+  if(!d){ alert("Data not found."); return; }
+
+  const isTCS      = currentMode==="tcs";
+  const intRate    = isTCS ? 0.01 : 0.015; // TCS: 1%/mo, TDS: 1.5%/mo
+  const intSecLbl  = isTCS ? "u/s 206C(7)" : "u/s 201(1A)";
+
+  const belowThresh = d.thresh && amt < d.thresh;
+  const tax         = belowThresh ? 0 : (d.rate===0 ? 0 : Math.round(amt * d.rate / 100));
+  const net         = isTCS ? amt + tax : amt - tax;
+
+  const fmt = n => "₹"+Math.round(n).toLocaleString("en-IN");
+  const fmtDate = dt => new Date(dt).toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"});
+
+  document.getElementById("resultSection").style.display = "block";
+
+  if(!dDate||!aDate){
+    // Basic result only
+    document.getElementById("ontimeBox").style.display = "none";
+    document.getElementById("lateBoxes").style.display = "none";
+    document.getElementById("basicBox").style.display  = "block";
+    document.getElementById("b-main").textContent = belowThresh?"No "+(isTCS?"TCS":"TDS"):d.rate===0?"Slab Rate":fmt(tax);
+    document.getElementById("b-sub").textContent  = belowThresh?"Below threshold of "+fmt(d.thresh):d.rate===0?"Compute at slab rate":d.rate+"% on "+fmt(amt);
+    document.getElementById("b-payment").textContent = fmt(amt);
+    document.getElementById("b-newsec").textContent  = d.newSec;
+    document.getElementById("b-oldsec").textContent  = d.oldSec+" (ref only)";
+    document.getElementById("b-code").textContent    = code;
+    document.getElementById("b-rate").textContent    = d.rate===0?"Slab rate":d.rate+"%";
+    document.getElementById("b-tds2").textContent    = belowThresh?"Nil (below threshold)":d.rate===0?"As per slab":fmt(tax);
+    document.getElementById("b-net").textContent     = isTCS?fmt(net)+" (incl. TCS)":fmt(net);
+    return;
+  }
+
+  const dueDate    = getDueDate(dDate, code, currentMode);
+  const monthsLate = calcMonthsLate(dueDate, aDate);
+  const interest   = Math.round(tax * intRate * monthsLate);
+  const total      = tax + interest;
+  const isOnTime   = monthsLate===0;
+
+  document.getElementById("basicBox").style.display = "none";
+
+  if(isOnTime||belowThresh||d.rate===0){
+    document.getElementById("ontimeBox").style.display = "block";
+    document.getElementById("lateBoxes").style.display = "none";
+    if(belowThresh) document.getElementById("ontimeBox").textContent = "No "+(isTCS?"TCS":"TDS")+" — Below threshold of "+fmt(d.thresh);
+    else if(d.rate===0) document.getElementById("ontimeBox").textContent = "Salary TDS — compute at applicable slab rate";
+    else document.getElementById("ontimeBox").textContent = "✓ Deposit is on time — No interest. "+(isTCS?"TCS":"TDS")+": "+fmt(tax);
+    return;
+  }
+
+  document.getElementById("ontimeBox").style.display = "none";
+  document.getElementById("lateBoxes").style.display = "block";
+
+  document.getElementById("r-main").textContent     = fmt(tax);
+  document.getElementById("r-main-sub").textContent = d.rate+"% on "+fmt(amt);
+  document.getElementById("r-int").textContent      = fmt(interest);
+  document.getElementById("r-int-sub").textContent  = (intRate*100)+"% × "+monthsLate+" month"+(monthsLate>1?"s":"");
+  document.getElementById("r-total").textContent    = fmt(total);
+  document.getElementById("r-total-sub").textContent= (isTCS?"TCS":"TDS")+" "+fmt(tax)+" + Interest "+fmt(interest);
+  document.getElementById("d-payment").textContent  = fmt(amt);
+  document.getElementById("d-newsec").textContent   = d.newSec;
+  document.getElementById("d-oldsec").textContent   = d.oldSec+" (ref only)";
+  document.getElementById("d-code").textContent     = code;
+  document.getElementById("d-rate").textContent     = d.rate+"%";
+  document.getElementById("d-tds").textContent      = fmt(tax);
+  document.getElementById("d-ddate").textContent    = fmtDate(dDate);
+  document.getElementById("d-due").textContent      = dueDate.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"});
+  document.getElementById("d-adate").textContent    = fmtDate(aDate);
+  document.getElementById("d-months").textContent   = monthsLate+" month"+(monthsLate>1?"s":"")+" (fractional = full month)";
+  document.getElementById("d-intamt").textContent   = fmt(interest)+" "+intSecLbl;
+  document.getElementById("d-total").textContent    = fmt(total);
+}
+
+// Init
+document.getElementById("mainSection").innerHTML = buildTDSOptions();
+</script>
+</body></html>"""
+
+
+DEP_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Depreciation Calculator – CA Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+<style>
+""" + BASE_CSS + """
+.hero{text-align:center;padding:40px 24px 28px;max-width:700px;margin:0 auto}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#ECFDF5;
+            color:#065F46;border:1px solid #A7F3D0;border-radius:99px;
+            padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:14px}
+h1{font-size:clamp(22px,4vw,34px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:10px}
+h1 em{font-style:normal;color:var(--brand)}
+.hero p{font-size:14px;color:var(--muted);line-height:1.7;max-width:500px;margin:0 auto}
+.main{max-width:1000px;margin:0 auto;padding:28px 24px 48px}
+.card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
+      box-shadow:var(--shadow);overflow:hidden;margin-bottom:20px}
+.card-head{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.card-head .icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px}
+.card-head h2{font-size:14px;font-weight:700}
+.card-head p{font-size:12px;color:var(--muted);margin-top:1px}
+.card-body{padding:20px}
+.form-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media(max-width:700px){.form-grid{grid-template-columns:1fr}}
+.field{margin-bottom:0}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:5px}
+.hint{font-size:11px;color:var(--muted);margin-top:4px}
+input[type=number],input[type=text],select{width:100%;border:1.5px solid var(--border);border-radius:8px;
+  padding:9px 12px;font-family:inherit;font-size:13px;color:var(--ink);background:var(--white);
+  transition:border-color .2s;outline:none}
+input:focus,select:focus{border-color:var(--brand)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+.btn{background:var(--brand);color:#fff;border:none;border-radius:10px;
+     padding:11px 24px;font-family:inherit;font-size:14px;font-weight:700;
+     cursor:pointer;transition:background .2s;margin-top:16px}
+.btn:hover{background:var(--brand-d)}
+.result-section{display:none}
+.summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+@media(max-width:700px){.summary-grid{grid-template-columns:1fr 1fr}}
+.summary-box{background:var(--white);border:1px solid var(--border);border-radius:10px;padding:16px}
+.summary-box .val{font-size:20px;font-weight:800;color:var(--brand);margin-bottom:4px}
+.summary-box .lbl{font-size:11px;color:var(--muted)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+   color:var(--muted);border-bottom:1.5px solid var(--border);padding:7px 10px}
+td{padding:9px 10px;border-bottom:1px solid var(--border)}
+tr:last-child td{border:none;font-weight:700;background:#F9FAFB}
+td:not(:first-child){text-align:right}
+.tag-it{background:#EFF6FF;color:var(--brand);font-size:10px;font-weight:700;
+        padding:2px 7px;border-radius:99px}
+.tag-ca{background:#F5F3FF;color:#5B21B6;font-size:10px;font-weight:700;
+        padding:2px 7px;border-radius:99px}
+footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-size:12px}
+.footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:4px}
+</style></head><body>
+
+<nav>
+  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <div class="nav-right">
+    {% if username %}
+    <span class="nav-user">👤 <strong>{{ username }}</strong></span>
+    {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
+    <a href="/logout" class="nav-link">Sign out</a>
+    {% else %}
+    <a href="/login" class="nav-btn">Sign In</a>
+    {% endif %}
+    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-badge">🆓 Free Tool · No Login Required</div>
+  <h1>Depreciation Calculator</h1>
+  <p>Calculate depreciation under <strong>Companies Act 2013</strong> (WDV/SLM) and <strong>Income Tax Act</strong>. Get full year-wise schedule instantly.</p>
+</section>
+
+<div class="main">
+  <div class="card">
+    <div class="card-head">
+      <div class="icon" style="background:#F5F3FF">🏭</div>
+      <div><h2>Asset Details</h2><p>Enter asset information to generate depreciation schedule</p></div>
+    </div>
+    <div class="card-body">
+      <div class="form-grid">
+        <div class="field">
+          <label>Asset Name</label>
+          <input type="text" id="assetName" placeholder="e.g. Machinery, Vehicle"/>
+        </div>
+        <div class="field">
+          <label>Cost of Asset (₹)</label>
+          <input type="number" id="assetCost" placeholder="e.g. 500000" min="0"/>
+        </div>
+        <div class="field">
+          <label>Date of Purchase</label>
+          <input type="date" id="purchaseDate"/>
+        </div>
+        <div class="field">
+          <label>Asset Block (IT Act)</label>
+          <select id="itBlock">
+            <option value="15">15% — Furniture, Fittings</option>
+            <option value="15b">15% — Ships</option>
+            <option value="30">30% — Motor Cars (not used for hire)</option>
+            <option value="40">40% — Motor Taxis, Buses (hire)</option>
+            <option value="40b">40% — Machinery (general)</option>
+            <option value="60">60% — Computers &amp; Software</option>
+            <option value="80">80% — Energy saving devices</option>
+            <option value="100">100% — Books, Scientific research</option>
+            <option value="10">10% — Buildings (residential)</option>
+            <option value="5">5% — Buildings (other)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Asset Class (Companies Act)</label>
+          <select id="caClass">
+            <option value="15_wdv">Buildings — Factory (5% SLM / 15 yr WDV)</option>
+            <option value="10_wdv">Buildings — Other (10% SLM / 10 yr WDV)</option>
+            <option value="15_plant">Plant &amp; Machinery General (15% SLM)</option>
+            <option value="30_plant">Plant &amp; Machinery (30% SLM — certain)</option>
+            <option value="20_furn">Furniture &amp; Fixtures (10% SLM)</option>
+            <option value="25_comp">Computers &amp; Peripherals (40% SLM)</option>
+            <option value="20_veh">Vehicles — Motor Car (20% SLM)</option>
+            <option value="30_veh">Vehicles — Motor Cycle (30% SLM)</option>
+            <option value="10_off">Office Equipment (20% SLM)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Method (Companies Act)</label>
+          <select id="caMethod">
+            <option value="slm">SLM — Straight Line Method</option>
+            <option value="wdv">WDV — Written Down Value</option>
+          </select>
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>Number of Years to Project</label>
+          <input type="number" id="numYears" value="5" min="1" max="20"/>
+        </div>
+        <div class="field">
+          <label>Salvage / Residual Value (₹)</label>
+          <input type="number" id="salvageVal" value="0" min="0"/>
+          <p class="hint">Under Companies Act, minimum 5% of cost</p>
+        </div>
+      </div>
+      <button class="btn" onclick="calcDep()">Generate Depreciation Schedule →</button>
+    </div>
+  </div>
+
+  <div class="result-section" id="resultSection">
+    <div class="summary-grid" id="summaryGrid"></div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#EFF6FF">📊</div>
+        <div><h2>Income Tax Act Schedule <span class="tag-it">IT Act</span></h2>
+             <p>WDV method — Block of assets basis</p></div>
+      </div>
+      <div class="card-body" style="padding:0;overflow-x:auto">
+        <table id="itTable">
+          <thead><tr><th>FY</th><th>Opening WDV</th><th>Additions</th><th>Depreciation</th><th>Closing WDV</th></tr></thead>
+          <tbody id="itBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <div class="card-head">
+        <div class="icon" style="background:#F5F3FF">📋</div>
+        <div><h2>Companies Act 2013 Schedule <span class="tag-ca">Companies Act</span></h2>
+             <p id="caMethodLabel">SLM method</p></div>
+      </div>
+      <div class="card-body" style="padding:0;overflow-x:auto">
+        <table id="caTable">
+          <thead><tr><th>FY</th><th>Opening WDV</th><th>Depreciation</th><th>Closing WDV</th><th>Acc. Dep.</th></tr></thead>
+          <tbody id="caBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <p class="footer-brand">CA Toolkit</p>
+  <p>Built for Indian Chartered Accountants · Created by CA Article</p>
+  <p style="margin-top:10px;font-size:11px">© 2026 CA Toolkit · For reference only — verify with latest MCA/CBDT notifications</p>
+</footer>
+
+<script>
+const IT_RATES = {"15":15,"15b":15,"30":30,"40":40,"40b":40,"60":60,"80":80,"100":100,"10":10,"5":5};
+const CA_RATES = {
+  "15_wdv":  {slm:6.67, wdv:15,  life:15},
+  "10_wdv":  {slm:10,   wdv:10,  life:10},
+  "15_plant":{slm:6.67, wdv:15,  life:15},
+  "30_plant":{slm:10,   wdv:30,  life:10},
+  "20_furn": {slm:10,   wdv:10,  life:10},
+  "25_comp": {slm:40,   wdv:40,  life:3},
+  "20_veh":  {slm:20,   wdv:20,  life:5},
+  "30_veh":  {slm:30,   wdv:30,  life:4},
+  "10_off":  {slm:20,   wdv:20,  life:5},
+};
+
+function fmt(n){ return "₹"+Math.round(n).toLocaleString("en-IN"); }
+
+function calcDep(){
+  const cost = parseFloat(document.getElementById("assetCost").value);
+  const name = document.getElementById("assetName").value || "Asset";
+  const pd   = document.getElementById("purchaseDate").value;
+  const itBl = document.getElementById("itBlock").value;
+  const caCl = document.getElementById("caClass").value;
+  const meth = document.getElementById("caMethod").value;
+  const yrs  = Math.min(parseInt(document.getElementById("numYears").value)||5, 20);
+  const salv = Math.max(parseFloat(document.getElementById("salvageVal").value)||0, cost*0.05);
+
+  if(!cost||cost<=0){alert("Enter a valid asset cost.");return;}
+  if(!pd){alert("Enter purchase date.");return;}
+
+  const purchaseYear = parseInt(pd.split("-")[0]);
+  const purchaseMon  = parseInt(pd.split("-")[1]);
+  // IT Act: if purchased after 3 Oct (i.e. used < 180 days), half rate in first year
+  const halfRate = purchaseMon >= 10 || (purchaseMon === 9 && parseInt(pd.split("-")[2]) > 3);
+
+  const itRate = IT_RATES[itBl] / 100;
+  const caInfo = CA_RATES[caCl];
+  const caRate = meth === "slm" ? caInfo.slm/100 : caInfo.wdv/100;
+
+  // IT Schedule (WDV)
+  let itWDV = cost, itRows = "";
+  for(let i=0;i<yrs;i++){
+    const fy = `FY ${purchaseYear + i}-${String(purchaseYear+i+1).slice(-2)}`;
+    const additions = i===0 ? cost : 0;
+    const rate = (i===0 && halfRate) ? itRate/2 : itRate;
+    const dep = Math.round(itWDV * rate);
+    const closing = itWDV - dep;
+    itRows += `<tr><td>${fy}</td><td>${fmt(itWDV)}</td><td>${i===0?fmt(additions):"—"}</td><td>${fmt(dep)}</td><td>${fmt(closing)}</td></tr>`;
+    itWDV = closing;
+    if(itWDV <= 0) break;
+  }
+  document.getElementById("itBody").innerHTML = itRows;
+
+  // CA Schedule
+  let caWDV = cost, caAcc = 0, caRows = "";
+  document.getElementById("caMethodLabel").textContent = meth.toUpperCase() + " method";
+  for(let i=0;i<yrs;i++){
+    const fy = `FY ${purchaseYear + i}-${String(purchaseYear+i+1).slice(-2)}`;
+    let dep;
+    if(meth === "slm"){
+      dep = Math.round((cost - salv) * caRate);
+      if(caWDV - dep < salv) dep = Math.max(0, caWDV - salv);
+    } else {
+      dep = Math.round(caWDV * caRate);
+      if(caWDV - dep < salv) dep = Math.max(0, caWDV - salv);
+    }
+    caAcc += dep;
+    const closing = caWDV - dep;
+    caRows += `<tr><td>${fy}</td><td>${fmt(caWDV)}</td><td>${fmt(dep)}</td><td>${fmt(closing)}</td><td>${fmt(caAcc)}</td></tr>`;
+    caWDV = closing;
+    if(caWDV <= salv) break;
+  }
+  document.getElementById("caBody").innerHTML = caRows;
+
+  // Summary
+  const itDep1 = cost * ((halfRate?itRate/2:itRate));
+  const caDep1 = meth==="slm" ? (cost-salv)*caRate : cost*caRate;
+  document.getElementById("summaryGrid").innerHTML =
+    `<div class="summary-box"><div class="val">${fmt(cost)}</div><div class="lbl">Asset Cost</div></div>
+     <div class="summary-box"><div class="val">${fmt(itDep1)}</div><div class="lbl">Year 1 Dep (IT Act)</div></div>
+     <div class="summary-box"><div class="val">${fmt(caDep1)}</div><div class="lbl">Year 1 Dep (Co. Act)</div></div>
+     <div class="summary-box"><div class="val">${fmt(salv)}</div><div class="lbl">Residual Value</div></div>`;
+
+  document.getElementById("resultSection").style.display = "block";
+  document.getElementById("resultSection").scrollIntoView({behavior:"smooth"});
+}
+</script>
+</body></html>"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ADMIN PANEL
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MSME DISALLOWANCE CALCULATOR
+# ══════════════════════════════════════════════════════════════════════════════
+
+MSME_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MSME Disallowance Calculator – CA Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+<style>
+""" + BASE_CSS + """
+.hero{text-align:center;padding:32px 24px 16px;max-width:760px;margin:0 auto}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#ECFDF5;color:#065F46;
+            border:1px solid #A7F3D0;border-radius:99px;padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:12px}
+h1{font-size:clamp(20px,4vw,32px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:8px}
+h1 em{font-style:normal;color:var(--brand)}
+.hero p{font-size:13px;color:var(--muted);line-height:1.7;max-width:560px;margin:0 auto}
+.wrap{max-width:1100px;margin:0 auto;padding:16px 24px 48px}
+.card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
+      box-shadow:var(--shadow);overflow:hidden;margin-bottom:20px}
+.card-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.card-head .icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px}
+.card-head h2{font-size:14px;font-weight:700}
+.card-head p{font-size:12px;color:var(--muted);margin-top:1px}
+.card-body{padding:18px}
+.field{margin-bottom:14px}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:4px}
+.hint{font-size:11px;color:var(--muted);margin-top:3px}
+input[type=file],input[type=number],input[type=date]{width:100%;border:1.5px solid var(--border);border-radius:8px;
+  padding:8px 11px;font-family:inherit;font-size:13px;color:var(--ink);background:var(--white);
+  transition:border-color .2s;outline:none}
+input:focus{border-color:var(--brand)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.btn{background:var(--brand);color:#fff;border:none;border-radius:8px;padding:10px 20px;
+     font-family:inherit;font-size:13px;font-weight:700;cursor:pointer;transition:background .2s}
+.btn:hover{background:var(--brand-d)}
+.btn-full{width:100%;padding:12px;font-size:14px}
+/* Format table */
+.fmt-table{width:100%;border-collapse:collapse;font-size:12px}
+.fmt-table th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+              color:var(--muted);border-bottom:1.5px solid var(--border);padding:6px 10px;background:#F9FAFB}
+.fmt-table td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.fmt-table tr:last-child td{border:none}
+.col-req{background:#EFF6FF;color:var(--brand);font-size:10px;font-weight:700;
+         padding:1px 6px;border-radius:4px;font-family:monospace}
+/* Results */
+.summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+@media(max-width:700px){.summary-grid{grid-template-columns:1fr 1fr}}
+.sbox{background:var(--white);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.sbox.red{background:#FEF2F2;border-color:#FECACA}
+.sbox.green{background:#ECFDF5;border-color:#A7F3D0}
+.sbox.yellow{background:#FFFBEB;border-color:#FDE68A}
+.sbox .val{font-size:20px;font-weight:800;margin-bottom:3px}
+.sbox .lbl{font-size:11px;color:var(--muted);font-weight:500}
+.sbox.red .val{color:#991B1B}
+.sbox.green .val{color:#065F46}
+.sbox.yellow .val{color:#92400E}
+/* Result table */
+.res-table{width:100%;border-collapse:collapse;font-size:12px}
+.res-table th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+              color:var(--muted);border-bottom:1.5px solid var(--border);padding:7px 8px;
+              background:#F9FAFB;position:sticky;top:0}
+.res-table td{padding:8px;border-bottom:1px solid var(--border);vertical-align:middle}
+.res-table tr:hover td{background:#F9FAFB}
+.row-ok{background:#F0FDF4}
+.row-warn{background:#FFFBEB}
+.row-over{background:#FEF2F2}
+.badge-ok{background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px}
+.badge-warn{background:#FFFBEB;color:#92400E;font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px}
+.badge-over{background:#FEF2F2;color:#991B1B;font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px}
+.badge-na{background:#F3F4F6;color:var(--muted);font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px}
+.note-box{background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;padding:10px 14px;
+          font-size:12px;color:#991B1B;margin-top:12px;line-height:1.7}
+.info-box{background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:10px 14px;
+          font-size:12px;color:#1e40af;margin-bottom:16px;line-height:1.7}
+.dl-btn{background:var(--green);color:#fff;border:none;border-radius:8px;padding:8px 16px;
+        font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;margin-left:8px}
+footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-size:12px}
+.footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:4px}
+</style></head><body>
+
+<nav>
+  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <div class="nav-right">
+    {% if username %}<span class="nav-user">👤 <strong>{{ username }}</strong></span>
+    {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
+    <a href="/logout" class="nav-link">Sign out</a>
+    {% else %}<a href="/login" class="nav-btn">Sign In</a>{% endif %}
+    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-badge">🆓 Free · No Login Required</div>
+  <h1>MSME Disallowance Calculator</h1>
+  <p>Check creditor payments against MSME time limits under <strong>Section 43B(h)</strong>. Upload your creditors list and instantly see which payments are overdue and the total disallowance amount.</p>
+</section>
+
+<div class="wrap">
+
+  <div class="info-box">
+    ℹ️ <strong>Section 43B(h) — IT Act:</strong> Payments to MSME suppliers must be made within 15 days (no agreement) or 45 days (written agreement) from date of invoice. Any unpaid amount beyond the limit is <strong>disallowed</strong> as a deduction in the year of computation and allowed only in the year of actual payment.
+  </div>
+
+  <!-- FORMAT GUIDE -->
+  <div class="card">
+    <div class="card-head">
+      <div class="icon" style="background:#FFFBEB">📋</div>
+      <div><h2>Required Excel Format</h2><p>Your upload must follow this column structure exactly</p></div>
+    </div>
+    <div class="card-body" style="padding:0;overflow-x:auto">
+      <table class="fmt-table">
+        <thead><tr><th>#</th><th>Column Name</th><th>Format</th><th>Example</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>A</td><td><span class="col-req">Creditor Name</span></td><td>Text</td><td>ABC Enterprises</td><td>Name of the MSME supplier</td></tr>
+          <tr><td>B</td><td><span class="col-req">Invoice Date</span></td><td>DD/MM/YYYY</td><td>01/04/2025</td><td>Date of invoice / bill received</td></tr>
+          <tr><td>C</td><td><span class="col-req">Invoice Amount</span></td><td>Number</td><td>50000</td><td>Total invoice amount (₹)</td></tr>
+          <tr><td>D</td><td><span class="col-req">Payment Date</span></td><td>DD/MM/YYYY or blank</td><td>20/05/2025</td><td>Leave blank if payment not yet made</td></tr>
+          <tr><td>E</td><td><span class="col-req">Amount Paid</span></td><td>Number or 0</td><td>50000</td><td>Amount actually paid (0 if unpaid)</td></tr>
+          <tr><td>F</td><td><span class="col-req">Written Agreement</span></td><td>Yes / No</td><td>No</td><td>Yes = 45 day limit, No = 15 day limit</td></tr>
+          <tr><td>G</td><td><span class="col-req">MSME Category</span></td><td>Micro / Small / Medium</td><td>Small</td><td>MSME registration category of supplier</td></tr>
+        </tbody>
+      </table>
+      <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span style="font-size:12px;color:var(--muted)">Download blank template to fill in your data:</span>
+        <button class="btn" onclick="downloadTemplate()" style="padding:7px 14px;font-size:12px">⬇ Download Template (.xlsx)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- UPLOAD -->
+  <div class="card">
+    <div class="card-head">
+      <div class="icon" style="background:#EFF6FF">📁</div>
+      <div><h2>Upload Creditors List</h2><p>Excel file (.xlsx) following the format above</p></div>
+    </div>
+    <div class="card-body">
+      <div class="row2">
+        <div class="field">
+          <label>Upload Excel File (.xlsx)</label>
+          <input type="file" id="msmeFile" accept=".xlsx"/>
+          <p class="hint">Must follow the format shown above</p>
+        </div>
+        <div class="field">
+          <label>Assessment Year</label>
+          <input type="number" id="assessYear" value="2026" min="2020" max="2030"/>
+          <p class="hint">Year for which disallowance is computed</p>
+        </div>
+      </div>
+      <button class="btn btn-full" onclick="processMSME()">Analyse &amp; Calculate Disallowance →</button>
+      <div id="msmeError" style="display:none;margin-top:10px;background:#FEF2F2;border:1px solid #FECACA;
+           border-radius:8px;padding:10px 14px;font-size:13px;color:#991B1B"></div>
+    </div>
+  </div>
+
+  <!-- RESULTS -->
+  <div id="msmeResults" style="display:none">
+    <div class="summary-grid" id="summaryGrid"></div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#FEF2F2">📊</div>
+        <div>
+          <h2>Creditor-wise Analysis</h2>
+          <p>Overdue payments highlighted in red · Near-due in yellow · On time in green</p>
+        </div>
+        <div style="margin-left:auto">
+          <button class="dl-btn" onclick="exportResults()">⬇ Export Results</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="res-table" id="resultsTable">
+          <thead><tr>
+            <th>Creditor</th><th>Category</th><th>Invoice Date</th><th>Invoice Amt</th>
+            <th>Paid Amt</th><th>Payment Date</th><th>Limit</th><th>Due Date</th>
+            <th>Days Overdue</th><th>Unpaid Amt</th><th>Status</th>
+          </tr></thead>
+          <tbody id="resultsBody"></tbody>
+        </table>
+      </div>
+      <div class="note-box" id="disallowNote"></div>
+    </div>
+  </div>
+
+</div>
+
+<footer>
+  <p class="footer-brand">CA Toolkit</p>
+  <p>Built for Indian CAs · Created by CA Article</p>
+  <p style="margin-top:8px;font-size:11px">© 2026 CA Toolkit · For reference only · Verify with actual books of accounts</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+const fmt = n => "₹" + Math.round(n).toLocaleString("en-IN");
+
+function parseDate(val){
+  if(!val) return null;
+  if(val instanceof Date) return val;
+  // Try DD/MM/YYYY
+  const s = String(val).trim();
+  const parts = s.split("/");
+  if(parts.length===3) return new Date(parts[2], parts[1]-1, parts[0]);
+  // Try Excel serial
+  if(!isNaN(val)){
+    const d = new Date((val - 25569) * 86400 * 1000);
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+  return new Date(val);
+}
+
+function daysBetween(d1, d2){
+  return Math.round((d2 - d1) / (1000*60*60*24));
+}
+
+function fmtDate(d){
+  if(!d) return "—";
+  return d.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"});
+}
+
+let processedRows = [];
+
+function processMSME(){
+  const file = document.getElementById("msmeFile").files[0];
+  const errEl = document.getElementById("msmeError");
+  errEl.style.display = "none";
+
+  if(!file){ showErr("Please select an Excel file."); return; }
+
+  const reader = new FileReader();
+  reader.onload = function(e){
+    try{
+      const wb   = XLSX.read(e.target.result, {type:"binary", cellDates:true});
+      const ws   = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:false});
+
+      if(rows.length < 2){ showErr("File appears empty. Please check the format."); return; }
+
+      // Skip header row
+      const data = rows.slice(1).filter(r => r && r[0]);
+      if(data.length === 0){ showErr("No data rows found. Please check the format."); return; }
+
+      processedRows = [];
+      let totalInvoice=0, totalPaid=0, totalDisallow=0, totalOverdue=0;
+      const today = new Date();
+
+      const tbody = document.getElementById("resultsBody");
+      tbody.innerHTML = "";
+
+      data.forEach((row, i) => {
+        const name        = String(row[0]||"").trim();
+        const invoiceDate = parseDate(row[1]);
+        const invoiceAmt  = parseFloat(String(row[2]||"0").replace(/,/g,""))||0;
+        const paymentDate = parseDate(row[3]);
+        const paidAmt     = parseFloat(String(row[4]||"0").replace(/,/g,""))||0;
+        const hasAgreement= String(row[5]||"No").trim().toLowerCase()==="yes";
+        const category    = String(row[6]||"MSME").trim();
+
+        if(!name||!invoiceDate) return;
+
+        const limitDays = hasAgreement ? 45 : 15;
+        const dueDate   = new Date(invoiceDate);
+        dueDate.setDate(dueDate.getDate() + limitDays);
+
+        const refDate  = paymentDate || today;
+        const daysDiff = daysBetween(dueDate, refDate);
+        const unpaid   = Math.max(0, invoiceAmt - paidAmt);
+        const isOverdue = daysDiff > 0;
+        const isNearDue = !isOverdue && daysDiff > -7;
+
+        let status, rowClass, badge;
+        if(!isOverdue && paidAmt >= invoiceAmt){
+          status="✓ Paid on time"; rowClass="row-ok"; badge=`<span class="badge-ok">Paid On Time</span>`;
+        } else if(isOverdue && unpaid > 0){
+          status="⚠ Overdue"; rowClass="row-over"; badge=`<span class="badge-over">Overdue</span>`;
+          totalDisallow += unpaid;
+          totalOverdue++;
+        } else if(!isOverdue && unpaid > 0){
+          status="Near due"; rowClass="row-warn"; badge=`<span class="badge-warn">Pending</span>`;
+        } else if(isOverdue && paidAmt >= invoiceAmt){
+          status="Paid late"; rowClass="row-warn"; badge=`<span class="badge-warn">Paid Late</span>`;
+        } else {
+          status="—"; rowClass=""; badge=`<span class="badge-na">N/A</span>`;
+        }
+
+        totalInvoice += invoiceAmt;
+        totalPaid    += paidAmt;
+
+        processedRows.push({name,category,invoiceDate,invoiceAmt,paidAmt,paymentDate,
+          limitDays,dueDate,daysDiff,unpaid,status,isOverdue});
+
+        const tr = document.createElement("tr");
+        tr.className = rowClass;
+        tr.innerHTML = `
+          <td><strong>${name}</strong></td>
+          <td>${category}</td>
+          <td>${fmtDate(invoiceDate)}</td>
+          <td>${fmt(invoiceAmt)}</td>
+          <td>${fmt(paidAmt)}</td>
+          <td>${fmtDate(paymentDate)}</td>
+          <td>${limitDays} days</td>
+          <td>${fmtDate(dueDate)}</td>
+          <td style="font-weight:700;color:${isOverdue&&unpaid>0?"#991B1B":daysDiff>-7?"#92400E":"#065F46"}">${isOverdue?"+"+daysDiff+" days":daysDiff===0?"Today":Math.abs(daysDiff)+" days left"}</td>
+          <td style="font-weight:700;color:${unpaid>0?"#991B1B":"#065F46"}">${fmt(unpaid)}</td>
+          <td>${badge}</td>`;
+        tbody.appendChild(tr);
+      });
+
+      // Summary
+      const ayear = document.getElementById("assessYear").value;
+      document.getElementById("summaryGrid").innerHTML = `
+        <div class="sbox"><div class="val">${processedRows.length}</div><div class="lbl">Total Creditors</div></div>
+        <div class="sbox yellow"><div class="val">${fmt(totalInvoice)}</div><div class="lbl">Total Invoice Value</div></div>
+        <div class="sbox ${totalOverdue>0?"red":"green"}"><div class="val">${totalOverdue}</div><div class="lbl">Overdue Creditors</div></div>
+        <div class="sbox ${totalDisallow>0?"red":"green"}"><div class="val">${fmt(totalDisallow)}</div><div class="lbl">Disallowance u/s 43B(h)</div></div>`;
+
+      document.getElementById("disallowNote").innerHTML = totalDisallow > 0
+        ? `⚠ <strong>Total disallowance u/s 43B(h) for AY ${ayear}-${parseInt(ayear)+1}: ${fmt(totalDisallow)}</strong><br>
+           This amount will be added back to income and disallowed as a deduction. It will be allowed only in the year when actual payment is made to the MSME supplier.`
+        : `✓ No disallowance applicable. All MSME payments are within the prescribed time limits.`;
+
+      document.getElementById("msmeResults").style.display = "block";
+      document.getElementById("msmeResults").scrollIntoView({behavior:"smooth"});
+
+    } catch(err){
+      showErr("Error reading file: "+err.message+". Please ensure file follows the required format.");
+    }
+  };
+  reader.readAsBinaryString(file);
+}
+
+function showErr(msg){
+  const el = document.getElementById("msmeError");
+  el.textContent = msg; el.style.display = "block";
+}
+
+function downloadTemplate(){
+  const wb = XLSX.utils.book_new();
+  const data = [
+    ["Creditor Name","Invoice Date","Invoice Amount","Payment Date","Amount Paid","Written Agreement","MSME Category"],
+    ["ABC Enterprises","01/04/2025","50000","20/04/2025","50000","No","Small"],
+    ["XYZ Traders","15/04/2025","120000","","0","Yes","Micro"],
+    ["PQR Industries","01/05/2025","80000","20/06/2025","80000","No","Medium"],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  ws["!cols"] = [{wch:20},{wch:14},{wch:16},{wch:14},{wch:12},{wch:18},{wch:16}];
+  XLSX.utils.book_append_sheet(wb, ws, "Creditors");
+  XLSX.writeFile(wb, "MSME_Creditors_Template.xlsx");
+}
+
+function exportResults(){
+  if(!processedRows.length) return;
+  const data = [["Creditor","Category","Invoice Date","Invoice Amt","Paid Amt","Payment Date","Limit","Due Date","Days Overdue","Unpaid Amt","Status"]];
+  processedRows.forEach(r => {
+    data.push([r.name,r.category,fmtDate(r.invoiceDate),r.invoiceAmt,r.paidAmt,
+      fmtDate(r.paymentDate),r.limitDays+" days",fmtDate(r.dueDate),
+      r.isOverdue?"+"+r.daysDiff+" days":Math.abs(r.daysDiff)+" days left",r.unpaid,r.status]);
+  });
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  XLSX.utils.book_append_sheet(wb, ws, "MSME Analysis");
+  XLSX.writeFile(wb, "MSME_Disallowance_Analysis.xlsx");
+}
+</script>
+</body></html>"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  CAPITAL GAINS CALCULATOR
+# ══════════════════════════════════════════════════════════════════════════════
+
+CG_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Capital Gains Calculator – CA Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+<style>
+""" + BASE_CSS + """
+.hero{text-align:center;padding:32px 24px 16px;max-width:760px;margin:0 auto}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#ECFDF5;color:#065F46;
+            border:1px solid #A7F3D0;border-radius:99px;padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:12px}
+h1{font-size:clamp(20px,4vw,32px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:8px}
+h1 em{font-style:normal;color:var(--brand)}
+.hero p{font-size:13px;color:var(--muted);line-height:1.7;max-width:520px;margin:0 auto}
+.wrap{max-width:1100px;margin:0 auto;padding:16px 24px 48px;display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
+@media(max-width:800px){.wrap{grid-template-columns:1fr}}
+.card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
+      box-shadow:var(--shadow);overflow:hidden;margin-bottom:16px}
+.card:last-child{margin-bottom:0}
+.card-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.card-head .icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px}
+.card-head h2{font-size:14px;font-weight:700}
+.card-head p{font-size:12px;color:var(--muted);margin-top:1px}
+.card-body{padding:16px}
+.field{margin-bottom:13px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:4px}
+.hint{font-size:11px;color:var(--muted);margin-top:3px}
+select,input[type=number],input[type=text]{width:100%;border:1.5px solid var(--border);border-radius:8px;
+  padding:8px 11px;font-family:inherit;font-size:13px;color:var(--ink);background:var(--white);
+  transition:border-color .2s;outline:none}
+select:focus,input:focus{border-color:var(--brand)}
+.btn{width:100%;background:var(--brand);color:#fff;border:none;border-radius:8px;
+     padding:11px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;transition:background .2s}
+.btn:hover{background:var(--brand-d)}
+/* Tabs */
+.tabs{display:flex;gap:0;margin-bottom:16px;border-radius:8px;overflow:hidden;border:1px solid var(--border)}
+.tab{flex:1;padding:9px;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;
+     background:var(--white);color:var(--muted);border:none;transition:all .2s}
+.tab.active{background:var(--brand);color:#fff}
+/* Result boxes */
+.rboxes{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+.rbox{border-radius:10px;padding:13px 15px}
+.rbox-blue{background:#EFF6FF;border:1.5px solid #BFDBFE}
+.rbox-green{background:#ECFDF5;border:1.5px solid #A7F3D0}
+.rbox-red{background:#FEF2F2;border:1.5px solid #FECACA}
+.rbox-total{background:#1D4ED8;border:1.5px solid #1D4ED8;grid-column:1/-1}
+.rbox .val{font-size:20px;font-weight:800;margin-bottom:2px}
+.rbox .lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;opacity:.75}
+.rbox .sub{font-size:11px;margin-top:4px;opacity:.8}
+.rbox-blue  .val{color:#1D4ED8}.rbox-blue  .lbl{color:#1D4ED8}
+.rbox-green .val{color:#065F46}.rbox-green .lbl{color:#065F46}
+.rbox-red   .val{color:#991B1B}.rbox-red   .lbl{color:#991B1B}
+.rbox-total .val{color:#fff;font-size:22px}.rbox-total .lbl{color:rgba(255,255,255,.75)}
+.rbox-total .sub{color:rgba(255,255,255,.8);font-size:11px}
+.dtable{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+.dtable td{padding:6px 2px;border-bottom:1px solid var(--border)}
+.dtable tr:last-child td{border:none;font-weight:700}
+.dtable td:last-child{text-align:right;font-weight:600}
+.compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.cbox{border-radius:10px;padding:13px 15px;border:1.5px solid var(--border);background:var(--white)}
+.cbox.winner{border-color:var(--green);background:#ECFDF5}
+.cbox h3{font-size:12px;font-weight:700;margin-bottom:8px;color:var(--ink)}
+.cbox .ctax{font-size:20px;font-weight:800;color:var(--brand);margin-bottom:3px}
+.cbox.winner .ctax{color:#065F46}
+.cbox .csub{font-size:11px;color:var(--muted)}
+.winner-badge{background:var(--green);color:#fff;font-size:10px;font-weight:700;
+              padding:2px 8px;border-radius:99px;display:inline-block;margin-bottom:6px}
+.reverse-box{background:#F5F3FF;border:1.5px solid #DDD6FE;border-radius:10px;padding:14px 16px;margin-top:12px}
+.reverse-box h3{font-size:12px;font-weight:700;color:#5B21B6;margin-bottom:8px}
+.reverse-box .rval{font-size:22px;font-weight:800;color:#5B21B6;margin-bottom:3px}
+.reverse-box .rsub{font-size:11px;color:var(--muted)}
+.info-box{background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:10px 14px;
+          font-size:12px;color:#1e40af;margin-bottom:14px;line-height:1.7}
+.note-box{background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;
+          padding:10px 12px;font-size:11px;color:#92400E;margin-top:10px;line-height:1.6}
+/* CII table */
+.cii-table{width:100%;border-collapse:collapse;font-size:11px}
+.cii-table th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+              color:var(--muted);border-bottom:1.5px solid var(--border);padding:5px 6px}
+.cii-table td{padding:5px 6px;border-bottom:1px solid var(--border)}
+.cii-table tr:last-child td{border:none}
+.cii-table tr:hover td{background:#F9FAFB}
+.cii-table .highlight{background:#EFF6FF;font-weight:700}
+footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-size:12px}
+.footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:4px}
+</style></head><body>
+
+<nav>
+  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <div class="nav-right">
+    {% if username %}<span class="nav-user">👤 <strong>{{ username }}</strong></span>
+    {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
+    <a href="/logout" class="nav-link">Sign out</a>
+    {% else %}<a href="/login" class="nav-btn">Sign In</a>{% endif %}
+    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-badge">🆓 Free · No Login Required</div>
+  <h1>Capital Gains Tax Calculator</h1>
+  <p>Calculate LTCG / STCG on property, shares, mutual funds and more. Compare old regime (with indexation) vs new regime. Includes reverse calculator — find the <strong>sale price for zero tax</strong>.</p>
+</section>
+
+<div class="wrap">
+  <!-- LEFT: INPUT -->
+  <div>
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#EFF6FF">💰</div>
+        <div><h2>Capital Gains Calculator</h2><p>IT Act 2025 · Tax Year 2026-27</p></div>
+      </div>
+      <div class="card-body">
+
+        <div class="info-box">ℹ️ Under IT Act 2025: LTCG on property is <strong>12.5% without indexation</strong>. Old regime (20% with indexation) applicable for assets purchased before 23 Jul 2023. Choose as applicable.</div>
+
+        <div class="field">
+          <label>Asset Type</label>
+          <select id="assetType" onchange="updateAssetUI()">
+            <option value="property">Immovable Property (Land/Building)</option>
+            <option value="equity">Listed Equity Shares / Equity MF</option>
+            <option value="debt">Debt Mutual Funds / Bonds</option>
+            <option value="gold">Gold / Gold ETF / Sovereign Gold Bond</option>
+            <option value="unlisted">Unlisted Shares</option>
+            <option value="other">Other Capital Assets</option>
+          </select>
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label>Date of Purchase</label>
+            <input type="text" id="purchaseDate" placeholder="DD/MM/YYYY"/>
+            <p class="hint">Original acquisition date</p>
+          </div>
+          <div class="field">
+            <label>Date of Sale</label>
+            <input type="text" id="saleDate" placeholder="DD/MM/YYYY"/>
+            <p class="hint">Date of transfer/sale</p>
+          </div>
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label>Purchase Price (₹)</label>
+            <input type="number" id="purchasePrice" placeholder="e.g. 2000000" min="0"/>
+            <p class="hint">Cost of acquisition</p>
+          </div>
+          <div class="field">
+            <label>Sale Price (₹)</label>
+            <input type="number" id="salePrice" placeholder="e.g. 5000000" min="0"/>
+            <p class="hint">Full value of consideration</p>
+          </div>
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label>Improvement Cost (₹)</label>
+            <input type="number" id="improveCost" placeholder="0" min="0" value="0"/>
+            <p class="hint">Cost of any improvements made</p>
+          </div>
+          <div class="field">
+            <label>Transfer Expenses (₹)</label>
+            <input type="number" id="transferCost" placeholder="0" min="0" value="0"/>
+            <p class="hint">Brokerage, registration, legal fees</p>
+          </div>
+        </div>
+
+        <div class="field" id="exemptionField">
+          <label>Exemption Claimed</label>
+          <select id="exemptionType">
+            <option value="0">None</option>
+            <option value="54">Sec 54 — Residential House Property</option>
+            <option value="54B">Sec 54B — Agricultural Land</option>
+            <option value="54EC">Sec 54EC — NHAI/REC Bonds (Max ₹50L)</option>
+            <option value="54F">Sec 54F — Any LTCG → Residential House</option>
+          </select>
+        </div>
+        <div class="field" id="exemptionAmtField">
+          <label>Exemption Amount (₹)</label>
+          <input type="number" id="exemptionAmt" placeholder="0" min="0" value="0"/>
+          <p class="hint">Amount claimed under selected exemption</p>
+        </div>
+
+        <div class="field">
+          <label>Assessee Type</label>
+          <select id="assesseeType">
+            <option value="individual">Individual / HUF</option>
+            <option value="firm">Firm / LLP</option>
+            <option value="company">Company</option>
+          </select>
+        </div>
+
+        <button class="btn" onclick="calcCG()">Calculate Capital Gains →</button>
+
+        <!-- RESULTS -->
+        <div id="cgResults" style="display:none;margin-top:16px">
+          <div id="cgTypeLabel" style="font-size:13px;font-weight:700;margin-bottom:10px;color:var(--ink)"></div>
+
+          <!-- Regime comparison -->
+          <div class="compare-grid" id="compareGrid"></div>
+
+          <!-- Detail breakdown -->
+          <div id="detailBreakdown"></div>
+
+          <!-- Reverse calculator result -->
+          <div class="reverse-box" id="reverseBox" style="display:none">
+            <h3>🔄 Reverse Calculator — Zero Tax Sale Price</h3>
+            <div class="rval" id="revSalePrice"></div>
+            <div class="rsub" id="revSub"></div>
+          </div>
+
+          <div class="note-box" id="cgNote"></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: INFO PANELS -->
+  <div>
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#FFFBEB">📋</div>
+        <div><h2>Tax Rates — IT Act 2025</h2><p>LTCG &amp; STCG at a glance</p></div>
+      </div>
+      <div class="card-body" style="padding:0;overflow-x:auto">
+        <table class="cii-table">
+          <thead><tr><th>Asset</th><th>Holding</th><th>Rate</th><th>Threshold</th></tr></thead>
+          <tbody>
+            <tr><td>Immovable Property</td><td>&gt;24 months</td><td>12.5% (no idx) / 20% (with idx pre Jul-23)</td><td>₹1.25L (old ₹1L)</td></tr>
+            <tr><td>Listed Equity / Eq MF</td><td>&gt;12 months</td><td>12.5%</td><td>₹1.25L exempt</td></tr>
+            <tr><td>Listed Equity / Eq MF</td><td>≤12 months</td><td>20% (STCG)</td><td>Nil</td></tr>
+            <tr><td>Debt MF / Bonds</td><td>Any</td><td>Slab rate</td><td>Nil</td></tr>
+            <tr><td>Gold / Gold ETF</td><td>&gt;24 months</td><td>12.5%</td><td>Nil</td></tr>
+            <tr><td>Unlisted Shares</td><td>&gt;24 months</td><td>12.5%</td><td>Nil</td></tr>
+            <tr><td>Unlisted Shares</td><td>≤24 months</td><td>Slab rate</td><td>Nil</td></tr>
+            <tr><td>Any STCG (others)</td><td>≤24/36 months</td><td>Slab rate</td><td>Nil</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#F5F3FF">📈</div>
+        <div><h2>Cost Inflation Index (CII)</h2><p>As notified by CBDT</p></div>
+      </div>
+      <div class="card-body" style="padding:0;max-height:260px;overflow-y:auto">
+        <table class="cii-table">
+          <thead><tr><th>FY</th><th>CII</th><th>FY</th><th>CII</th></tr></thead>
+          <tbody>
+            <tr><td>2001-02</td><td>100</td><td>2014-15</td><td>240</td></tr>
+            <tr><td>2002-03</td><td>105</td><td>2015-16</td><td>254</td></tr>
+            <tr><td>2003-04</td><td>109</td><td>2016-17</td><td>264</td></tr>
+            <tr><td>2004-05</td><td>113</td><td>2017-18</td><td>272</td></tr>
+            <tr><td>2005-06</td><td>117</td><td>2018-19</td><td>280</td></tr>
+            <tr><td>2006-07</td><td>122</td><td>2019-20</td><td>289</td></tr>
+            <tr><td>2007-08</td><td>129</td><td>2020-21</td><td>301</td></tr>
+            <tr><td>2008-09</td><td>137</td><td>2021-22</td><td>317</td></tr>
+            <tr><td>2009-10</td><td>148</td><td>2022-23</td><td>331</td></tr>
+            <tr><td>2010-11</td><td>167</td><td>2023-24</td><td>348</td></tr>
+            <tr><td>2011-12</td><td>184</td><td>2024-25</td><td>363</td></tr>
+            <tr><td>2012-13</td><td>200</td><td>2025-26</td><td>380</td></tr>
+            <tr><td>2013-14</td><td>220</td><td>2026-27</td><td>TBA</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#F0FDF4">🏠</div>
+        <div><h2>Key Exemptions</h2><p>Reduce your capital gains tax</p></div>
+      </div>
+      <div class="card-body">
+        <div style="font-size:12px;line-height:2;color:var(--muted)">
+          <p><strong style="color:var(--ink)">Sec 54</strong> — LTCG on residential property → invest in new house (within 2yr purchase / 3yr construct)</p>
+          <p><strong style="color:var(--ink)">Sec 54B</strong> — LTCG on agricultural land → invest in new agricultural land</p>
+          <p><strong style="color:var(--ink)">Sec 54EC</strong> — Any LTCG → NHAI/REC bonds (max ₹50L, lock-in 5yr)</p>
+          <p><strong style="color:var(--ink)">Sec 54F</strong> — LTCG on any asset → invest in residential house (net consideration)</p>
+          <p style="margin-top:8px;color:var(--red)"><strong>Note:</strong> Exemptions available only on LTCG. Claim only if actually investing.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <p class="footer-brand">CA Toolkit</p>
+  <p>Built for Indian CAs · Created by CA Article</p>
+  <p style="margin-top:8px;font-size:11px">© 2026 CA Toolkit · For reference only — consult a CA before making decisions</p>
+</footer>
+
+<script>
+// CII table
+const CII = {2001:100,2002:105,2003:109,2004:113,2005:117,2006:122,2007:129,2008:137,
+             2009:148,2010:167,2011:184,2012:200,2013:220,2014:240,2015:254,2016:264,
+             2017:272,2018:280,2019:289,2020:301,2021:317,2022:331,2023:348,2024:363,2025:380,2026:380};
+
+const fmt   = n => "₹"+Math.round(n).toLocaleString("en-IN");
+const fmtPct= n => n.toFixed(2)+"%";
+
+function parseMyDate(s){
+  if(!s) return null;
+  const p=String(s).trim().split("/");
+  if(p.length===3) return new Date(parseInt(p[2]),parseInt(p[1])-1,parseInt(p[0]));
+  return new Date(s);
+}
+
+function getFY(d){ return d.getMonth()>=3 ? d.getFullYear() : d.getFullYear()-1; }
+
+function holdingMonths(d1,d2){
+  return (d2.getFullYear()-d1.getFullYear())*12 + (d2.getMonth()-d1.getMonth());
+}
+
+function getCII(fy){ return CII[fy] || 380; }
+
+function updateAssetUI(){
+  const t = document.getElementById("assetType").value;
+  const showExemption = ["property","equity","other","gold","unlisted"].includes(t);
+  document.getElementById("exemptionField").style.display    = showExemption?"block":"none";
+  document.getElementById("exemptionAmtField").style.display = showExemption?"block":"none";
+}
+
+function calcCG(){
+  const asset     = document.getElementById("assetType").value;
+  const pd        = parseMyDate(document.getElementById("purchaseDate").value);
+  const sd        = parseMyDate(document.getElementById("saleDate").value);
+  const pp        = parseFloat(document.getElementById("purchasePrice").value)||0;
+  const sp        = parseFloat(document.getElementById("salePrice").value)||0;
+  const ic        = parseFloat(document.getElementById("improveCost").value)||0;
+  const tc        = parseFloat(document.getElementById("transferCost").value)||0;
+  const exemAmt   = parseFloat(document.getElementById("exemptionAmt").value)||0;
+  const exemType  = document.getElementById("exemptionType").value;
+  const assessee  = document.getElementById("assesseeType").value;
+
+  if(!pd||!sd){ alert("Please enter both purchase and sale dates."); return; }
+  if(!pp||!sp){ alert("Please enter purchase price and sale price."); return; }
+  if(sd<=pd){ alert("Sale date must be after purchase date."); return; }
+
+  const months = holdingMonths(pd,sd);
+  const pyFY   = getFY(pd);
+  const syFY   = getFY(sd);
+
+  // Determine LTCG/STCG threshold
+  let ltcgMonths = 24;
+  if(asset==="equity") ltcgMonths = 12;
+  const isLTCG = months >= ltcgMonths;
+  const cgType = isLTCG ? "Long-Term Capital Gain (LTCG)" : "Short-Term Capital Gain (STCG)";
+
+  // Net sale consideration
+  const netSale = sp - tc;
+
+  // ── New Regime (no indexation) ────────────────────────────────────────────
+  let newCOA = pp + ic;
+  let newCG  = Math.max(0, netSale - newCOA - exemAmt);
+  let newRate, newExempt=0, newTax=0;
+
+  if(!isLTCG){
+    // STCG
+    if(asset==="equity") newRate=20;
+    else newRate=0; // slab
+  } else {
+    if(asset==="equity"){ newRate=12.5; newExempt=125000; }
+    else if(asset==="debt") newRate=0; // slab
+    else newRate=12.5;
+  }
+  if(newRate>0){
+    const taxableNew = Math.max(0, newCG - newExempt);
+    newTax = Math.round(taxableNew * newRate / 100);
+  }
+
+  // ── Old Regime (with indexation) — only for LTCG on property purchased pre Jul 2023 ──
+  const preJul23 = pd < new Date(2023,6,23);
+  const showOldRegime = isLTCG && (asset==="property"||asset==="other"||asset==="gold") && preJul23;
+  let oldCOA=0, oldCG=0, oldRate=0, oldExempt=0, oldTax=0;
+
+  if(showOldRegime){
+    const ciiPurchase = getCII(pyFY);
+    const ciiSale     = getCII(syFY);
+    oldCOA  = Math.round((pp + ic) * ciiSale / ciiPurchase);
+    oldCG   = Math.max(0, netSale - oldCOA - exemAmt);
+    oldRate = 20;
+    const taxableOld = Math.max(0, oldCG - oldExempt);
+    oldTax  = Math.round(taxableOld * oldRate / 100);
+  }
+
+  // ── Reverse calculator ─────────────────────────────────────────────────────
+  // Min sale price for zero tax (new regime)
+  let zeroTaxSale = null;
+  if(newRate>0 && isLTCG){
+    zeroTaxSale = newCOA + tc + newExempt + exemAmt;
+    if(asset==="equity") zeroTaxSale += 125000;
+  }
+
+  // ── Render results ─────────────────────────────────────────────────────────
+  document.getElementById("cgTypeLabel").innerHTML =
+    `<span style="background:${isLTCG?"#EFF6FF":"#FFFBEB"};color:${isLTCG?"var(--brand)":"#92400E"};
+     padding:4px 12px;border-radius:99px;font-size:12px">${cgType} · ${months} months holding</span>`;
+
+  // Compare grid
+  let compareHTML = "";
+  const winner = (showOldRegime && oldTax < newTax) ? "old" : "new";
+
+  compareHTML += `<div class="cbox ${winner==="new"?"winner":""}">
+    ${winner==="new"?'<span class="winner-badge">✓ Lower Tax</span><br>':""}
+    <h3>New Regime (No Indexation)</h3>
+    <div class="ctax">${newRate===0?"Slab Rate":fmt(newTax)}</div>
+    <div class="csub">${newRate===0?"Tax at applicable slab rate":newRate+"% on "+fmt(Math.max(0,newCG-newExempt))}</div>
+  </div>`;
+
+  if(showOldRegime){
+    compareHTML += `<div class="cbox ${winner==="old"?"winner":""}">
+      ${winner==="old"?'<span class="winner-badge">✓ Lower Tax</span><br>':""}
+      <h3>Old Regime (With Indexation)</h3>
+      <div class="ctax">${fmt(oldTax)}</div>
+      <div class="csub">20% on ${fmt(Math.max(0,oldCG))} (Indexed COA: ${fmt(oldCOA)})</div>
+    </div>`;
+  } else {
+    compareHTML += `<div class="cbox" style="background:#F9FAFB;border-style:dashed">
+      <h3 style="color:var(--muted)">Old Regime (Indexation)</h3>
+      <div class="ctax" style="color:var(--muted);font-size:14px">Not Applicable</div>
+      <div class="csub">${!isLTCG?"STCG — no indexation benefit":!preJul23?"Asset purchased after 23 Jul 2023":"Not applicable for this asset type"}</div>
+    </div>`;
+  }
+  document.getElementById("compareGrid").innerHTML = compareHTML;
+
+  // Detail breakdown (new regime)
+  let detailHTML = `<div class="card" style="margin-top:12px">
+    <div class="card-head"><div class="icon" style="background:#EFF6FF">🧮</div>
+    <div><h2>Computation (New Regime)</h2><p>Step-by-step breakdown</p></div></div>
+    <div class="card-body" style="padding:12px 16px">
+    <table class="dtable">
+      <tr><td>Full Value of Consideration (Sale Price)</td><td>${fmt(sp)}</td></tr>
+      <tr><td>Less: Transfer Expenses</td><td>(${fmt(tc)})</td></tr>
+      <tr><td>Net Sale Consideration</td><td>${fmt(netSale)}</td></tr>
+      <tr><td>Less: Cost of Acquisition</td><td>(${fmt(pp)})</td></tr>
+      <tr><td>Less: Cost of Improvement</td><td>(${fmt(ic)})</td></tr>
+      <tr><td>Capital Gain (Before Exemption)</td><td>${fmt(Math.max(0,netSale-pp-ic))}</td></tr>
+      ${exemAmt>0?`<tr><td>Less: Exemption u/s ${exemType}</td><td>(${fmt(exemAmt)})</td></tr>`:""}
+      <tr><td>Taxable Capital Gain</td><td>${fmt(newCG)}</td></tr>
+      ${newExempt>0?`<tr><td>Less: Basic Exemption (₹1.25L)</td><td>(${fmt(Math.min(newExempt,newCG))})</td></tr>`:""}
+      <tr><td>Tax @ ${newRate===0?"Slab":newRate+"%"}</td><td><strong>${newRate===0?"As per slab":fmt(newTax)}</strong></td></tr>
+    </table></div></div>`;
+
+  if(showOldRegime){
+    const ciiP = getCII(pyFY), ciiS = getCII(syFY);
+    detailHTML += `<div class="card" style="margin-top:12px">
+      <div class="card-head"><div class="icon" style="background:#F5F3FF">📊</div>
+      <div><h2>Computation (Old Regime with Indexation)</h2><p>CII ${pyFY}-${pyFY+1}: ${ciiP} → ${syFY}-${syFY+1}: ${ciiS}</p></div></div>
+      <div class="card-body" style="padding:12px 16px">
+      <table class="dtable">
+        <tr><td>Net Sale Consideration</td><td>${fmt(netSale)}</td></tr>
+        <tr><td>Indexed Cost of Acquisition (${pp} × ${ciiS}/${ciiP})</td><td>(${fmt(oldCOA)})</td></tr>
+        <tr><td>Capital Gain (After Indexation)</td><td>${fmt(oldCG)}</td></tr>
+        ${exemAmt>0?`<tr><td>Less: Exemption u/s ${exemType}</td><td>(${fmt(exemAmt)})</td></tr>`:""}
+        <tr><td>Tax @ 20%</td><td><strong>${fmt(oldTax)}</strong></td></tr>
+      </table></div></div>`;
+  }
+
+  document.getElementById("detailBreakdown").innerHTML = detailHTML;
+
+  // Reverse calculator
+  if(zeroTaxSale!==null && zeroTaxSale>0){
+    document.getElementById("reverseBox").style.display = "block";
+    document.getElementById("revSalePrice").textContent = fmt(zeroTaxSale);
+    document.getElementById("revSub").textContent =
+      `Sell at or below ${fmt(zeroTaxSale)} to have zero capital gains tax liability (new regime, excluding transfer expenses in computation)`;
+  } else {
+    document.getElementById("reverseBox").style.display = "none";
+  }
+
+  // Note
+  let note = "";
+  if(newRate===0) note = "Tax at applicable slab rate. Add capital gain to total income and apply applicable tax slab.";
+  else if(!isLTCG) note = "Short-term capital gain — taxed at "+newRate+"% (equity) or slab rate (others).";
+  else note = `LTCG taxed at ${newRate}%. ${showOldRegime?"Both regimes shown — choose the one with lower tax.":""}`;
+  if(exemAmt>0) note += ` Exemption of ${fmt(exemAmt)} claimed u/s ${exemType}.`;
+  document.getElementById("cgNote").textContent = "⚠ " + note + " This is an estimate — verify with actual CII and consult your CA.";
+
+  document.getElementById("cgResults").style.display = "block";
+  document.getElementById("cgResults").scrollIntoView({behavior:"smooth"});
+}
+
+updateAssetUI();
+</script>
+</body></html>"""
+
+
+ADMIN_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin – CA Toolkit</title>
+<style>
+""" + BASE_CSS + """
+.wrap{max-width:1100px;margin:0 auto;padding:28px 24px}
+h1{font-size:20px;font-weight:800;margin-bottom:4px}
+.sub{font-size:13px;color:var(--muted);margin-bottom:24px}
+.alert{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px}
+.as{background:#ECFDF5;border:1px solid #A7F3D0;color:#065F46}
+.ae{background:#FEF2F2;border:1px solid #FECACA;color:#991B1B}
+.section{background:var(--white);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:20px;overflow:hidden}
+.sec-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.sec-head h2{font-size:14px;font-weight:700}
+.sec-body{padding:18px}
+label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:4px}
+.field{margin-bottom:12px}
+input[type=text],input[type=password],select{width:100%;border:1.5px solid var(--border);border-radius:8px;
+  padding:8px 11px;font-family:inherit;font-size:13px;color:var(--ink);background:var(--white);outline:none;transition:border-color .2s}
+input:focus,select:focus{border-color:var(--brand)}
+.form-row{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:end}
+@media(max-width:640px){.form-row{grid-template-columns:1fr}}
+.btn{background:var(--brand);color:#fff;border:none;border-radius:8px;padding:9px 16px;
+     font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:background .2s}
+.btn:hover{background:var(--brand-d)}
+.sm{padding:5px 10px;font-size:11px;border-radius:6px;border:none;cursor:pointer;font-family:inherit;font-weight:600}
+.sg{background:#ECFDF5;color:#065F46}.sg:hover{background:#A7F3D0}
+.rr{background:#FEF2F2;color:#991B1B}.rr:hover{background:#FECACA}
+.am{background:#EFF6FF;color:var(--brand)}.am:hover{background:#BFDBFE}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+   border-bottom:1.5px solid var(--border);padding:7px 10px}
+td{padding:10px;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#F9FAFB}
+.bdg{display:inline-block;font-size:10px;font-weight:700;padding:2px 7px;border-radius:99px;text-transform:uppercase}
+.b-free{background:#F3F4F6;color:var(--muted)}
+.b-starter{background:#ECFDF5;color:#065F46}
+.b-standard{background:#EFF6FF;color:var(--brand)}
+.b-pro{background:#FFFBEB;color:#92400E}
+.b-firm{background:#F5F3FF;color:#5B21B6}
+.warn{color:var(--red);font-weight:700}
+.ok{color:var(--green);font-weight:700}
+.progress-wrap{display:flex;align-items:center;gap:8px;min-width:120px}
+.progress-bg{flex:1;background:#F3F4F6;border-radius:99px;height:5px;overflow:hidden}
+.progress-fill{height:100%;border-radius:99px}
+</style></head><body>
+<nav>
+  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <div class="nav-right">
+    <a href="/" class="nav-link">Dashboard</a>
+    <a href="/logout" class="nav-link">Sign out</a>
+  </div>
+</nav>
+<div class="wrap">
+  <h1>⚙ Admin Panel</h1>
+  <p class="sub">Create accounts, manage plans, track usage.</p>
+  {% if msg %}<div class="alert {{ 'ae' if 'error' in msg.lower() or 'cannot' in msg.lower() else 'as' }}">{{ msg }}</div>{% endif %}
+
+  <!-- CREATE USER -->
+  <div class="section">
+    <div class="sec-head"><h2>➕ Create New User</h2></div>
+    <div class="sec-body">
+      <form method="POST" action="/admin/create">
+        <div class="form-row">
+          <div class="field"><label>Username</label>
+            <input type="text" name="username" placeholder="e.g. rahul_ca" required/></div>
+          <div class="field"><label>Password</label>
+            <input type="password" name="password" placeholder="Min 6 chars" required/></div>
+          <div class="field"><label>Plan</label>
+            <select name="plan">
+              <option value="free">Free (2 uploads)</option>
+              <option value="starter">Starter (10 uploads · ₹60)</option>
+              <option value="standard" selected>Standard (25 uploads · ₹130)</option>
+              <option value="pro">Professional (60 uploads · ₹270)</option>
+              <option value="firm">Firm (150 uploads · ₹600)</option>
+            </select></div>
+          <div class="field"><label>&nbsp;</label>
+            <button class="btn" type="submit">Create User</button></div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- USERS TABLE -->
+  <div class="section">
+    <div class="sec-head">
+      <h2>👥 All Users ({{ users|length }})</h2>
+      <span style="font-size:12px;color:var(--muted)">Uploads remaining shown in green/red</span>
+    </div>
+    <div class="sec-body" style="padding:0;overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>#</th><th>Username</th><th>Plan</th>
+          <th>Uploads Used</th><th>Remaining</th>
+          <th>Valid Till</th><th>Joined</th><th>Actions</th>
+        </tr></thead>
+        <tbody>
+        {% for u in users %}
+        <tr>
+          <td style="color:var(--muted)">{{ u.id }}</td>
+          <td><strong>{{ u.username }}</strong>
+            {% if u.is_admin %}<span class="bdg" style="background:#EFF6FF;color:var(--brand);margin-left:4px">Admin</span>{% endif %}
+          </td>
+          <td><span class="bdg b-{{ u.plan }}">{{ u.plan }}</span></td>
+          <td>
+            <div class="progress-wrap">
+              <div class="progress-bg">
+                <div class="progress-fill"
+                     style="width:{{ [u.uploads_used*100//u.uploads_total if u.uploads_total else 0, 100]|min }}%;
+                            background:{{ '#EF4444' if u.remaining==0 else '#F59E0B' if u.remaining<=3 else '#10B981' }}">
+                </div>
+              </div>
+              <span style="font-size:11px;white-space:nowrap">{{ u.uploads_used }} / {{ u.uploads_total }}</span>
+            </div>
+          </td>
+          <td class="{{ 'warn' if u.remaining==0 else 'ok' if u.remaining > 5 else '' }}">
+            {{ u.remaining }}
+          </td>
+          <td style="font-size:11px;color:var(--muted)">
+            {{ u.validity_end[:10] if u.validity_end else '—' }}
+          </td>
+          <td style="font-size:11px;color:var(--muted)">{{ u.created_at[:10] }}</td>
+          <td>
+            {% if not u.is_admin %}
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <!-- Add uploads dropdown -->
+              <form method="POST" action="/admin/addplan" style="display:flex;gap:4px;align-items:center">
+                <input type="hidden" name="uid" value="{{ u.id }}"/>
+                <select name="plan" style="padding:4px 6px;font-size:11px;border-radius:6px;border:1px solid var(--border);width:auto">
+                  <option value="starter">+10</option>
+                  <option value="standard" selected>+25</option>
+                  <option value="pro">+60</option>
+                  <option value="firm">+150</option>
+                </select>
+                <button class="sm am" type="submit">Add</button>
+              </form>
+              <form method="POST" action="/admin/delete" style="display:inline"
+                    onsubmit="return confirm('Delete {{ u.username }}? This cannot be undone.')">
+                <input type="hidden" name="uid" value="{{ u.id }}"/>
+                <button class="sm rr" type="submit">Delete</button>
+              </form>
+            </div>
+            {% else %}
+            <span style="font-size:11px;color:var(--muted)">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<footer>
+  <p class="footer-brand">CA Toolkit — Admin</p>
+  <p>Created by CA Article</p>
+</footer>
+</body></html>"""
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ROUTES — AUTH
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/login", methods=["GET"])
+def login_page():
+    if "uid" in session: return redirect(url_for("dashboard"))
+    return render_template_string(LOGIN_T, error=None, email=CONTACT_EMAIL)
+
+@app.route("/login", methods=["POST"])
+def login_post():
+    u = request.form.get("username", "").strip()
+    p = request.form.get("password", "")
+    user = get_user_by_name(u)
+    if not user or user["password"] != _hash(p):
+        return render_template_string(LOGIN_T, error="Invalid username or password.", email=CONTACT_EMAIL)
+    session.clear()
+    session["uid"] = user["id"]
+    return redirect(url_for("dashboard"))
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login_page"))
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ROUTES — DASHBOARD & TOOLS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def user_ctx(user):
+    """Build common template context for a user."""
+    used  = user["uploads_used"]
+    total = user["uploads_total"]
+    left  = uploads_remaining(user)
+    pct   = min(int(used * 100 / total) if total else 0, 100)
+    return dict(
+        username=user["username"],
+        plan=user["plan"],
+        plan_label=PLANS.get(user["plan"], {}).get("label", user["plan"].title()),
+        is_admin=bool(user["is_admin"]),
+        uploads_used=used,
+        uploads_total=total,
+        uploads_left=left,
+        uploads_remaining=left,
+        bar_pct=pct,
+        validity_end=user["validity_end"],
+        contact_email=CONTACT_EMAIL,
+        contact_upi=CONTACT_UPI,
+    )
+
+@app.route("/")
+def dashboard():
+    if "uid" in session:
+        user = get_user_by_id(session["uid"])
+        ctx = user_ctx(user)
+    else:
+        ctx = dict(
+            username=None, plan="free", plan_label="Free",
+            is_admin=False, uploads_used=0, uploads_total=2,
+            uploads_left=2, uploads_remaining=2, bar_pct=0,
+            validity_end=None, contact_email=CONTACT_EMAIL,
+            contact_upi=CONTACT_UPI,
         )
-        return row_xml
+    return render_template_string(DASHBOARD_T, **ctx)
 
-    text = re.sub(r'<row\b[^>]*>.*?</row>', _fix_row, text, flags=re.DOTALL)
-    return text.encode("utf-8")
+@app.route("/tool/converter")
+@login_required
+def tool_converter():
+    user = get_user_by_id(session["uid"])
+    return render_template_string(CONVERTER_T, **user_ctx(user))
 
+@app.route("/tool/tax-calculator")
+def tool_tax_calculator():
+    if "uid" in session:
+        user = get_user_by_id(session["uid"])
+        ctx = user_ctx(user)
+    else:
+        ctx = dict(
+            username=None, plan="free", plan_label="Free",
+            is_admin=False, uploads_used=0, uploads_total=2,
+            uploads_left=2, uploads_remaining=2, bar_pct=0,
+            validity_end=None, contact_email=CONTACT_EMAIL,
+            contact_upi=CONTACT_UPI,
+        )
+    return render_template_string(TAX_CALC_T, **ctx)
 
-def _fmt_num(v: float) -> str:
-    """Format a float for XML: drop .0 suffix for whole numbers."""
-    if v == int(v):
-        return str(int(v))
-    return repr(v)  # repr gives enough precision without scientific notation
+@app.route("/tool/tds-calculator")
+def tool_tds_calculator():
+    if "uid" in session:
+        user = get_user_by_id(session["uid"])
+        ctx = user_ctx(user)
+    else:
+        ctx = dict(
+            username=None, plan="free", plan_label="Free",
+            is_admin=False, uploads_used=0, uploads_total=2,
+            uploads_left=2, uploads_remaining=2, bar_pct=0,
+            validity_end=None, contact_email=CONTACT_EMAIL,
+            contact_upi=CONTACT_UPI,
+        )
+    return render_template_string(TDS_CALC_T, **ctx)
 
-def _fmt_num_for_py(v: float) -> str:
-    """Format CY value for writing to PY cell. Zero stays as zero (not dash) 
-    because PY column may have its own dash formatting via cell format."""
-    return _fmt_num(v)
+@app.route("/tool/depreciation-calculator")
+def tool_depreciation_calculator():
+    if "uid" in session:
+        user = get_user_by_id(session["uid"])
+        ctx = user_ctx(user)
+    else:
+        ctx = dict(
+            username=None, plan="free", plan_label="Free",
+            is_admin=False, uploads_used=0, uploads_total=2,
+            uploads_left=2, uploads_remaining=2, bar_pct=0,
+            validity_end=None, contact_email=CONTACT_EMAIL,
+            contact_upi=CONTACT_UPI,
+        )
+    return render_template_string(DEP_CALC_T, **ctx)
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  ROUTES — PROCESS & DOWNLOAD
+# ══════════════════════════════════════════════════════════════════════════════
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Shared-strings date replacement
-# ═══════════════════════════════════════════════════════════════════════════════
+def _convert_xls_to_xlsx(xls_path, xlsx_path):
+    """Convert legacy .xls to .xlsx using xlrd + openpyxl with formatting."""
+    import xlrd
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+    from openpyxl.utils import get_column_letter
 
-def _update_shared_strings(xml_bytes: bytes, pairs: list) -> bytes:
-    """
-    Replace date strings in sharedStrings.xml.
-    Handles plain <t> cells and rich-text <r><t> runs (superscript ordinals etc.).
-    Uses lxml when available (namespace-safe); falls back to stdlib ET.
-    sharedStrings.xml itself doesn't use xl: / r: prefixes in its content,
-    so stdlib ET is safe here.
-    """
-    try:
-        from lxml import etree as letree
-        root = letree.fromstring(xml_bytes)
-        NS_L = "{" + _NS + "}"
-        changed = False
-        for si in root:
-            t_els = si.findall(f".//{NS_L}t")
-            if not t_els:
-                continue
-            if len(t_els) == 1:
-                old = t_els[0].text or ""
-                new = _apply_pairs(old, pairs)
-                if new != old:
-                    t_els[0].text = new
-                    changed = True
-            else:
-                originals = [t.text or "" for t in t_els]
-                full_new = _apply_pairs("".join(originals), pairs)
-                if full_new != "".join(originals):
-                    changed = True
-                    _redistribute_rich_text(t_els, originals, full_new)
-        if not changed:
-            return xml_bytes
-        return letree.tostring(root, xml_declaration=True,
-                               encoding="UTF-8", standalone=True)
-    except ImportError:
-        pass
+    wb_xls = xlrd.open_workbook(xls_path, formatting_info=True)
+    wb_out = Workbook()
+    wb_out.remove(wb_out.active)
 
-    # stdlib ET fallback
-    root = ET.fromstring(xml_bytes)
-    changed = False
-    for si in root:
-        t_els = list(si.iter(f"{{{_NS}}}t"))
-        if not t_els:
-            continue
-        if len(t_els) == 1:
-            old = t_els[0].text or ""
-            new = _apply_pairs(old, pairs)
-            if new != old:
-                t_els[0].text = new
-                changed = True
-        else:
-            originals = [t.text or "" for t in t_els]
-            full_new = _apply_pairs("".join(originals), pairs)
-            if full_new != "".join(originals):
-                changed = True
-                _redistribute_rich_text(t_els, originals, full_new)
-    if not changed:
-        return xml_bytes
-    ET.register_namespace("", _NS)
-    return ET.tostring(root, xml_declaration=True, encoding="UTF-8")
+    colour_map = wb_xls.colour_map
+    def xlrd_color_to_hex(idx):
+        if idx is None or idx < 8 or idx > 63: return None
+        rgb = colour_map.get(idx)
+        if rgb and rgb != (0, 0, 0): return f'{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}'
+        return None
 
+    border_styles = {0: None, 1: 'thin', 2: 'medium', 3: 'dashed',
+                     4: 'dotted', 5: 'thick', 6: 'double', 7: 'hair'}
 
-def _redistribute_rich_text(t_els, originals: list, full_new: str):
-    """Redistribute replaced text back into rich-text <t> runs."""
-    full_old = "".join(originals)
-    if len(full_new) == len(full_old):
-        pos = 0
-        for i, t_el in enumerate(t_els):
-            run_len = len(originals[i])
-            t_el.text = full_new[pos:pos + run_len]
-            pos += run_len
-        return
+    for sheet_name in wb_xls.sheet_names():
+        xls_ws = wb_xls.sheet_by_name(sheet_name)
+        xlsx_ws = wb_out.create_sheet(title=sheet_name)
 
-    # Find common prefix / suffix, assign changed middle to overlapping runs
-    pfx = 0
-    while pfx < len(full_old) and pfx < len(full_new) and full_old[pfx] == full_new[pfx]:
-        pfx += 1
-    sfx = 0
-    while (sfx < len(full_old) - pfx and sfx < len(full_new) - pfx
-           and full_old[-(sfx + 1)] == full_new[-(sfx + 1)]):
-        sfx += 1
-
-    change_start   = pfx
-    change_end_old = len(full_old) - sfx
-    change_end_new = len(full_new) - sfx
-    new_middle     = full_new[change_start:change_end_new]
-
-    pos = 0
-    new_texts = []
-    middle_assigned = False
-    for orig in originals:
-        rstart, rend = pos, pos + len(orig)
-        if rend <= change_start:
-            new_texts.append(orig)
-        elif rstart >= change_end_old:
-            new_texts.append(orig)
-        else:
-            before = orig[:max(0, change_start - rstart)]
-            after  = orig[max(0, change_end_old - rstart):]
-            if not middle_assigned:
-                new_texts.append(before + new_middle + after)
-                middle_assigned = True
-            else:
-                new_texts.append(after)
-        pos = rend
-
-    for i, t_el in enumerate(t_els):
-        t_el.text = new_texts[i] if i < len(new_texts) else ""
-
-
-def _update_inline_strings(xml_bytes: bytes, pairs: list) -> bytes:
-    """Replace date strings in worksheet inline strings (raw text substitution)."""
-    text = xml_bytes.decode("utf-8", errors="replace")
-    new_text = _apply_pairs(text, pairs)
-    if new_text == text:
-        return xml_bytes
-    return new_text.encode("utf-8")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Main entry point
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def process(input_path: str, output_path: str,
-            closing_year: int, new_year: int) -> dict:
-    pairs = _date_replacements(str(closing_year), str(new_year))
-    log   = []
-
-    # ── Single-pass scan ──────────────────────────────────────────────────────
-    sizes, shift_map, cy_values, cy_formulas = _scan_workbook(input_path, closing_year)
-    big_names = {n for n, (r, c) in sizes.items() if r > BIG_ROWS or c > BIG_COLS}
-
-    # ── ZIP-level edit loop ───────────────────────────────────────────────────
-    with zipfile.ZipFile(input_path, "r") as zi:
-        smap = _sheet_file_map(zi)
-
-        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zo:
-            for item in zi.infolist():
-                fn   = item.filename
-                data = zi.read(fn)
-
-                # shared strings — date text replacement only
-                if fn == "xl/sharedStrings.xml":
-                    data = _update_shared_strings(data, pairs)
-                    zo.writestr(item, data)
+        for row_idx in range(xls_ws.nrows):
+            for col_idx in range(xls_ws.ncols):
+                ctype = xls_ws.cell_type(row_idx, col_idx)
+                if ctype == xlrd.XL_CELL_EMPTY:
                     continue
+                val = xls_ws.cell_value(row_idx, col_idx)
+                cell = xlsx_ws.cell(row=row_idx + 1, column=col_idx + 1)
 
-                # worksheet XMLs
-                if fn.startswith("xl/worksheets/") and fn.endswith(".xml"):
-                    sheet_name = next(
-                        (sn for sn, sf in smap.items() if sf == fn), None
+                if ctype == xlrd.XL_CELL_NUMBER and val == int(val):
+                    val = int(val)
+                if ctype == xlrd.XL_CELL_DATE:
+                    try:
+                        from datetime import datetime
+                        dt = xlrd.xldate_as_tuple(val, wb_xls.datemode)
+                        cell.value = datetime(*dt)
+                    except:
+                        cell.value = val
+                else:
+                    cell.value = val
+
+                # Copy formatting
+                try:
+                    xf = wb_xls.xf_list[xls_ws.cell_xf_index(row_idx, col_idx)]
+                    font_xls = wb_xls.font_list[xf.font_index]
+
+                    cell.font = Font(
+                        name=font_xls.name or 'Calibri',
+                        size=font_xls.height / 20 if font_xls.height else 11,
+                        bold=font_xls.bold, italic=font_xls.italic,
+                        underline='single' if font_xls.underline_type else None,
                     )
-                    sl = (sheet_name or "").strip().lower()
 
-                    if sheet_name and sheet_name in shift_map:
-                        # Full CY→PY shift + date update
-                        data = _process_sheet_xml(
-                            data,
-                            shift_map[sheet_name],
-                            cy_values.get(sheet_name, {}),
-                            cy_formulas.get(sheet_name, {}),
-                        )
-                        data = _update_inline_strings(data, pairs)
-                        desc = ", ".join(f"{c}→{p}" for c, p in shift_map[sheet_name])
-                        log.append(
-                            f"✓ {sheet_name}: CY→PY copied ({desc}), "
-                            f"CY constants cleared, dates updated"
-                        )
-                    elif sheet_name and sl in RAW_DATA_SHEETS:
-                        # Don't touch raw data sheets at all
-                        log.append(f"— {sheet_name}: skipped (raw data sheet)")
-                    elif sheet_name and sheet_name not in big_names:
-                        # Small sheet with no CY/PY columns — just update dates
-                        data = _update_inline_strings(data, pairs)
-                        log.append(f"· {sheet_name}: dates updated")
-                    elif sheet_name in big_names:
-                        log.append(
-                            f"* {sheet_name}: preserved unchanged (large sheet "
-                            f"{sizes[sheet_name][0]} rows)"
-                        )
+                    ha = {0: None, 1: 'left', 2: 'center', 3: 'right',
+                          5: 'justify'}.get(xf.alignment.hor_align)
+                    va = {0: 'top', 1: 'center', 2: 'bottom'}.get(
+                        xf.alignment.vert_align, 'bottom')
+                    cell.alignment = Alignment(
+                        horizontal=ha, vertical=va,
+                        wrap_text=bool(xf.alignment.text_wrapped),
+                        indent=xf.alignment.indent_level,
+                    )
 
-                    zo.writestr(item, data)
-                    continue
+                    fmt_str = wb_xls.format_map.get(xf.format_key)
+                    if fmt_str:
+                        cell.number_format = fmt_str.format_str
 
-                # everything else — pass through byte-perfect
-                zo.writestr(item, data)
+                    def _side(style_idx):
+                        s = border_styles.get(style_idx)
+                        return Side(style=s) if s else Side()
+                    brd = xf.border
+                    cell.border = Border(
+                        left=_side(brd.left_line_style),
+                        right=_side(brd.right_line_style),
+                        top=_side(brd.top_line_style),
+                        bottom=_side(brd.bottom_line_style),
+                    )
 
-    return {"status": "success", "log": log, "output": output_path}
+                    bg_idx = xf.background.pattern_colour_index
+                    bg_hex = xlrd_color_to_hex(bg_idx)
+                    if bg_hex and xf.background.fill_pattern:
+                        cell.fill = PatternFill('solid', fgColor=bg_hex)
+                except Exception:
+                    pass
 
+        # Merged cells (after data so we don't write to merged cells)
+        for crange in xls_ws.merged_cells:
+            r1, r2, c1, c2 = crange
+            xlsx_ws.merge_cells(
+                start_row=r1 + 1, start_column=c1 + 1,
+                end_row=r2, end_column=c2)
+
+        # Column widths
+        for c, ci in xls_ws.colinfo_map.items():
+            if ci.width:
+                xlsx_ws.column_dimensions[get_column_letter(c + 1)].width = ci.width / 256
+
+        # Row heights
+        for r, rh in xls_ws.rowinfo_map.items():
+            if rh.height:
+                xlsx_ws.row_dimensions[r + 1].height = rh.height / 20
+
+    wb_out.save(xlsx_path)
+
+@app.route("/process", methods=["POST"])
+@login_required
+def process_file():
+    try:
+        user = get_user_by_id(session["uid"])
+        if not user["is_admin"] and uploads_remaining(user) <= 0:
+            return jsonify({"status": "error",
+                "message": f"No uploads remaining. Contact {CONTACT_EMAIL} to recharge."})
+        if "file" not in request.files:
+            return jsonify({"status": "error", "message": "No file uploaded."})
+        f = request.files["file"]
+        orig_name = f.filename.lower()
+        is_xls = orig_name.endswith(".xls") and not orig_name.endswith(".xlsx")
+        if not (orig_name.endswith(".xlsx") or is_xls):
+            return jsonify({"status": "error", "message": "Only .xlsx and .xls files are supported."})
+        try:
+            cy = int(request.form.get("closing_year", 0))
+            ny = int(request.form.get("new_year", cy + 1))
+            on = request.form.get("output_name", "").strip()
+        except ValueError:
+            return jsonify({"status": "error", "message": "Invalid year values."})
+        if ny != cy + 1:
+            return jsonify({"status": "error", "message": "New year must be closing year + 1."})
+        h  = uuid.uuid4().hex
+        ip = os.path.join(UPLOAD_DIR, f"{h}_in.xlsx")
+        op = os.path.join(OUTPUT_DIR, f"{h}_out.xlsx")
+        xls_tmp = None
+        try:
+            if is_xls:
+                # Save .xls first, then convert to .xlsx via xlrd + openpyxl
+                xls_tmp = os.path.join(UPLOAD_DIR, f"{h}_in.xls")
+                f.save(xls_tmp)
+                _convert_xls_to_xlsx(xls_tmp, ip)
+            else:
+                f.save(ip)
+        except Exception as e:
+            for p in (xls_tmp, ip):
+                if p:
+                    try: os.remove(p)
+                    except: pass
+            return jsonify({"status": "error", "message": f"File conversion error: {e}"})
+        finally:
+            if xls_tmp:
+                try: os.remove(xls_tmp)
+                except: pass
+        fname = f"{on or os.path.splitext(f.filename)[0]}_{ny}.xlsx"
+        try:
+            result = process(ip, op, cy, ny)
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+        finally:
+            try: os.remove(ip)
+            except: pass
+        log_usage(user["id"], fname)
+        return jsonify({"status": "success", "log": result["log"], "file_id": h, "filename": fname})
+    except Exception as e:
+        # Master catch — ensures we ALWAYS return JSON, never an HTML error page
+        return jsonify({"status": "error", "message": f"Unexpected error: {e}"}), 500
+
+@app.route("/download/<fid>")
+@login_required
+def download(fid):
+    if not re.fullmatch(r"[a-f0-9]{32}", fid): return "Invalid ID", 400
+    path = os.path.join(OUTPUT_DIR, f"{fid}_out.xlsx")
+    if not os.path.exists(path): return "File not found or expired.", 404
+    fn = request.args.get("fn", f"bs_shift_{fid[:8]}.xlsx")
+    if not fn.endswith(".xlsx"): fn += ".xlsx"
+    return send_file(path, as_attachment=True,
+        download_name=fn,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ROUTES — ADMIN
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/admin")
+@admin_required
+def admin_panel():
+    raw   = all_users()
+    users = []
+    for u in raw:
+        d = dict(u)
+        d["remaining"] = uploads_remaining(u)
+        users.append(d)
+    return render_template_string(ADMIN_T, users=users, msg=request.args.get("msg", ""))
+
+@app.route("/admin/create", methods=["POST"])
+@admin_required
+def admin_create():
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    plan_key = request.form.get("plan", "free")
+    if not username or len(username) < 3:
+        return redirect(url_for("admin_panel", msg="Username must be at least 3 characters."))
+    if not re.match(r"^[a-zA-Z0-9_]+$", username):
+        return redirect(url_for("admin_panel", msg="Username: only letters, numbers, underscores."))
+    if len(password) < 6:
+        return redirect(url_for("admin_panel", msg="Password must be at least 6 characters."))
+    if get_user_by_name(username):
+        return redirect(url_for("admin_panel", msg=f"Username '{username}' already exists."))
+    if plan_key not in PLANS:
+        plan_key = "free"
+    create_user(username, password, plan_key)
+    plan_label = PLANS[plan_key]["label"]
+    return redirect(url_for("admin_panel",
+        msg=f"✓ User '{username}' created on {plan_label} plan ({PLANS[plan_key]['uploads']} uploads)."))
+
+@app.route("/admin/addplan", methods=["POST"])
+@admin_required
+def admin_addplan():
+    uid      = int(request.form.get("uid"))
+    plan_key = request.form.get("plan", "standard")
+    if plan_key not in PLANS: plan_key = "standard"
+    user = get_user_by_id(uid)
+    if not user: return redirect(url_for("admin_panel", msg="User not found."))
+    old_rem = uploads_remaining(user)
+    add_uploads(uid, plan_key)
+    extra = PLANS[plan_key]["uploads"]
+    return redirect(url_for("admin_panel",
+        msg=f"✓ Added {extra} uploads to '{user['username']}'. Total remaining: {old_rem + extra}."))
+
+@app.route("/admin/delete", methods=["POST"])
+@admin_required
+def admin_delete():
+    uid = int(request.form.get("uid"))
+    if uid == session["uid"]:
+        return redirect(url_for("admin_panel", msg="Cannot delete your own account."))
+    user = get_user_by_id(uid)
+    if not user: return redirect(url_for("admin_panel", msg="User not found."))
+    name = user["username"]
+    del_user(uid)
+    return redirect(url_for("admin_panel", msg=f"✓ User '{name}' deleted."))
+
+@app.route("/tool/msme-calculator")
+def tool_msme_calculator():
+    if "uid" in session:
+        user = get_user_by_id(session["uid"]); ctx = user_ctx(user)
+    else:
+        ctx = dict(
+            username=None, plan="free", plan_label="Free",
+            is_admin=False, uploads_used=0, uploads_total=2,
+            uploads_left=2, uploads_remaining=2, bar_pct=0,
+            validity_end=None, contact_email=CONTACT_EMAIL,
+            contact_upi=CONTACT_UPI,
+        )
+    return render_template_string(MSME_T, **ctx)
+
+@app.route("/tool/capital-gains-calculator")
+def tool_cg_calculator():
+    if "uid" in session:
+        user = get_user_by_id(session["uid"]); ctx = user_ctx(user)
+    else:
+        ctx = dict(
+            username=None, plan="free", plan_label="Free",
+            is_admin=False, uploads_used=0, uploads_total=2,
+            uploads_left=2, uploads_remaining=2, bar_pct=0,
+            validity_end=None, contact_email=CONTACT_EMAIL,
+            contact_upi=CONTACT_UPI,
+        )
+    return render_template_string(CG_CALC_T, **ctx)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  STARTUP
+# ══════════════════════════════════════════════════════════════════════════════
+
+init_db()
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) != 5:
-        print("Usage: python processor.py input.xlsx output.xlsx closing_year new_year")
-        sys.exit(1)
-    result = process(sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]))
-    for line in result["log"]:
-        print(line)
-    print(f"\nSaved → {result['output']}")
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
