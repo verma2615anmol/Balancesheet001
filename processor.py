@@ -39,7 +39,6 @@ SHEET_COL_MAP = {
     "notes to p&l":  [("D", "E")],
     "details":       [("D", "E")],
     "gross profit":  [("B", "C"), ("F", "G")],
-    "capital":       [("E", "F")],
     # HFPL / HUG FOODS format
     "notes":         [("H", "J")],
     "othr notes":    [("H", "J")],
@@ -700,6 +699,62 @@ def _update_inline_strings(xml_bytes: bytes, pairs: list) -> bytes:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  External reference cleaner
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Patterns that indicate a formula references an external workbook or DDE link.
+# These will break (#REF!) when the file is opened on a different computer.
+_EXT_REF_RE = re.compile(
+    rb'\|'              # DDE link separator (=Excel.Sheet.8|'\\server\...')
+    rb'|\[\d'           # External link ref like [1]Sheet!A1
+    rb'|\\\\',          # UNC network path \\server\share
+)
+
+def _strip_external_formulas(xml_bytes: bytes) -> bytes:
+    """Convert external-reference formulas to their cached values.
+
+    For every <c> cell that contains a <f> formula matching an external
+    reference pattern, remove the <f>...</f> tag but keep the <v> cached
+    value.  This prevents #REF! errors when the file is opened on a
+    different computer where the referenced file isn't accessible.
+    """
+    # Quick check: if no external-looking formulas exist, skip
+    if not _EXT_REF_RE.search(xml_bytes):
+        return xml_bytes
+
+    text = xml_bytes.decode("utf-8", errors="replace")
+    count = 0
+
+    def _clean_cell(cm):
+        nonlocal count
+        cell_xml = cm.group(0)
+        # Check if cell has a <f> tag with external ref
+        f_match = re.search(r'<f[^>]*>(.*?)</f>', cell_xml, re.DOTALL)
+        if not f_match:
+            # Also check self-closing <f ... />
+            f_match = re.search(r'<f[^>]*/>', cell_xml)
+        if not f_match:
+            return cell_xml
+
+        formula_content = f_match.group(0).encode("utf-8", errors="replace")
+        if not _EXT_REF_RE.search(formula_content):
+            return cell_xml
+
+        # This formula has an external reference — remove <f> but keep <v>
+        cell_xml = re.sub(r'<f[^>]*>.*?</f>', '', cell_xml, flags=re.DOTALL)
+        cell_xml = re.sub(r'<f[^>]*/>', '', cell_xml)
+        count += 1
+        return cell_xml
+
+    text = re.sub(
+        r'<c\b[^>]*/>\s*|<c\b[^>]*>.*?</c>\s*',
+        _clean_cell, text, flags=re.DOTALL
+    )
+
+    return text.encode("utf-8") if count else xml_bytes
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  Main entry point
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -712,6 +767,8 @@ def process(input_path: str, output_path: str,
     sizes, shift_map, cy_values, cy_formulas = _scan_workbook(input_path, closing_year)
     big_names = {n for n, (r, c) in sizes.items() if r > BIG_ROWS or c > BIG_COLS}
 
+    ext_count = 0   # track external refs cleaned
+
     # ── ZIP-level edit loop ───────────────────────────────────────────────────
     with zipfile.ZipFile(input_path, "r") as zi:
         smap = _sheet_file_map(zi)
@@ -720,6 +777,10 @@ def process(input_path: str, output_path: str,
             for item in zi.infolist():
                 fn   = item.filename
                 data = zi.read(fn)
+
+                # Skip externalLinks — they reference files on other machines
+                if "externalLinks" in fn:
+                    continue
 
                 # shared strings — date text replacement only
                 if fn == "xl/sharedStrings.xml":
@@ -733,6 +794,12 @@ def process(input_path: str, output_path: str,
                         (sn for sn, sf in smap.items() if sf == fn), None
                     )
                     sl = (sheet_name or "").strip().lower()
+
+                    # Always strip external formulas from all sheets
+                    before_len = len(data)
+                    data = _strip_external_formulas(data)
+                    if len(data) != before_len:
+                        ext_count += 1
 
                     if sheet_name and sheet_name in shift_map:
                         # Full CY→PY shift + date update
@@ -764,8 +831,41 @@ def process(input_path: str, output_path: str,
                     zo.writestr(item, data)
                     continue
 
+                # workbook.xml.rels — remove references to external links
+                if fn == "xl/workbook.xml.rels" or fn.endswith(".rels"):
+                    text_rels = data.decode("utf-8", errors="replace")
+                    if "externalLinks" in text_rels:
+                        text_rels = re.sub(
+                            r'<Relationship[^>]*Target="externalLinks[^"]*"[^>]*/>\s*',
+                            '', text_rels
+                        )
+                        data = text_rels.encode("utf-8")
+
+                # workbook.xml — remove <externalReferences> section
+                if fn == "xl/workbook.xml":
+                    text_wb = data.decode("utf-8", errors="replace")
+                    if "externalReference" in text_wb:
+                        text_wb = re.sub(
+                            r'<externalReferences>.*?</externalReferences>\s*',
+                            '', text_wb, flags=re.DOTALL
+                        )
+                        data = text_wb.encode("utf-8")
+
+                # [Content_Types].xml — remove external link content types
+                if fn == "[Content_Types].xml":
+                    text_ct = data.decode("utf-8", errors="replace")
+                    if "externalLink" in text_ct:
+                        text_ct = re.sub(
+                            r'<Override[^>]*externalLink[^>]*/>\s*',
+                            '', text_ct
+                        )
+                        data = text_ct.encode("utf-8")
+
                 # everything else — pass through byte-perfect
                 zo.writestr(item, data)
+
+    if ext_count:
+        log.append(f"🔗 External references converted to values in {ext_count} sheet(s)")
 
     return {"status": "success", "log": log, "output": output_path}
 
