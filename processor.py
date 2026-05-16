@@ -26,12 +26,22 @@ _NS_MAP = {"": _NS}        # for ElementTree findall
 
 # ── fallback column map (lower-case sheet name → [(cy, py)]) ─────────────────
 SHEET_COL_MAP = {
+    # ── DP Thapar format ─────────────────────────────────────────────────────
     "bs":           [("E", "F")],
     "p&l":          [("E", "F")],
     "notes to bs":  [("D", "E")],
     "notes to p&l": [("D", "E")],
     "details":      [("D", "E")],
     "gross profit": [("B", "C"), ("F", "G")],
+    # ── HFPL / HUG FOODS format (BS/P&L col F=CY,H=PY; NOTES col H=CY,J=PY) ─
+    "notes":        [("H", "J")],
+    "share cap":    [("H", "J")],
+    "provision":    [("H", "J")],
+    "provisions":   [("H", "J")],
+    "cash flow":    [("F", "H")],
+    "dep co":       [("D", "F")],
+    "consump":      [("F", "H")],
+    "dep":          [("D", "F")],
 }
 TEXT_ONLY_SHEETS = {s.strip().lower() for s in [
     "notes to accounts", "Fixed Assets C. Yr.", "Fixed Assets P. Yr.",
@@ -264,17 +274,27 @@ def _row_from_ref(ref):
 
 def _process_sheet_xml(xml_bytes, col_pairs, cy_vals, cy_formulas, shared_strings):
     """
-    Modify a worksheet XML in-memory:
-    - Copy CY numeric values → PY cells
-    - Clear CY constants (non-formula numeric cells → empty)
-    Returns modified XML bytes.
+    Modify a worksheet XML in-memory using REGEX-based surgical edits.
+    This avoids ET.tostring() which mangles XML namespace prefixes (xmlns:r→xmlns:ns3 etc.)
+    and would corrupt Excel's internal references, making sheets appear blank/missing.
+
+    Strategy:
+    - Parse with ET read-only to build a map of what to change
+    - Apply changes as direct byte-level regex substitutions on the original XML
+    - Never re-serialize with ET.tostring → namespace prefixes stay intact
+
+    Operations:
+    - Copy CY numeric values → PY cells (only for non-formula PY cells)
+    - Clear CY constants (non-formula rows) by removing their <v>…</v>
     """
+    text = xml_bytes.decode("utf-8", errors="replace")
+
+    # ── Build change map via ET (read-only) ──────────────────────────────────
     root = ET.fromstring(xml_bytes)
     sd = root.find(f"{{{_NS}}}sheetData")
     if sd is None:
         return xml_bytes
 
-    # Build lookup: {cy_letter: (py_letter, {row: value}, formula_rows)}
     col_info = {}
     for cy_l, py_l in col_pairs:
         vals = cy_vals.get(cy_l, {})
@@ -284,6 +304,9 @@ def _process_sheet_xml(xml_bytes, col_pairs, cy_vals, cy_formulas, shared_string
     py_letters = {py_l for _, py_l in col_pairs}
     cy_letters = set(col_info.keys())
 
+    # Collect: {cell_ref: ("set_v", new_value_str)}   or  {cell_ref: ("clear_v", None)}
+    changes = {}
+
     for row_el in sd:
         for cell_el in row_el:
             ref = cell_el.get("r", "")
@@ -292,88 +315,148 @@ def _process_sheet_xml(xml_bytes, col_pairs, cy_vals, cy_formulas, shared_string
             if cl is None or rn is None:
                 continue
 
-            # Copy value to PY cell
-            if cl in cy_letters:
-                py_l, vals, frows = col_info[cl]
-                # We'll handle PY writing when we encounter the PY cell
-                pass
-
-            # Write CY value into PY cell
+            # PY cell: overwrite its <v> with CY value (skip if PY cell has formula)
             if cl in py_letters:
-                # Find corresponding CY
                 for cy_l, (py_l2, vals, frows) in col_info.items():
                     if py_l2 == cl and rn in vals:
-                        # Overwrite this PY cell with the CY value
-                        v_el = cell_el.find(f"{{{_NS}}}v")
                         f_el = cell_el.find(f"{{{_NS}}}f")
-                        if f_el is not None:
-                            break  # don't overwrite formulas in PY
-                        if v_el is None:
-                            v_el = ET.SubElement(cell_el, f"{{{_NS}}}v")
-                        v_el.text = str(vals[rn])
-                        # Set type to number (remove 's' type if it was string)
-                        if cell_el.get("t") == "s":
-                            del cell_el.attrib["t"]
+                        if f_el is None:   # only plain-value PY cells
+                            changes[ref] = ("set_v", str(vals[rn]))
                         break
 
-            # Clear CY constant (non-formula numeric)
+            # CY cell: clear its <v> if it's a constant (not a formula row)
             if cl in cy_letters:
                 _, vals, frows = col_info[cl]
                 if rn in vals and rn not in frows:
-                    v_el = cell_el.find(f"{{{_NS}}}v")
-                    if v_el is not None:
-                        cell_el.remove(v_el)
+                    changes[ref] = ("clear_v", None)
 
-    ET.register_namespace("", _NS)
-    # Preserve all other namespaces from original
-    return ET.tostring(root, xml_declaration=True, encoding="UTF-8")
+    if not changes:
+        return xml_bytes
+
+    # ── Apply changes via per-row regex on the raw XML text ──────────────────
+    # KEY INSIGHT: Excel worksheet XML cells can be:
+    #   (a) self-closing: <c r="A1" s="3"/>            — no </c>, regex must handle this
+    #   (b) full:         <c r="B2" s="3"><v>42</v></c>
+    # A greedy regex on the full XML can accidentally consume a self-closing cell
+    # and the next non-self-closing cell together, causing the next cell to be skipped.
+    #
+    # SAFE APPROACH: Work row-by-row. Each <row>...</row> is a bounded context.
+    # Within a row, match individual cells using a pattern that correctly handles
+    # both self-closing and full cells WITHOUT a negative lookahead that can backtrack.
+
+    def _process_row(row_match):
+        """Replace cell values within a single <row> block."""
+        row_xml = row_match.group(0)
+        # Match individual cells: self-closing OR full (with possible nested elements)
+        # Pattern: <c attrs /> OR <c attrs> content </c>
+        # We use [^/]* for self-closing detection and a non-greedy .+? for content.
+        def _fix_cell(cm):
+            full = cm.group(0)
+            # Extract ref from <c r="REF" ...>
+            ref_m = re.search(r'\br="([A-Z]+\d+)"', full)
+            if not ref_m:
+                return full
+            ref = ref_m.group(1)
+            if ref not in changes:
+                return full
+            action, new_val = changes[ref]
+            if action == "clear_v":
+                # Remove <v>…</v> (and self-closing <v/>)
+                full = re.sub(r'<v>[^<]*</v>', '', full)
+                full = re.sub(r'<v\s*/>', '', full)
+            elif action == "set_v":
+                if '<v>' in full:
+                    full = re.sub(r'<v>[^<]*</v>', f'<v>{new_val}</v>', full)
+                else:
+                    # No <v> — insert before </c>
+                    full = full.replace('</c>', f'<v>{new_val}</v></c>')
+                # Remove string-type marker — this cell is now a number
+                full = re.sub(r'\s*t="s"', '', full)
+            return full
+
+        # Match each cell: self-closing <c .../> or paired <c ...>...</c>
+        # Use alternation — try self-closing first to avoid greedy mismatch
+        cell_pattern = r'<c\b[^>]*/>\s*|<c\b[^>]*>.*?</c>\s*'
+        row_xml = re.sub(cell_pattern, _fix_cell, row_xml, flags=re.DOTALL)
+        return row_xml
+
+    # Process each <row> block independently
+    text = re.sub(r'<row\b[^>]*>.*?</row>', _process_row, text, flags=re.DOTALL)
+    return text.encode("utf-8")
 
 
 def _update_shared_strings(xml_bytes, pairs):
-    """Replace date text in sharedStrings.xml.
-    
-    Handles BOTH plain strings and rich-text entries where a date like
-    "31st MARCH, 2025" is split across multiple <t> elements
-    (e.g., "31" + "st" + " MARCH, 2025" for superscript formatting).
-    
-    Strategy for rich-text: concatenate all <t> texts, apply replacements
-    on the full string, then redistribute the changes back proportionally.
+    """Replace date text in sharedStrings.xml using lxml for namespace-safe serialization.
+
+    lxml preserves the original namespace prefixes (xmlns:r, xmlns:mc etc.) exactly,
+    unlike stdlib ET.tostring which renames them to ns0/ns1/ns2 and corrupts the file.
+
+    Handles both plain <t> strings and rich-text <r><t> runs where a date phrase
+    is split across multiple runs (e.g. superscript ordinals like "31" + "st").
     """
-    root = ET.fromstring(xml_bytes)
-    changed = False
-    for si in root:
-        t_els = list(si.iter(f"{{{_NS}}}t"))
-        if not t_els:
-            continue
+    try:
+        from lxml import etree as letree
 
-        # --- Single <t> (plain string) — fast path ---
-        if len(t_els) == 1:
-            t_el = t_els[0]
-            if t_el.text:
-                new_text = _apply_pairs(t_el.text, pairs)
-                if new_text != t_el.text:
-                    t_el.text = new_text
+        root = letree.fromstring(xml_bytes)
+        NS_L = "{" + _NS + "}"
+        changed = False
+
+        for si in root:
+            t_els = si.findall(f".//{NS_L}t")
+            if not t_els:
+                continue
+
+            if len(t_els) == 1:
+                t_el = t_els[0]
+                old = t_el.text or ""
+                new = _apply_pairs(old, pairs)
+                if new != old:
+                    t_el.text = new
                     changed = True
-            continue
+                continue
 
-        # --- Multiple <t> (rich-text) — concatenate, replace, redistribute ---
-        originals = [t.text or "" for t in t_els]
-        full_old = "".join(originals)
-        full_new = _apply_pairs(full_old, pairs)
-        if full_new == full_old:
-            continue
-        changed = True
+            # Rich-text: concatenate → replace → redistribute
+            originals = [t.text or "" for t in t_els]
+            full_old = "".join(originals)
+            full_new = _apply_pairs(full_old, pairs)
+            if full_new == full_old:
+                continue
+            changed = True
+            _redistribute_rich_text(t_els, originals, full_new)
 
-        # Redistribute: walk new text assigning to each run.
-        # Keep each run's length the same where possible; absorb any
-        # length change (from e.g. "2025" → "2026", same length, or
-        # "2024-25" → "2025-26") into the run that contains the change.
-        _redistribute_rich_text(t_els, originals, full_new)
+        if not changed:
+            return xml_bytes
 
-    if not changed:
-        return xml_bytes
-    ET.register_namespace("", _NS)
-    return ET.tostring(root, xml_declaration=True, encoding="UTF-8")
+        return letree.tostring(root, xml_declaration=True, encoding="UTF-8",
+                               standalone=True)
+
+    except ImportError:
+        # Fallback: stdlib ET — works for sharedStrings (no r: namespace refs there)
+        root = ET.fromstring(xml_bytes)
+        changed = False
+        for si in root:
+            t_els = list(si.iter(f"{{{_NS}}}t"))
+            if not t_els:
+                continue
+            if len(t_els) == 1:
+                t_el = t_els[0]
+                if t_el.text:
+                    new_text = _apply_pairs(t_el.text, pairs)
+                    if new_text != t_el.text:
+                        t_el.text = new_text
+                        changed = True
+                continue
+            originals = [t.text or "" for t in t_els]
+            full_old = "".join(originals)
+            full_new = _apply_pairs(full_old, pairs)
+            if full_new == full_old:
+                continue
+            changed = True
+            _redistribute_rich_text(t_els, originals, full_new)
+        if not changed:
+            return xml_bytes
+        ET.register_namespace("", _NS)
+        return ET.tostring(root, xml_declaration=True, encoding="UTF-8")
 
 
 def _redistribute_rich_text(t_els, originals, full_new):
