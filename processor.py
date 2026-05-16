@@ -507,8 +507,14 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
 
             if cl in cy_letters:
                 _, vals, frows = col_info[cl]
-                if rn in vals and rn not in frows:
-                    changes[ref] = ("clear_v", None)
+                if rn in vals:
+                    if rn in frows:
+                        # Formula cell: clear cached <v> but KEEP <f> formula intact
+                        # Excel will recalculate when user opens and enters new data
+                        changes[ref] = ("clear_v_keep_f", None)
+                    else:
+                        # Constant cell: remove <v> entirely
+                        changes[ref] = ("clear_v", None)
 
     if not changes:
         return xml_bytes
@@ -526,6 +532,11 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
             return full
         action, new_val = changes[ref]
         if action == "clear_v":
+            full = re.sub(r'<v>[^<]*</v>', '', full)
+            full = re.sub(r'<v\s*/>', '', full)
+        elif action == "clear_v_keep_f":
+            # Keep <f> formula tag, just clear the cached <v> value
+            # Excel recalculates formula when file is opened
             full = re.sub(r'<v>[^<]*</v>', '', full)
             full = re.sub(r'<v\s*/>', '', full)
         elif action in ("set_v", "set_v_overwrite"):
