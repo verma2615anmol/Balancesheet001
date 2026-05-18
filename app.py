@@ -14,6 +14,7 @@ from functools import wraps
 from flask import (Flask, request, send_file, jsonify,
                    render_template_string, session, redirect, url_for, g)
 from processor import process
+import tb_processor
 
 # ── Database driver selection ────────────────────────────────────────────────
 # If DATABASE_URL is set (Supabase/PostgreSQL), use psycopg2.
@@ -453,14 +454,19 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <div class="arrow">→</div>
   </a>
 
-  <!-- PREMIUM: Coming Soon -->
-  <div class="tool-card disabled" style="position:relative">
-    <div style="position:absolute;top:12px;right:12px;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🔒 Premium</div>
+  <!-- PREMIUM: Balance Sheet from Trial Balance -->
+  {% if username %}
+  <a href="/tool/tb-to-bs" class="tool-card" style="position:relative">
+  {% else %}
+  <a href="/login" class="tool-card" style="position:relative">
+  {% endif %}
+    {% if not username %}<div style="position:absolute;top:12px;right:12px;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🔒 Login Required</div>{% else %}<div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">Premium</div>{% endif %}
     <div class="tool-icon" style="background:#F0FDF4">📋</div>
     <h2>Balance Sheet from Trial Balance</h2>
-    <p>Generate a formatted comparative balance sheet directly from your trial balance data. No manual formatting required.</p>
-    <span class="tool-tag tag-soon">🔜 Coming Soon</span>
-  </div>
+    <p>Upload Trial Balance + BS template — auto-classifies accounts, lets you review & adjust mapping, then injects values into your template. Zero formatting change.</p>
+    <span class="tool-tag tag-live">✓ Live · Premium</span>
+    <div class="arrow">→</div>
+  </a>
 
   <!-- FREE TOOLS -->
   <a href="/tool/tax-calculator" class="tool-card">
@@ -516,6 +522,19 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   </div>
 
 </div>
+
+<section style="max-width:900px;margin:40px auto 0;padding:24px 20px;border-top:1px solid #E5E7EB">
+  <div style="display:flex;flex-wrap:wrap;gap:24px;justify-content:center;font-size:12px;color:#6B7280;line-height:1.7;text-align:center">
+    <div style="flex:1;min-width:260px">
+      <strong style="color:#374151;font-size:13px">🔒 Privacy Note</strong><br>
+      Your uploaded files are processed on our server and automatically deleted within 1 hour. We do not store, share, or analyze your financial data beyond the processing required by the tool. No data is shared with third parties.
+    </div>
+    <div style="flex:1;min-width:260px">
+      <strong style="color:#374151;font-size:13px">⚠️ Disclaimer</strong><br>
+      All tools on this platform are for estimation and reference purposes only and do not constitute professional advice. Always verify results with a qualified Chartered Accountant before filing or submission. This is a utility tools platform for CA professionals and is not a registered CA firm.
+    </div>
+  </div>
+</section>
 
 <footer>
   <p class="footer-brand">CA Toolkit</p>
@@ -6404,6 +6423,654 @@ def gst_process():
                         "file_id": h, "filename": fname})
     except Exception as e:
         return jsonify({"status": "error", "message": f"Unexpected error: {e}"}), 500
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  BALANCE SHEET FROM TRIAL BALANCE TOOL
+# ══════════════════════════════════════════════════════════════════════════════
+
+TB_BS_TEMPLATE = r'''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Balance Sheet from Trial Balance — CA Toolkit</title>
+<style>
+:root {
+  --bg: #F9FAFB; --surface: #FFFFFF; --border: #E5E7EB;
+  --text: #111827; --muted: #6B7280; --brand: #065F46;
+  --accent: #059669; --accent-light: #ECFDF5;
+  --danger: #DC2626; --danger-bg: #FEF2F2;
+  --warn: #D97706; --warn-bg: #FFFBEB;
+  --info-bg: #EFF6FF; --info: #1D4ED8;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.topbar{background:var(--brand);color:#fff;padding:12px 24px;display:flex;justify-content:space-between;align-items:center;font-size:14px}
+.topbar a{color:#A7F3D0;text-decoration:none;font-weight:600}
+.topbar a:hover{color:#fff}
+.topbar .user-info{display:flex;align-items:center;gap:16px}
+.topbar .plan-badge{background:rgba(255,255,255,.15);padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700}
+.container{max-width:1100px;margin:0 auto;padding:24px 16px}
+h1{font-size:24px;font-weight:700;margin-bottom:4px}
+.subtitle{color:var(--muted);font-size:14px;margin-bottom:24px}
+.upload-bar{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:4px;font-size:13px;color:var(--muted)}
+.upload-bar strong{color:var(--text)}
+.bar-track{height:6px;background:#E5E7EB;border-radius:99px;margin-top:6px}
+.bar-fill{height:100%;background:var(--accent);border-radius:99px;transition:width .3s}
+.steps-nav{display:flex;gap:0;margin:24px 0 20px;background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.step-tab{flex:1;text-align:center;padding:14px 8px;font-size:13px;font-weight:600;color:var(--muted);background:var(--surface);border-right:1px solid var(--border);cursor:default;transition:all .2s}
+.step-tab:last-child{border-right:none}
+.step-tab.active{background:var(--accent-light);color:var(--brand)}
+.step-tab.done{background:#D1FAE5;color:#065F46}
+.step-tab .num{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:var(--border);color:var(--muted);font-size:11px;font-weight:700;margin-right:6px}
+.step-tab.active .num{background:var(--accent);color:#fff}
+.step-tab.done .num{background:#065F46;color:#fff}
+.step-panel{display:none}
+.step-panel.active{display:block}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:16px}
+.card h2{font-size:16px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.upload-zone{border:2px dashed var(--border);border-radius:10px;padding:32px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s}
+.upload-zone:hover,.upload-zone.drag{border-color:var(--accent);background:var(--accent-light)}
+.upload-zone .icon{font-size:36px;margin-bottom:8px}
+.upload-zone p{font-size:13px;color:var(--muted)}
+.upload-zone .accepted{font-size:11px;color:var(--muted);margin-top:4px}
+.file-selected{display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:var(--accent-light);border-radius:8px;font-size:13px;font-weight:600;color:var(--brand)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 20px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all .15s}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:#047857}
+.btn-primary:disabled{background:#9CA3AF;cursor:not-allowed}
+.btn-secondary{background:var(--surface);color:var(--text);border:1px solid var(--border)}
+.btn-secondary:hover{background:#F3F4F6}
+.btn-sm{padding:6px 12px;font-size:12px;border-radius:6px}
+.btn-row{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}
+.detect-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin:12px 0}
+.detect-chip{background:#F3F4F6;border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:12px}
+.detect-chip .label{color:var(--muted);font-size:10px;text-transform:uppercase;font-weight:700;margin-bottom:2px}
+.detect-chip .value{font-weight:600;color:var(--text)}
+.map-table{width:100%;border-collapse:collapse;font-size:13px}
+.map-table th{text-align:left;padding:10px 12px;background:#F9FAFB;border-bottom:2px solid var(--border);font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:700;position:sticky;top:0;z-index:2}
+.map-table td{padding:8px 12px;border-bottom:1px solid #F3F4F6;vertical-align:middle}
+.map-table tr:hover td{background:#FAFAFA}
+.map-table .acct-name{font-weight:600;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.map-table .amt{text-align:right;font-variant-numeric:tabular-nums;font-family:'SF Mono',Consolas,monospace;font-size:12px}
+.map-table .amt.dr{color:#065F46}
+.map-table .amt.cr{color:#DC2626}
+.conf-badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:10px;font-weight:700;text-transform:uppercase}
+.conf-high{background:#D1FAE5;color:#065F46}
+.conf-low{background:#FEF3C7;color:#92400E}
+.conf-none{background:#FEE2E2;color:#991B1B}
+.conf-user{background:#DBEAFE;color:#1E40AF}
+.head-select{padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--surface);min-width:180px;cursor:pointer}
+.head-select:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.head-select.changed{border-color:var(--info);background:var(--info-bg)}
+.table-scroll{max-height:500px;overflow-y:auto;border:1px solid var(--border);border-radius:10px}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:16px 0}
+.summary-card{background:#F9FAFB;border:1px solid var(--border);border-radius:10px;padding:16px}
+.summary-card .s-label{font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:4px}
+.summary-card .s-value{font-size:20px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
+.summary-card.asset .s-value{color:#065F46}
+.summary-card.liability .s-value{color:#1D4ED8}
+.summary-card.pl .s-value{color:var(--warn)}
+.summary-card.tally-ok{border-color:#059669;background:#ECFDF5}
+.summary-card.tally-fail{border-color:#DC2626;background:#FEF2F2}
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;align-items:center;justify-content:center}
+.overlay.show{display:flex}
+.progress-box{background:var(--surface);border-radius:16px;padding:32px;text-align:center;min-width:300px;box-shadow:0 20px 60px rgba(0,0,0,.15)}
+.spinner{width:40px;height:40px;border:4px solid #E5E7EB;border-top:4px solid var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.dl-section{text-align:center;padding:24px;background:var(--accent-light);border-radius:12px;margin-top:16px}
+.dl-section h2{color:var(--brand);margin-bottom:12px}
+.dl-link{display:inline-flex;align-items:center;gap:8px;padding:12px 28px;background:var(--accent);color:#fff;border-radius:10px;font-size:15px;font-weight:700;text-decoration:none;transition:background .15s}
+.dl-link:hover{background:#047857}
+.pricing-section{margin-top:32px;padding-top:24px;border-top:1px solid var(--border)}
+.plans{max-width:1080px;margin:0 auto;display:grid;grid-template-columns:repeat(6,1fr);gap:14px}
+@media(max-width:900px){.plans{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:500px){.plans{grid-template-columns:repeat(2,1fr)}}
+.plan{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 14px;text-align:center}
+.plan-name{font-weight:700;font-size:14px;margin-bottom:6px}
+.plan-price{font-size:22px;font-weight:800;color:var(--brand)}
+.plan-uploads{font-size:12px;color:var(--muted);margin:4px 0}
+.plan-validity{font-size:11px;color:var(--muted)}
+.plan ul{list-style:none;margin:10px 0 12px;font-size:11px;color:var(--muted)}
+.plan ul li{padding:2px 0}
+.plan-btn{display:block;padding:8px;background:var(--accent-light);color:var(--brand);border-radius:8px;font-size:12px;font-weight:700;text-decoration:none;transition:background .15s}
+.plan-btn:hover{background:#D1FAE5}
+.log-area{max-height:250px;overflow-y:auto;background:#F9FAFB;border:1px solid var(--border);border-radius:8px;padding:12px;font-family:'SF Mono',Consolas,monospace;font-size:11px;line-height:1.6;white-space:pre-wrap}
+.log-area .ok{color:#059669}
+.log-area .warn{color:#D97706}
+.log-area .err{color:#DC2626}
+footer{text-align:center;padding:24px 16px 32px;font-size:12px;color:var(--muted);margin-top:32px;border-top:1px solid var(--border)}
+footer .footer-brand{font-weight:700;font-size:14px;color:var(--text);margin-bottom:4px}
+.disclaimer-box{max-width:800px;margin:20px auto 0;padding:16px 20px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;font-size:12px;color:#92400E;line-height:1.6;text-align:left}
+.privacy-box{max-width:800px;margin:12px auto 0;padding:16px 20px;background:var(--info-bg);border:1px solid #BFDBFE;border-radius:10px;font-size:12px;color:#1E40AF;line-height:1.6;text-align:left}
+.toast{position:fixed;bottom:24px;right:24px;background:#065F46;color:#fff;padding:12px 20px;border-radius:10px;font-size:13px;font-weight:600;opacity:0;transition:opacity .3s;pointer-events:none;z-index:999}
+.toast.show{opacity:1}
+.filter-bar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.filter-btn{padding:5px 12px;border:1px solid var(--border);border-radius:99px;font-size:11px;font-weight:600;cursor:pointer;background:var(--surface);color:var(--muted);transition:all .15s}
+.filter-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.filter-btn .count{background:rgba(0,0,0,.1);padding:1px 6px;border-radius:99px;margin-left:4px;font-size:10px}
+.filter-btn.active .count{background:rgba(255,255,255,.3)}
+.search-box{padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;width:100%;max-width:300px;margin-bottom:12px}
+.search-box:focus{outline:2px solid var(--accent);outline-offset:-1px}
+@media(max-width:700px){
+  .container{padding:16px 10px}
+  .steps-nav{flex-direction:column}
+  .step-tab{border-right:none;border-bottom:1px solid var(--border)}
+  .detect-grid{grid-template-columns:1fr 1fr}
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div><a href="/" style="font-size:16px;font-weight:800">CA Toolkit</a></div>
+  <div class="user-info">
+    <span>{{ username }}</span>
+    <span class="plan-badge">{{ plan_label }}</span>
+    <a href="/logout">Logout</a>
+  </div>
+</div>
+
+<div class="container">
+  <h1>📋 Balance Sheet from Trial Balance</h1>
+  <p class="subtitle">Upload your Trial Balance + BS template → auto-classify → review mapping → download completed BS</p>
+
+  <div class="upload-bar">
+    <strong>{{ uploads_used }}</strong> / <strong>{{ uploads_total }}</strong> uploads used
+    <span style="float:right">{{ uploads_remaining }} remaining</span>
+    <div class="bar-track"><div class="bar-fill" style="width:{{ bar_pct }}%"></div></div>
+  </div>
+
+  <div class="steps-nav">
+    <div class="step-tab active" id="stab1"><span class="num">1</span>Upload Files</div>
+    <div class="step-tab" id="stab2"><span class="num">2</span>Review Detection</div>
+    <div class="step-tab" id="stab3"><span class="num">3</span>Map Accounts</div>
+    <div class="step-tab" id="stab4"><span class="num">4</span>Download Result</div>
+  </div>
+
+  <!-- STEP 1: Upload -->
+  <div class="step-panel active" id="step1">
+    <div class="card">
+      <h2>📄 Upload Trial Balance</h2>
+      <div class="upload-zone" id="tbZone" onclick="document.getElementById('tbFile').click()">
+        <div class="icon">📊</div>
+        <p><strong>Click to upload</strong> or drag & drop your Trial Balance</p>
+        <p class="accepted">.xlsx / .xls files · Max 10 MB</p>
+        <input type="file" id="tbFile" accept=".xlsx,.xls,.csv" style="display:none">
+      </div>
+      <div class="file-selected" id="tbSelected" style="display:none">
+        <span>📎</span> <span id="tbFileName"></span>
+        <button class="btn btn-sm btn-secondary" onclick="clearFile('tb')" style="margin-left:auto">✕ Remove</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>📋 Upload Balance Sheet Template</h2>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Your BS template with PY figures filled and CY column blank. Formatting will be preserved exactly.</p>
+      <div class="upload-zone" id="bsZone" onclick="document.getElementById('bsFile').click()">
+        <div class="icon">📝</div>
+        <p><strong>Click to upload</strong> or drag & drop your BS Template</p>
+        <p class="accepted">.xlsx / .xls files · Max 10 MB</p>
+        <input type="file" id="bsFile" accept=".xlsx,.xls" style="display:none">
+      </div>
+      <div class="file-selected" id="bsSelected" style="display:none">
+        <span>📎</span> <span id="bsFileName"></span>
+        <button class="btn btn-sm btn-secondary" onclick="clearFile('bs')" style="margin-left:auto">✕ Remove</button>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-primary" id="analyzeBtn" disabled onclick="analyzeFiles()">
+        🔍 Analyze Trial Balance
+      </button>
+    </div>
+  </div>
+
+  <!-- STEP 2: Detection Results -->
+  <div class="step-panel" id="step2">
+    <div class="card">
+      <h2>🔍 Auto-Detection Results</h2>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px">We detected the following structure in your Trial Balance. Please verify and confirm.</p>
+      <div class="detect-grid" id="detectGrid"></div>
+    </div>
+    <div class="card">
+      <h2>📊 Classification Summary</h2>
+      <div class="summary-grid" id="summaryGrid"></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="goToStep(1)">← Back</button>
+      <button class="btn btn-primary" onclick="goToStep(3)">Continue to Mapping →</button>
+    </div>
+  </div>
+
+  <!-- STEP 3: Account Mapping -->
+  <div class="step-panel" id="step3">
+    <div class="card">
+      <h2>🗂️ Account → BS Head Mapping</h2>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Review each account's classification. Change the dropdown to reassign any account to a different head.</p>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+        <input type="text" class="search-box" id="acctSearch" placeholder="🔍 Search accounts..." oninput="filterAccounts()">
+      </div>
+      <div class="filter-bar" id="filterBar"></div>
+      <div class="table-scroll">
+        <table class="map-table">
+          <thead>
+            <tr>
+              <th style="width:30px">#</th>
+              <th>Account Name</th>
+              <th style="text-align:right">Debit (₹)</th>
+              <th style="text-align:right">Credit (₹)</th>
+              <th>Classified Under</th>
+              <th style="width:60px">Conf.</th>
+            </tr>
+          </thead>
+          <tbody id="mapBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card" id="aggregateCard" style="display:none">
+      <h2>📊 Aggregated Totals (Preview)</h2>
+      <div class="summary-grid" id="aggGrid"></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="goToStep(2)">← Back</button>
+      <button class="btn btn-primary" id="processBtn" onclick="processAndInject()">
+        ⚡ Generate Balance Sheet
+      </button>
+    </div>
+  </div>
+
+  <!-- STEP 4: Download -->
+  <div class="step-panel" id="step4">
+    <div class="dl-section" id="dlSection">
+      <h2>✅ Balance Sheet Generated!</h2>
+      <p style="color:var(--muted);margin-bottom:16px;font-size:14px">Your values have been injected into the BS template. Download below.</p>
+      <a class="dl-link" id="dlLink" href="#">📥 Download Balance Sheet</a>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>📊 Tally Check</h2>
+      <div class="summary-grid" id="tallyGrid"></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>📜 Processing Log</h2>
+      <div class="log-area" id="logArea"></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="goToStep(3)">← Back to Mapping</button>
+      <button class="btn btn-secondary" onclick="location.reload()">🔄 Process Another File</button>
+    </div>
+  </div>
+
+  <!-- Pricing -->
+  <div class="pricing-section">
+    <h2 style="text-align:center;font-size:18px;margin-bottom:16px">📋 Plans & Pricing</h2>
+    <div class="plans">
+      <div class="plan"><div class="plan-name">Free</div><div class="plan-price">₹0</div><div class="plan-uploads">2 uploads</div><div class="plan-validity">Trial</div><ul><li>All features</li><li>Basic support</li></ul><span class="plan-btn" style="cursor:default;opacity:.5">Current</span></div>
+      <div class="plan"><div class="plan-name">Starter</div><div class="plan-price">₹60</div><div class="plan-uploads">10 uploads</div><div class="plan-validity">3 month validity</div><ul><li>All features</li><li>Email support</li></ul><a href="#contact" class="plan-btn">Contact to Buy</a></div>
+      <div class="plan"><div class="plan-name">Standard</div><div class="plan-price">₹130</div><div class="plan-uploads">25 uploads</div><div class="plan-validity">3 month validity</div><ul><li>All features</li><li>Priority support</li></ul><a href="#contact" class="plan-btn">Contact to Buy</a></div>
+      <div class="plan"><div class="plan-name">Professional</div><div class="plan-price">₹270</div><div class="plan-uploads">60 uploads</div><div class="plan-validity">3 month validity</div><ul><li>All features</li><li>WhatsApp support</li></ul><a href="#contact" class="plan-btn">Contact to Buy</a></div>
+      <div class="plan"><div class="plan-name">Firm</div><div class="plan-price">₹600</div><div class="plan-uploads">150 uploads</div><div class="plan-validity">3 month validity</div><ul><li>All features</li><li>WhatsApp support</li><li>Up to 20 MB</li></ul><a href="#contact" class="plan-btn">Contact to Buy</a></div>
+      <div class="plan"><div class="plan-name">CA Admin</div><div class="plan-price">₹1,000</div><div class="plan-uploads">500 uploads</div><div class="plan-validity">3 month validity</div><ul><li>All features + GST</li><li>WhatsApp support</li><li>Best for CA firms</li></ul><a href="#contact" class="plan-btn">Contact to Buy</a></div>
+    </div>
+  </div>
+
+  <section id="contact" style="text-align:center;margin-top:24px;padding:20px">
+    <h3 style="font-size:16px;margin-bottom:8px">📞 Contact to Upgrade</h3>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Pay via UPI, share screenshot to email. Account upgraded within a few hours.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:400px;margin:0 auto">
+      <div style="text-align:center"><strong style="font-size:11px;color:var(--muted);text-transform:uppercase">Email</strong><br><a href="mailto:{{ contact_email }}" style="font-size:13px;color:var(--brand)">{{ contact_email }}</a></div>
+      <div style="text-align:center"><strong style="font-size:11px;color:var(--muted);text-transform:uppercase">UPI Payment</strong><br><span style="font-size:13px;font-weight:600">{{ contact_upi }}</span></div>
+    </div>
+  </section>
+
+  <div class="privacy-box">
+    <strong>🔒 Privacy Note:</strong> Your uploaded files are processed on our server and automatically deleted within 1 hour. We do not store, share, or analyze your financial data beyond the processing required by this tool. No data is shared with third parties.
+  </div>
+  <div class="disclaimer-box">
+    <strong>⚠️ Disclaimer:</strong> This tool is for estimation and reference purposes only and does not constitute professional advice. Always verify results with a qualified Chartered Accountant before filing or submission. This is a utility tools platform for CA professionals and is not a registered CA firm.
+  </div>
+</div>
+
+<footer>
+  <p class="footer-brand">CA Toolkit</p>
+  <p>Built for Indian Chartered Accountants · Saves hours every year</p>
+  <p style="margin-top:6px">Created by CA Article</p>
+  <p style="margin-top:12px;font-size:11px">&copy; 2026 CA Toolkit</p>
+</footer>
+
+<div class="overlay" id="overlay">
+  <div class="progress-box">
+    <div class="spinner"></div>
+    <p id="progressMsg" style="font-weight:600;font-size:14px">Analyzing Trial Balance...</p>
+    <p style="font-size:12px;color:var(--muted);margin-top:6px">This may take a few seconds</p>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let analysisData = null;
+let currentStep = 1;
+
+const BS_HEAD_OPTIONS = {
+  "--- Liabilities ---": null,
+  "Owner's Capital / Partners Capital": "capital",
+  "Long Term Borrowings": "long_term_borrowings",
+  "Short Term Borrowings": "short_term_borrowings",
+  "Trade Payables": "trade_payables",
+  "Other Current Liabilities": "other_current_liabilities",
+  "Short Term Provisions": "short_term_provisions",
+  "--- Assets ---": null,
+  "Fixed Assets / PPE": "fixed_assets",
+  "Non-Current Investments": "non_current_investments",
+  "Inventories / Stock": "inventories",
+  "Trade Receivables": "trade_receivables",
+  "Cash and Bank Balances": "cash_and_bank",
+  "Short Term Loans & Advances": "short_term_loans_advances",
+  "Other Current Assets": "other_current_assets",
+  "--- P&L Heads ---": null,
+  "Revenue / Sales": "revenue",
+  "Purchases / Cost of Material": "purchases",
+  "Employee / Salary Expenses": "employee_expenses",
+  "Other Expenses": "other_expenses",
+  "Depreciation": "depreciation",
+  "--- Other ---": null,
+  "Unclassified": "unclassified",
+};
+
+const HEAD_LABELS = {};
+for (const [label, key] of Object.entries(BS_HEAD_OPTIONS)) {
+  if (key) HEAD_LABELS[key] = label;
+}
+
+function setupUploadZone(zoneId, inputId, selectedId, nameId, type) {
+  const zone = document.getElementById(zoneId);
+  const input = document.getElementById(inputId);
+  ['dragover','dragenter'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.add('drag'); }));
+  ['dragleave','drop'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.remove('drag'); }));
+  zone.addEventListener('drop', ev => { const f = ev.dataTransfer.files[0]; if (f) { input.files = ev.dataTransfer.files; fileSelected(type, f); } });
+  input.addEventListener('change', () => { if (input.files[0]) fileSelected(type, input.files[0]); });
+}
+
+function fileSelected(type, file) {
+  document.getElementById(type+'FileName').textContent = file.name + ' (' + (file.size/1024).toFixed(1) + ' KB)';
+  document.getElementById(type+'Selected').style.display = 'flex';
+  document.getElementById(type+'Zone').style.display = 'none';
+  checkReady();
+}
+
+function clearFile(type) {
+  document.getElementById(type+'File').value = '';
+  document.getElementById(type+'Selected').style.display = 'none';
+  document.getElementById(type+'Zone').style.display = '';
+  checkReady();
+}
+
+function checkReady() {
+  document.getElementById('analyzeBtn').disabled = !(document.getElementById('tbFile').files[0] && document.getElementById('bsFile').files[0]);
+}
+
+setupUploadZone('tbZone','tbFile','tbSelected','tbFileName','tb');
+setupUploadZone('bsZone','bsFile','bsSelected','bsFileName','bs');
+
+function goToStep(n) {
+  currentStep = n;
+  document.querySelectorAll('.step-panel').forEach((p,i) => p.classList.toggle('active', i+1===n));
+  document.querySelectorAll('.step-tab').forEach((t,i) => { t.classList.remove('active','done'); if (i+1===n) t.classList.add('active'); else if (i+1<n) t.classList.add('done'); });
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+function fmt(n) {
+  if (n===0) return '\u2014';
+  const neg = n<0; n = Math.abs(n);
+  const parts = n.toFixed(2).split('.');
+  let int = parts[0], dec = parts[1];
+  if (int.length>3) { let last3=int.slice(-3); let rest=int.slice(0,-3); let groups=[]; while(rest.length>2){groups.unshift(rest.slice(-2));rest=rest.slice(0,-2);} if(rest)groups.unshift(rest); int=groups.join(',')+','+last3; }
+  return (neg?'-':'')+'\u20b9'+int+'.'+dec;
+}
+
+function showToast(msg) { const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),3000); }
+
+async function analyzeFiles() {
+  const tb=document.getElementById('tbFile').files[0], bs=document.getElementById('bsFile').files[0];
+  if (!tb||!bs) return;
+  const overlay=document.getElementById('overlay'); overlay.classList.add('show');
+  document.getElementById('progressMsg').textContent='Uploading & analyzing Trial Balance...';
+  const fd=new FormData(); fd.append('tb_file',tb); fd.append('bs_file',bs);
+  try {
+    const res=await fetch('/tb-analyze',{method:'POST',body:fd});
+    const data=await res.json(); overlay.classList.remove('show');
+    if (data.status==='error'){showToast('\u274c '+data.message);return;}
+    analysisData=data; renderDetection(data); renderMapping(data.accounts); goToStep(2);
+  } catch(e) { overlay.classList.remove('show'); showToast('\u274c Error: '+e.message); }
+}
+
+function colLetter(idx) { if(idx===null||idx===undefined)return'\u2014'; let s='',n=idx; while(n>=0){s=String.fromCharCode(65+(n%26))+s;n=Math.floor(n/26)-1;} return s; }
+
+function renderDetection(data) {
+  const det=data.detection, grid=document.getElementById('detectGrid');
+  const chips=[{label:'Format Type',value:'Type '+det.format_type},{label:'Sheet',value:det.sheet_name},{label:'Account Col',value:colLetter(det.account_col)},{label:'Debit Col',value:det.debit_col!==null?colLetter(det.debit_col):'\u2014'},{label:'Credit Col',value:det.credit_col!==null?colLetter(det.credit_col):'\u2014'},{label:'Net Col',value:det.net_col!==null?colLetter(det.net_col):'\u2014'},{label:'Header Row',value:(det.header_row+1)},{label:'Accounts Found',value:data.summary.total_accounts}];
+  grid.innerHTML=chips.map(c=>`<div class="detect-chip"><div class="label">${c.label}</div><div class="value">${c.value}</div></div>`).join('');
+  const sg=document.getElementById('summaryGrid');
+  sg.innerHTML=`<div class="summary-card"><div class="s-label">Total Accounts</div><div class="s-value">${data.summary.total_accounts}</div></div><div class="summary-card" style="border-color:#059669"><div class="s-label">High Confidence</div><div class="s-value" style="color:#059669">${data.summary.high_confidence}</div></div><div class="summary-card" style="border-color:#D97706"><div class="s-label">Low Confidence</div><div class="s-value" style="color:#D97706">${data.summary.low_confidence}</div></div><div class="summary-card" style="border-color:#DC2626"><div class="s-label">Unclassified</div><div class="s-value" style="color:#DC2626">${data.summary.unclassified}</div></div>`;
+}
+
+function renderMapping(accounts) {
+  const tbody=document.getElementById('mapBody');
+  let optHtml='';
+  for (const [label,key] of Object.entries(BS_HEAD_OPTIONS)) {
+    if (key===null) optHtml+=`<option disabled style="font-weight:bold;color:#666">\u2500\u2500\u2500 ${label.replace(/---/g,'')} \u2500\u2500\u2500</option>`;
+    else optHtml+=`<option value="${key}">${label}</option>`;
+  }
+  let rows='';
+  accounts.forEach((a,i)=>{
+    const confClass=a.confidence==='high'?'conf-high':a.confidence==='low'?'conf-low':a.confidence==='user'?'conf-user':'conf-none';
+    const confLabel=a.confidence==='high'?'HIGH':a.confidence==='low'?'LOW':a.confidence==='user'?'USER':'NONE';
+    rows+=`<tr data-head="${a.bs_head}" data-conf="${a.confidence}" data-name="${a.name.toLowerCase()}"><td style="color:var(--muted);font-size:11px">${i+1}</td><td class="acct-name" title="${a.name}">${a.name}</td><td class="amt ${a.debit>0?'dr':''}">${a.debit>0?fmt(a.debit):'\u2014'}</td><td class="amt ${a.credit>0?'cr':''}">${a.credit>0?fmt(a.credit):'\u2014'}</td><td><select class="head-select" data-idx="${i}" onchange="onHeadChange(this,${i})">${optHtml}</select></td><td><span class="conf-badge ${confClass}">${confLabel}</span></td></tr>`;
+  });
+  tbody.innerHTML=rows;
+  tbody.querySelectorAll('.head-select').forEach((sel,i)=>{sel.value=accounts[i].bs_head;});
+  renderFilterBar(accounts); updateAggregates();
+}
+
+function onHeadChange(sel,idx) {
+  analysisData.accounts[idx].bs_head=sel.value; analysisData.accounts[idx].confidence='user';
+  sel.classList.add('changed');
+  const tr=sel.closest('tr'); tr.dataset.head=sel.value; tr.dataset.conf='user';
+  const badge=tr.querySelector('.conf-badge'); badge.className='conf-badge conf-user'; badge.textContent='USER';
+  renderFilterBar(analysisData.accounts); updateAggregates();
+}
+
+function renderFilterBar(accounts) {
+  const heads={};
+  accounts.forEach(a=>{heads[a.bs_head]=(heads[a.bs_head]||0)+1;});
+  const bar=document.getElementById('filterBar');
+  let html=`<button class="filter-btn active" data-filter="all" onclick="setFilter('all',this)">All <span class="count">${accounts.length}</span></button>`;
+  for (const [key,count] of Object.entries(heads)) { const lbl=HEAD_LABELS[key]||key; const short=lbl.length>20?lbl.slice(0,18)+'\u2026':lbl; html+=`<button class="filter-btn" data-filter="${key}" onclick="setFilter('${key}',this)">${short} <span class="count">${count}</span></button>`; }
+  bar.innerHTML=html;
+}
+
+function setFilter(key,btn) {
+  document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active')); btn.classList.add('active');
+  const rows=document.querySelectorAll('#mapBody tr'), search=document.getElementById('acctSearch').value.toLowerCase();
+  rows.forEach(tr=>{ tr.style.display=(key==='all'||tr.dataset.head===key)&&(!search||tr.dataset.name.includes(search))?'':'none'; });
+}
+
+function filterAccounts() {
+  const search=document.getElementById('acctSearch').value.toLowerCase();
+  const activeFilter=document.querySelector('.filter-btn.active');
+  const key=activeFilter?activeFilter.dataset.filter:'all';
+  document.querySelectorAll('#mapBody tr').forEach(tr=>{ tr.style.display=(key==='all'||tr.dataset.head===key)&&(!search||tr.dataset.name.includes(search))?'':'none'; });
+}
+
+function getSide(key) {
+  const a=['fixed_assets','non_current_investments','inventories','trade_receivables','cash_and_bank','short_term_loans_advances','other_current_assets'];
+  const l=['capital','long_term_borrowings','short_term_borrowings','trade_payables','other_current_liabilities','short_term_provisions'];
+  if(a.includes(key))return'asset'; if(l.includes(key))return'liability'; return'pl';
+}
+
+function updateAggregates() {
+  if(!analysisData)return;
+  const agg={};
+  analysisData.accounts.forEach(a=>{if(a.bs_head==='unclassified')return;if(!agg[a.bs_head])agg[a.bs_head]=0;agg[a.bs_head]+=Math.abs(a.net);});
+  const grid=document.getElementById('aggGrid'); let html='';
+  const sides={asset:[],liability:[],pl:[]};
+  for(const [key,amt] of Object.entries(agg)){sides[getSide(key)].push({key,amt,label:HEAD_LABELS[key]||key});}
+  const totalAssets=sides.asset.reduce((s,x)=>s+x.amt,0), totalLiab=sides.liability.reduce((s,x)=>s+x.amt,0);
+  sides.asset.forEach(x=>{html+=`<div class="summary-card asset"><div class="s-label">${x.label}</div><div class="s-value">${fmt(x.amt)}</div></div>`;});
+  sides.liability.forEach(x=>{html+=`<div class="summary-card liability"><div class="s-label">${x.label}</div><div class="s-value">${fmt(x.amt)}</div></div>`;});
+  sides.pl.forEach(x=>{html+=`<div class="summary-card pl"><div class="s-label">${x.label}</div><div class="s-value">${fmt(x.amt)}</div></div>`;});
+  const diff=Math.abs(totalAssets-totalLiab), tallyClass=diff<1?'tally-ok':'tally-fail';
+  html+=`<div class="summary-card asset"><div class="s-label">Total Assets</div><div class="s-value">${fmt(totalAssets)}</div></div>`;
+  html+=`<div class="summary-card liability"><div class="s-label">Total Liabilities</div><div class="s-value">${fmt(totalLiab)}</div></div>`;
+  html+=`<div class="summary-card ${tallyClass}"><div class="s-label">Difference</div><div class="s-value">${diff<1?'\u2705 Tallied!':'\u274c '+fmt(diff)}</div></div>`;
+  grid.innerHTML=html; document.getElementById('aggregateCard').style.display='block';
+}
+
+async function processAndInject() {
+  if(!analysisData)return;
+  const overlay=document.getElementById('overlay'); overlay.classList.add('show');
+  document.getElementById('progressMsg').textContent='Injecting values into Balance Sheet template...';
+  const userMapping={};
+  analysisData.accounts.forEach(a=>{userMapping[a.name]=a.bs_head;});
+  try {
+    const res=await fetch('/tb-process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:analysisData.session_id,user_mapping:userMapping})});
+    const data=await res.json(); overlay.classList.remove('show');
+    if(data.status==='error'){showToast('\u274c '+data.message);return;}
+    renderResult(data); goToStep(4);
+  } catch(e) { overlay.classList.remove('show'); showToast('\u274c Error: '+e.message); }
+}
+
+function renderResult(data) {
+  document.getElementById('dlLink').href='/download/'+data.file_id+'?fn='+encodeURIComponent(data.filename||'BS_from_TB.xlsx');
+  const tg=document.getElementById('tallyGrid'), tallyClass=data.tally_ok?'tally-ok':'tally-fail';
+  tg.innerHTML=`<div class="summary-card asset"><div class="s-label">Total Assets</div><div class="s-value">${fmt(data.total_assets||0)}</div></div><div class="summary-card liability"><div class="s-label">Total Liabilities</div><div class="s-value">${fmt(data.total_liabilities||0)}</div></div><div class="summary-card ${tallyClass}"><div class="s-label">Tally Status</div><div class="s-value">${data.tally_ok?'\u2705 Tallied!':'\u274c Difference: '+fmt(Math.abs((data.total_assets||0)-(data.total_liabilities||0)))}</div></div><div class="summary-card"><div class="s-label">Values Injected</div><div class="s-value">${data.injected_count||0}</div></div><div class="summary-card"><div class="s-label">Heads Skipped</div><div class="s-value">${data.skipped_count||0}</div></div>`;
+  const logArea=document.getElementById('logArea');
+  logArea.innerHTML=(data.log||[]).map(line=>{if(line.startsWith('\u2713'))return`<span class="ok">${line}</span>`;if(line.startsWith('\u26a0'))return`<span class="warn">${line}</span>`;if(line.startsWith('\u274c'))return`<span class="err">${line}</span>`;return line;}).join('\n');
+}
+</script>
+</body>
+</html>'''
+
+
+# ── TB → BS TOOL ROUTES ─────────────────────────────────────────────────────
+
+@app.route("/tool/tb-to-bs")
+@login_required
+def tool_tb_to_bs():
+    user = get_user_by_id(session["uid"])
+    return render_template_string(TB_BS_TEMPLATE, **user_ctx(user))
+
+
+@app.route("/tb-analyze", methods=["POST"])
+@login_required
+def tb_analyze():
+    try:
+        user = get_user_by_id(session["uid"])
+        if not user["is_admin"] and uploads_remaining(user) <= 0:
+            return jsonify({"status": "error",
+                "message": f"No uploads remaining. Contact {CONTACT_EMAIL} to recharge."})
+
+        tb_file = request.files.get("tb_file")
+        bs_file = request.files.get("bs_file")
+        if not tb_file or not bs_file:
+            return jsonify({"status": "error", "message": "Both files are required."})
+
+        for f, label in [(tb_file, "Trial Balance"), (bs_file, "BS Template")]:
+            ext = os.path.splitext(f.filename)[1].lower()
+            if ext not in ('.xlsx', '.xls', '.csv'):
+                return jsonify({"status": "error",
+                    "message": f"{label}: Only .xlsx, .xls, .csv files supported."})
+
+        sid = uuid.uuid4().hex
+        tb_path = os.path.join(UPLOAD_DIR, f"{sid}_tb{os.path.splitext(tb_file.filename)[1]}")
+        bs_path = os.path.join(UPLOAD_DIR, f"{sid}_bs{os.path.splitext(bs_file.filename)[1]}")
+
+        tb_file.save(tb_path)
+        bs_file.save(bs_path)
+
+        if tb_path.endswith('.xls'):
+            xlsx_path = tb_path + 'x'
+            _convert_xls_to_xlsx(tb_path, xlsx_path)
+            os.remove(tb_path)
+            tb_path = xlsx_path
+
+        if bs_path.endswith('.xls'):
+            xlsx_path = bs_path + 'x'
+            _convert_xls_to_xlsx(bs_path, xlsx_path)
+            os.remove(bs_path)
+            bs_path = xlsx_path
+
+        result = tb_processor.analyze_trial_balance(tb_path)
+
+        if "error" in result:
+            return jsonify({"status": "error", "message": result["error"]})
+
+        result["session_id"] = sid
+        return jsonify(result)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route("/tb-process", methods=["POST"])
+@login_required
+def tb_process():
+    try:
+        user = get_user_by_id(session["uid"])
+        if not user["is_admin"] and uploads_remaining(user) <= 0:
+            return jsonify({"status": "error",
+                "message": f"No uploads remaining. Contact {CONTACT_EMAIL} to recharge."})
+
+        data = request.get_json()
+        sid = data.get("session_id")
+        user_mapping = data.get("user_mapping", {})
+
+        if not sid or not re.fullmatch(r"[a-f0-9]{32}", sid):
+            return jsonify({"status": "error", "message": "Invalid session."})
+
+        tb_path = None
+        bs_path = None
+        for f in os.listdir(UPLOAD_DIR):
+            if f.startswith(sid + "_tb"):
+                tb_path = os.path.join(UPLOAD_DIR, f)
+            elif f.startswith(sid + "_bs"):
+                bs_path = os.path.join(UPLOAD_DIR, f)
+
+        if not tb_path or not bs_path:
+            return jsonify({"status": "error", "message": "Session expired. Please re-upload files."})
+
+        fid = uuid.uuid4().hex
+        output_path = os.path.join(OUTPUT_DIR, f"{fid}_out.xlsx")
+
+        result = tb_processor.process_tb_to_bs(tb_path, bs_path, output_path, user_mapping)
+
+        if result.get("status") == "error":
+            return jsonify(result)
+
+        if not user["is_admin"]:
+            log_usage(user["id"], f"BS_from_TB_{sid[:8]}.xlsx")
+
+        return jsonify({
+            "status": "success",
+            "file_id": fid,
+            "filename": f"BS_from_TB_{sid[:8]}.xlsx",
+            "log": result.get("log", []),
+            "injected_count": result.get("injected_count", 0),
+            "skipped_count": result.get("skipped_count", 0),
+            "tally_ok": result.get("tally_ok", False),
+            "total_assets": result.get("total_assets", 0),
+            "total_liabilities": result.get("total_liabilities", 0),
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)})
+
 
 init_db()
 
