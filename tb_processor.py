@@ -340,14 +340,18 @@ def _detect_columns(rows, sheet_name):
                     acct_col = ci
                     header_row = ri
 
-            # Debit column
-            if val in ("dr", "debit", "dr balance", "debit balance",
-                       "dr amount", "debit amount", "dr bal", "debit bal"):
+            # Debit column — handle "Debit (₹)", "Dr.", "Debit Amount" etc
+            if (val in ("dr", "debit", "dr balance", "debit balance",
+                       "dr amount", "debit amount", "dr bal", "debit bal") or
+                    val.startswith("debit") or val.startswith("dr ") or
+                    val == "dr." or "debit" in val.split("(")[0].strip()):
                 dr_col = ci
 
-            # Credit column
-            if val in ("cr", "credit", "cr balance", "credit balance",
-                       "cr amount", "credit amount", "cr bal", "credit bal"):
+            # Credit column — handle "Credit (₹)", "Cr.", "Credit Amount" etc
+            if (val in ("cr", "credit", "cr balance", "credit balance",
+                       "cr amount", "credit amount", "cr bal", "credit bal") or
+                    val.startswith("credit") or val.startswith("cr ") or
+                    val == "cr." or "credit" in val.split("(")[0].strip()):
                 cr_col = ci
 
             # Net/Amount column
@@ -387,8 +391,13 @@ def _detect_columns(rows, sheet_name):
         return None
 
     # Determine format type
-    if dr_col is not None and cr_col is not None:
+    # Re-check: if both dr and cr columns found but assigned same index, fix
+    if dr_col is not None and cr_col is not None and dr_col != cr_col:
         format_type = 1  # Dr/Cr separate columns
+    elif dr_col is not None and cr_col is not None and dr_col == cr_col:
+        # Conflict - reset and try harder
+        dr_col = None; cr_col = None
+        format_type = None
     elif net_col is not None:
         format_type = 4  # Single amount (negative = credit)
     else:
@@ -417,14 +426,37 @@ def _detect_columns(rows, sheet_name):
     if format_type is None:
         return None
 
+    # Fix: if format detected as 4 (single net column) but there are actually
+    # two number columns (like Debit col A and Credit col B in this TB),
+    # detect that and switch to format 1
+    if format_type == 4 and net_col is not None and dr_col is None:
+        # Check if there are two numeric columns around the net_col
+        for ri2 in range(header_row + 1, min(header_row + 10, len(rows))):
+            row2 = rows[ri2]
+            if not row2: continue
+            num_cols_found = []
+            for ci2, v2 in enumerate(row2):
+                if ci2 == acct_col: continue
+                if isinstance(v2, (int, float)) and v2 != 0:
+                    num_cols_found.append(ci2)
+            if len(num_cols_found) >= 2:
+                # Two numeric columns found — treat as Dr/Cr
+                format_type = 1
+                dr_col = num_cols_found[0]
+                cr_col = num_cols_found[1]
+                net_col = None
+                break
+
     # Data starts after header
     data_start = header_row + 1
 
-    # Extract accounts
+    # Extract accounts — handles both flat and hierarchical TB formats
     accounts = []
     total_keywords = {"total", "grand total", "difference", "net total",
                       "closing balance", "opening balance total",
                       "balance c/d", "balance b/d"}
+
+    current_group = None  # Track current group header for hierarchical TBs
 
     for ri in range(data_start, len(rows)):
         row = rows[ri]
@@ -455,19 +487,44 @@ def _detect_columns(rows, sheet_name):
             cr_amt = _to_float(cr_val)
             net_amt = dr_amt - cr_amt
         elif format_type == 4 and net_col is not None:
-            net_val = row[net_col] if net_col < len(row) else None
-            net_amt = _to_float(net_val)
-            if net_amt > 0:
-                dr_amt = net_amt
+            # For hierarchical format: check BOTH debit and credit columns
+            # even if format_type was detected as 4
+            if dr_col is None and cr_col is None:
+                # Try columns 1 and 2 as dr/cr if they have data
+                dr_try = row[1] if len(row) > 1 else None
+                cr_try = row[2] if len(row) > 2 else None
+                dr_f = _to_float(dr_try)
+                cr_f = _to_float(cr_try)
+                if dr_f != 0 or cr_f != 0:
+                    dr_amt = dr_f
+                    cr_amt = cr_f
+                    net_amt = dr_amt - cr_amt
+                else:
+                    net_val = row[net_col] if net_col < len(row) else None
+                    net_amt = _to_float(net_val)
+                    if net_amt > 0:
+                        dr_amt = net_amt
+                    else:
+                        cr_amt = abs(net_amt)
             else:
-                cr_amt = abs(net_amt)
+                net_val = row[net_col] if net_col < len(row) else None
+                net_amt = _to_float(net_val)
+                if net_amt > 0:
+                    dr_amt = net_amt
+                else:
+                    cr_amt = abs(net_amt)
 
+        # Detect group headers: rows with name but zero amounts
+        # These help classify sub-items in hierarchical TBs
         if dr_amt == 0 and cr_amt == 0 and net_amt == 0:
+            # This is likely a group/category header
+            current_group = acct_name
             continue
 
         accounts.append({
             "row": ri,
             "name": acct_name,
+            "group": current_group,  # parent group for classification hint
             "debit": dr_amt,
             "credit": cr_amt,
             "net": net_amt,
@@ -521,15 +578,45 @@ def _to_float(val):
 # ACCOUNT CLASSIFIER
 # ═══════════════════════════════════════════════════════════════════════
 
+# Group header → BS head mapping for hierarchical TBs
+GROUP_HEAD_MAP = {
+    "capital account": "capital",
+    "bank accounts": "cash_and_bank",
+    "bank account": "cash_and_bank",
+    "cash-in-hand": "cash_and_bank",
+    "cash in hand": "cash_and_bank",
+    "fixed assets": "fixed_assets",
+    "sundry creditors": "trade_payables",
+    "sundry debtors": "trade_receivables",
+    "sundry debtor": "trade_receivables",
+    "purchase account": "purchases",
+    "purchases": "purchases",
+    "sales account": "revenue",
+    "stock-in-hand": "inventories",
+    "stock in hand": "inventories",
+    "indirect expenses": "other_expenses",
+    "direct expenses": "purchases",
+    "sundry payables": "other_current_liabilities",
+    "provisions": "short_term_provisions",
+    "unsecure loans": "long_term_borrowings",
+    "unsecured loans": "long_term_borrowings",
+    "deposits (asset)": "short_term_loans_advances",
+    "duties & taxes": "short_term_loans_advances",
+    "duties and taxes": "short_term_loans_advances",
+}
+
+
 def classify_accounts(accounts):
     """
     Classify each TB account under a BS/P&L head.
+    Uses group headers as classification hints for hierarchical TBs.
     Returns list of dicts with added 'bs_head' and 'confidence' keys.
     """
     classified = []
     for acct in accounts:
         name = acct["name"]
-        bs_head, confidence = _classify_single(name, acct["net"])
+        group = acct.get("group", "")
+        bs_head, confidence = _classify_single(name, acct["net"], group)
         acct_copy = dict(acct)
         acct_copy["bs_head"] = bs_head
         acct_copy["confidence"] = confidence
@@ -537,11 +624,19 @@ def classify_accounts(accounts):
     return classified
 
 
-def _classify_single(name, net_amount):
+def _classify_single(name, net_amount, group=None):
     """Classify a single account name. Returns (head_key, confidence)."""
     name_lower = name.lower().strip()
+    group_lower = (group or "").lower().strip()
 
-    # Try each head in priority order
+    # Step 1: Check if group header directly maps to a head
+    if group_lower and group_lower in GROUP_HEAD_MAP:
+        group_head = GROUP_HEAD_MAP[group_lower]
+        # For items under a known group, trust the group mapping
+        # but still verify it makes sense with the amount sign
+        return group_head, "high"
+
+    # Step 2: Try each head in priority order by name
     for head_key in CLASSIFICATION_PRIORITY:
         head = BS_HEADS[head_key]
         # Check negative keywords first (exclusions)
@@ -558,7 +653,13 @@ def _classify_single(name, net_amount):
             if kw in name_lower:
                 return head_key, "high"
 
-    # If no match: use net amount sign as hint
+    # Step 3: Partial group match
+    if group_lower:
+        for grp_key, head_key in GROUP_HEAD_MAP.items():
+            if grp_key in group_lower or group_lower in grp_key:
+                return head_key, "low"
+
+    # Step 4: Use net amount sign as hint
     # Debit balance (positive net) → likely asset or expense
     # Credit balance (negative net) → likely liability or income
     if net_amount > 0:
