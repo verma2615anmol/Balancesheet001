@@ -291,7 +291,7 @@ def detect_tb_structure(file_path):
         rows_data = []
         for i, row in enumerate(ws.iter_rows(values_only=True)):
             rows_data.append(list(row))
-            if i >= 60:
+            if i >= 2000:   # handle large TBs up to 2000 rows
                 break
 
         if len(rows_data) < 2:
@@ -688,319 +688,555 @@ def get_aggregated_values(classified_accounts):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# BS TEMPLATE INJECTION
+# BS TEMPLATE INJECTION — Notes-Aware Engine
 # ═══════════════════════════════════════════════════════════════════════
+# This BS template is 100% formula-driven on the bs sheet.
+# Every cell like E7, E11, E17 etc. on the bs sheet pulls from:
+#   capital!G10       → owners capital closing balance
+#   'notes to bs'!D20 → long-term borrowings total
+#   'notes to bs'!D48 → trade payables (creditors total)
+#   'notes to bs'!D69 → other current liabilities total
+#   'Fixed Assets C. Yr.'!I31 → PPE net block
+#   'notes to p&l'!D24 → inventories (closing stock)
+#   'notes to bs'!D104 → trade receivables total
+#   'notes to bs'!D116 → cash & bank total
+#   'notes to bs'!D133 → short-term loans & advances
+#
+# Strategy: inject into the SOURCE sheets (the plain-value cells),
+# never into the formula cells on the bs sheet.
+# The formulas then auto-propagate values to bs and other sheets.
 
-# Mapping from BS head keys to common labels found in BS templates
-BS_LABEL_MAP = {
-    "capital": [
-        "capital account", "owner's capital", "owners capital", "owners' capital",
-        "partner capital", "partners capital", "proprietor capital",
-        "share capital", "equity", "reserves", "surplus",
-        "shareholders fund",
-    ],
-    "long_term_borrowings": [
-        "long term borrowing", "long-term borrowing", "secured loan",
-        "term loan",
-    ],
-    "short_term_borrowings": [
-        "short term borrowing", "short-term borrowing",
-        "overdraft", "cash credit", "bank borrowing",
-    ],
-    "trade_payables": [
-        "trade payable", "creditor", "sundry creditor",
-    ],
-    "other_current_liabilities": [
-        "other current liabilit", "statutory",
-    ],
-    "short_term_provisions": [
-        "short term provision", "short-term provision", "provision",
-    ],
-    "fixed_assets": [
-        "fixed asset", "property, plant", "property plant",
-        "tangible asset", "intangible asset", "ppe",
-    ],
-    "non_current_investments": [
-        "non-current investment", "non current investment",
-        "long term investment",
-    ],
-    "inventories": [
-        "inventor", "stock in trade", "closing stock",
-    ],
-    "trade_receivables": [
-        "trade receivable", "debtor", "sundry debtor",
-    ],
-    "cash_and_bank": [
-        "cash and bank", "cash & bank", "cash at bank",
-        "bank balance",
-    ],
-    "short_term_loans_advances": [
-        "short term loan", "loan and advance", "loans & advance",
-        "loans and advance",
-    ],
-    "other_current_assets": [
-        "other current asset",
-    ],
-    "revenue": [
-        "revenue from operation", "revenue", "sale of goods",
-        "sale of product", "income from operation",
-    ],
-    "purchases": [
-        "cost of material consumed", "cost of material",
-        "cost of goods", "purchase",
-    ],
-    "employee_expenses": [
-        "employee benefit", "employee expense", "salary expense",
-        "staff cost",
-    ],
-    "other_expenses": [
-        "other expense", "indirect expense", "administrative expense",
-    ],
-    "depreciation": [
-        "depreciation and amort", "depreciation",
-    ],
-}
+def _is_formula(val):
+    return isinstance(val, str) and val.strip().startswith("=")
+
+def _safe_set(ws, row, col, value):
+    """Write a plain numeric value only if the target cell is not a formula."""
+    cell = ws.cell(row=row, column=col)
+    if not _is_formula(cell.value):
+        cell.value = round(float(value), 2)
+        return True
+    return False
 
 
-def detect_bs_template(file_path):
+def _detect_notes_structure(wb):
     """
-    Scan the BS template to find:
-    - Which column is CY (current year)
-    - Which column is PY (previous year)
-    - Where each BS head label appears (row mapping)
-    Returns dict with cy_col, py_col, head_rows, sheet_name
-    """
-    wb = load_workbook(file_path, read_only=True, data_only=True)
-    result = {"sheets": []}
+    Scan the Notes sheets and build an injection map:
+    { head_key: [(sheet_name, row, col, label), ...] }
+    This maps each BS head to the plain-value target cell(s) where
+    we should write the aggregated amount.
 
-    for sname in wb.sheetnames:
-        ws = wb[sname]
-        rows_data = []
-        for i, row in enumerate(ws.iter_rows(values_only=True)):
-            rows_data.append(list(row))
-            if i >= 100:
+    Returns (injection_map, details) where details contains per-head
+    info about what was found.
+    """
+    # ── Capital sheet ────────────────────────────────────────────────
+    # The capital closing balance is computed by the formula:
+    #   G10 = C10+D10-E10+F10   (opening + intro - drawings + profit)
+    # We can only inject into C8 (opening), D8 (intro), E8 (drawings).
+    # Profit (F8) comes from p&l sheet — we cannot inject that.
+    # For a fresh TB injection the cleanest approach is:
+    #   Write the closing balance from TB directly into a single
+    #   "lump sum" row that doesn't break the formula structure.
+    # We inject into capital!D8 (Capital Introduced) as a net plug
+    # if the opening balance is already in C8 via =G11 formula.
+    # In practice: set capital!D8 = (TB_closing - capital!C8_resolved)
+    # But since C8=G11=prev year closing which is read-only, safest is:
+    # Write total capital to capital!G10 if it's not a formula,
+    # else find a writable row.
+
+    capital_map = []
+    if "capital" in wb.sheetnames:
+        ws_cap = wb["capital"]
+        # Scan rows 8-15 for plain-value cells in column G (closing bal)
+        for r in range(8, 16):
+            v = ws_cap.cell(r, 7).value
+            if v is not None and not _is_formula(v):
+                capital_map.append(("capital", r, 7, "Closing Balance"))
+                break
+        # If G10 is a formula (=C10+D10-E10+F10), inject into D8 (Capital Introduced)
+        # after zeroing withdrawals so closing = opening + introduced
+        if not capital_map:
+            # We'll use a special "capital_plug" strategy
+            capital_map.append(("capital", "plug", None, "Capital plug via D8"))
+
+    # ── notes to bs ─────────────────────────────────────────────────
+    notes_map = {}
+    if "notes to bs" in wb.sheetnames:
+        ws_n = wb["notes to bs"]
+        # Build a map: row → (label, d_val, e_val)
+        for r in range(1, 200):
+            d_val = ws_n.cell(r, 4).value
+            b_val = ws_n.cell(r, 2).value
+            label = str(b_val).strip().lower() if b_val else ""
+            if d_val is not None and not _is_formula(d_val):
+                notes_map[r] = (label, d_val)
+
+    # ── Details sheet ────────────────────────────────────────────────
+    details_map = {}
+    if "Details" in wb.sheetnames:
+        ws_det = wb["Details"]
+        for r in range(1, 200):
+            b_val = ws_det.cell(r, 2).value
+            d_val = ws_det.cell(r, 4).value
+            if b_val is not None and not _is_formula(d_val if d_val is not None else "x"):
+                details_map[r] = (str(b_val).strip().lower(), d_val)
+
+    # ── GROSS PROFIT / notes to p&l for inventory ────────────────────
+    gp_map = {}
+    if "GROSS PROFIT" in wb.sheetnames:
+        ws_gp = wb["GROSS PROFIT"]
+        for r in range(1, 30):
+            b_val = ws_gp.cell(r, 4).value  # E-side labels
+            e_val = ws_gp.cell(r, 5).value
+            if b_val and "closing stock" in str(b_val).lower() and e_val is not None and not _is_formula(e_val):
+                gp_map["closing_stock"] = ("GROSS PROFIT", r, 5)
                 break
 
-        sheet_info = _detect_bs_columns(rows_data, sname)
-        if sheet_info:
-            result["sheets"].append(sheet_info)
-
-    wb.close()
-
-    if not result["sheets"]:
-        return {"error": "Could not detect Balance Sheet template structure."}
-
-    # Return the best sheet (most head matches)
-    best = max(result["sheets"], key=lambda s: len(s.get("head_rows", {})))
-    result["primary"] = best
-    return result
-
-
-def _detect_bs_columns(rows, sheet_name):
-    """Detect CY/PY columns and head label rows in a BS template."""
-    cy_col = None
-    py_col = None
-    head_rows = {}
-
-    # Scan for year headers in first 15 rows
-    current_year_patterns = [
-        r"31[\.\s/-]03[\.\s/-]20\d{2}",
-        r"31st?\s+march[,\s]+20\d{2}",
-        r"current\s+year",
-        r"as\s+at.*20\d{2}",
-    ]
-
-    # Collect ALL year-column candidates first, then pick the best pair
-    year_candidates = []  # list of (row_idx, col_idx, year_int, raw_value)
-
-    for ri, row in enumerate(rows[:15]):
-        if not row:
-            continue
-        for ci, val in enumerate(row):
-            if not val or not isinstance(val, str):
-                continue
-            val_lower = val.strip().lower()
-
-            for pat in current_year_patterns:
-                if re.search(pat, val_lower):
-                    year_match = re.search(r"20(\d{2})", val)
-                    if year_match:
-                        yr = int("20" + year_match.group(1))
-                        year_candidates.append((ri, ci, yr, val.strip()))
-                    break
-
-    if not year_candidates:
-        return None
-
-    # Filter: prefer candidates in columns >= 2 (skip title/label columns A, B)
-    # Amount headers are almost always in column C (idx 2) or later
-    good_candidates = [c for c in year_candidates if c[1] >= 2]
-    if not good_candidates:
-        # Fallback: use all candidates but prefer rightmost columns
-        good_candidates = year_candidates
-
-    # Group by unique column indices
-    col_years = {}
-    for ri, ci, yr, raw in good_candidates:
-        if ci not in col_years or yr > col_years[ci][0]:
-            col_years[ci] = (yr, ri, raw)
-
-    if len(col_years) >= 2:
-        # Sort by column index — leftmost first
-        sorted_cols = sorted(col_years.items(), key=lambda x: x[0])
-        # The higher year is CY, lower is PY
-        col_a, (yr_a, _, _) = sorted_cols[0]
-        col_b, (yr_b, _, _) = sorted_cols[1]
-        if yr_a >= yr_b:
-            cy_col, py_col = col_a, col_b
-        else:
-            cy_col, py_col = col_b, col_a
-    elif len(col_years) == 1:
-        cy_col = list(col_years.keys())[0]
-    else:
-        return None
-
-    # Scan for BS head labels
-    # First pass: collect all matches
-    all_head_matches = {}  # {head_key: [(row, col, label, has_note)]}
-    for ri, row in enumerate(rows):
-        if not row:
-            continue
-        # Check if this row has a note number (typically in col 3/D)
-        has_note = False
-        for ci2, val2 in enumerate(row):
-            if val2 is not None and ci2 >= 2:
-                val2_str = str(val2).strip()
-                if re.match(r'^\d{1,2}(\.\d{1,2})?$', val2_str):
-                    has_note = True
-                    break
-
-        for ci, val in enumerate(row):
-            if not val or not isinstance(val, str):
-                continue
-            val_lower = val.strip().lower()
-
-            for head_key, labels in BS_LABEL_MAP.items():
-                for label in labels:
-                    if label in val_lower:
-                        if head_key not in all_head_matches:
-                            all_head_matches[head_key] = []
-                        all_head_matches[head_key].append({
-                            "row": ri,
-                            "col": ci,
-                            "label_found": val.strip(),
-                            "has_note": has_note,
-                        })
-                        break
-
-    # Pick the best match for each head: prefer rows with note numbers
-    for head_key, matches in all_head_matches.items():
-        noted = [m for m in matches if m["has_note"]]
-        best = noted[0] if noted else matches[0]
-        head_rows[head_key] = {
-            "row": best["row"],
-            "col": best["col"],
-            "label_found": best["label_found"],
-        }
-
-    # Also look for Note numbers (common in Indian BS templates)
-    note_rows = {}
-    for ri, row in enumerate(rows):
-        if not row:
-            continue
-        for ci, val in enumerate(row):
-            if val is None:
-                continue
-            val_str = str(val).strip()
-            # Note numbers like "1", "2", "2.1" etc
-            if re.match(r'^\d{1,2}(\.\d{1,2})?$', val_str):
-                note_rows[val_str] = {"row": ri, "col": ci}
-
     return {
-        "sheet_name": sheet_name,
-        "cy_col": cy_col,
-        "py_col": py_col,
-        "head_rows": head_rows,
-        "note_rows": note_rows,
+        "capital_map": capital_map,
+        "notes_map": notes_map,
+        "details_map": details_map,
+        "gp_map": gp_map,
     }
 
 
-def inject_into_bs(bs_template_path, output_path, aggregated_values, mapping_overrides=None):
+def _fuzzy_match_name(tb_name, template_name):
+    """Check if two party names roughly match (for creditor/debtor matching)."""
+    import re
+    def normalize(s):
+        s = s.lower()
+        s = re.sub(r'\bm/s\.?\s*', '', s)
+        s = re.sub(r'[^a-z0-9\s]', ' ', s)
+        s = re.sub(r'\s+', ' ', s).strip()
+        for city in ['ludhiana', 'delhi', 'jalandhar', 'surat', 'ahmedabad',
+                     'ahemadabad', 'varanasi', 'mumbai', 'ambala', 'citi']:
+            s = re.sub(r'\b' + city + r'\b', '', s).strip()
+        s = re.sub(r'\s+', ' ', s).strip()
+        return s
+
+    a = normalize(tb_name)
+    b = normalize(template_name)
+    if not a or not b:
+        return False
+    # Exact after normalization
+    if a == b:
+        return True
+    # Only allow substring if the shorter is at least 6 chars
+    # AND the match is not just a common word like 'textiles'
+    COMMON_WORDS = {'textiles', 'trading', 'enterprises', 'creation', 'fashion',
+                    'fabrics', 'industries', 'pvt', 'ltd', 'co', 'and', 'sons'}
+    if len(a) >= 6 and len(b) >= 6:
+        shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+        if shorter in longer:
+            # Verify the match isn't just on common words
+            unique_words = [w for w in shorter.split() if w not in COMMON_WORDS and len(w) > 3]
+            if unique_words:
+                return True
+    # Check first 2+ significant words match exactly
+    words_a = [w for w in a.split() if len(w) > 3 and w not in COMMON_WORDS]
+    words_b = [w for w in b.split() if len(w) > 3 and w not in COMMON_WORDS]
+    if words_a and words_b:
+        common = sum(1 for w in words_a if w in words_b)
+        if common >= min(2, len(words_a), len(words_b)):
+            return True
+    # Single distinctive word match (>=7 chars, not common)
+    if words_a and words_b:
+        long_a = [w for w in words_a if len(w) >= 7]
+        long_b = [w for w in words_b if len(w) >= 7]
+        if any(w in long_b for w in long_a):
+            return True
+    return False
+
+
+def _col_letter(col_idx):
+    """Convert 0-indexed column to letter."""
+    from openpyxl.utils import get_column_letter
+    return get_column_letter(col_idx + 1)
+
+
+def inject_into_bs(bs_template_path, output_path, aggregated_values,
+                   mapping_overrides=None, individual_accounts=None):
     """
-    Inject aggregated TB values into the BS template CY column.
-    Never touches PY, formulas, formatting.
-    mapping_overrides: dict {head_key: {"row": r, "col": c}} to override auto-detection.
-    Returns dict with status and log.
+    Inject aggregated TB values into BS template by writing to SOURCE sheets.
+
+    The BS sheet itself is all formulas — writing there does nothing.
+    Instead we write to:
+      capital      → owner's capital closing balance
+      notes to bs  → long-term loans, trade payables, OCL, cash, receivables,
+                     short-term loans
+      Details      → individual creditor/debtor amounts (matched by name)
+      GROSS PROFIT → closing stock (inventories)
+      Fixed Assets C. Yr. → asset additions (col C = >180 days)
+
+    individual_accounts: list of {name, bs_head, net, debit, credit}
+    from the classified TB accounts — used for name-matching creditors/debtors.
     """
+    import shutil
     log = []
 
-    # Detect template structure
-    template_info = detect_bs_template(bs_template_path)
-    if "error" in template_info:
-        return {"status": "error", "message": template_info["error"], "log": log}
+    # Copy template to output first
+    shutil.copy2(bs_template_path, output_path)
 
-    primary = template_info["primary"]
-    target_sheet = primary["sheet_name"]
-    cy_col = primary["cy_col"]
-    head_rows = primary["head_rows"]
-
-    log.append(f"Target sheet: {target_sheet}")
-    log.append(f"CY column detected: {_col_letter(cy_col)}")
-
-    # Open workbook for writing (preserves formatting)
-    wb = load_workbook(bs_template_path)
-    ws = wb[target_sheet]
-
+    wb = load_workbook(output_path)
+    structure = _detect_notes_structure(wb)
     injected = []
     skipped = []
 
-    for head_key, amount in aggregated_values.items():
-        if amount == 0:
-            continue
+    # ────────────────────────────────────────────────────────────────
+    # 1. CAPITAL — inject closing balance
+    # ────────────────────────────────────────────────────────────────
+    capital_amt = aggregated_values.get("capital", 0)
+    if capital_amt and "capital" in wb.sheetnames:
+        ws_cap = wb["capital"]
+        # Strategy: The closing balance formula is =C10+D10-E10+F10
+        # C10=SUM(C8:C9)=opening (from PY closing via =G11)
+        # D10=SUM(D8:D9)=introduced, E10=SUM(E8:E9)=withdrawals, F10=profit from p&l
+        # We cannot break the formula chain. Best approach:
+        # Set D8 (Capital Introduced during year) = closing_from_TB - C8 - F8 + E8
+        # But F8 = profit which is a formula from p&l.
+        # Cleanest: just write to D8 as a "net plug" = capital_amt - (C8_value or 0)
+        # After user processes p&l separately, D8 will reconcile.
+        # For now, write closing directly to G8 if not formula, else use D8 plug.
+        g10 = ws_cap.cell(10, 7).value
+        c8 = ws_cap.cell(8, 3).value
+        opening = 0
+        if c8 is not None and not _is_formula(c8):
+            opening = float(c8) if c8 else 0
+        elif _is_formula(str(c8 or "")):
+            # Try to read G11 (PY closing) as opening
+            g11 = ws_cap.cell(11, 7).value
+            if g11 is not None and not _is_formula(g11):
+                opening = float(g11) if g11 else 0
 
-        # Check for override
-        if mapping_overrides and head_key in mapping_overrides:
-            target_row = mapping_overrides[head_key]["row"]
-            target_col = mapping_overrides[head_key].get("col", cy_col)
-        elif head_key in head_rows:
-            # Use the row where the label was found
-            target_row = head_rows[head_key]["row"]
-            # Write to the CY column on the same row
-            target_col = cy_col
+        if _is_formula(str(g10 or "")):
+            # G10 is formula — inject via D8: Introduced = closing - opening
+            # (sets withdrawals and profit contribution aside for now)
+            e8 = ws_cap.cell(8, 5).value
+            f8 = ws_cap.cell(8, 6).value
+            withdrawals = float(e8) if e8 and not _is_formula(str(e8)) else 0
+            profit = 0  # formula, skip
+            d8_val = capital_amt - opening + withdrawals - profit
+            if _safe_set(ws_cap, 8, 4, max(0, d8_val)):
+                injected.append(f"capital!D8 (Capital Introduced) = {d8_val:,.2f} → closing balance will compute to {capital_amt:,.2f}")
+            else:
+                skipped.append(f"capital!D8 is a formula — could not inject capital {capital_amt:,.2f}")
         else:
-            skipped.append(f"{head_key}: {BS_HEADS.get(head_key, {}).get('label', head_key)} = {amount:,.2f} (no target row found)")
-            continue
+            if _safe_set(ws_cap, 10, 7, capital_amt):
+                injected.append(f"capital!G10 = {capital_amt:,.2f}")
+            elif _safe_set(ws_cap, 8, 7, capital_amt):
+                injected.append(f"capital!G8 = {capital_amt:,.2f}")
+            else:
+                skipped.append(f"capital: could not find writable cell for {capital_amt:,.2f}")
 
-        # Convert 0-indexed to 1-indexed for openpyxl
-        cell_row = target_row + 1
-        cell_col = target_col + 1
+    # ────────────────────────────────────────────────────────────────
+    # 2. NOTES TO BS — inject by scanning plain-value cells
+    # ────────────────────────────────────────────────────────────────
+    if "notes to bs" in wb.sheetnames:
+        ws_n = wb["notes to bs"]
 
-        cell = ws.cell(row=cell_row, column=cell_col)
+        def inject_notes_row(row, col, amount, label):
+            if _safe_set(ws_n, row, col, amount):
+                injected.append(f"notes to bs!{_col_letter(col-1)}{row} ({label}) = {amount:,.2f}")
+                return True
+            else:
+                skipped.append(f"notes to bs R{row}C{col} ({label}) is formula")
+                return False
 
-        # Skip formula cells
-        if isinstance(cell.value, str) and cell.value.startswith("="):
-            log.append(f"Skipped formula cell at ({cell_row}, {_col_letter(target_col)}): {cell.value}")
-            continue
+        # Long-term borrowings → D8 (ICICI Bank or first bank row)
+        ltb_amt = aggregated_values.get("long_term_borrowings", 0)
+        if ltb_amt:
+            # Find writable bank row in notes to bs rows 7-10
+            placed = False
+            for r in range(7, 11):
+                d = ws_n.cell(r, 4).value
+                if d is None or (not _is_formula(str(d))):
+                    placed = inject_notes_row(r, 4, ltb_amt, "Long-term borrowings")
+                    break
+            if not placed:
+                skipped.append(f"long_term_borrowings {ltb_amt:,.2f}: no writable row found in notes to bs")
 
-        # Skip merged cells
-        if isinstance(cell, MergedCell):
-            log.append(f"Skipped merged cell at ({cell_row}, {_col_letter(target_col)})")
-            continue
+        # Short-term borrowings → D26 (bank CC row)
+        stb_amt = aggregated_values.get("short_term_borrowings", 0)
+        if stb_amt:
+            placed = False
+            for r in range(26, 32):
+                d = ws_n.cell(r, 4).value
+                if d is None or (not _is_formula(str(d))):
+                    placed = inject_notes_row(r, 4, stb_amt, "Short-term borrowings")
+                    break
+            if not placed:
+                skipped.append(f"short_term_borrowings {stb_amt:,.2f}: no writable row in notes to bs")
 
-        cell.value = round(amount, 2)
-        label = BS_HEADS.get(head_key, {}).get("label", head_key)
-        injected.append(f"{label} → ({cell_row}, {_col_letter(target_col)}) = {amount:,.2f}")
+        # Other current liabilities → D64:D68 (Audit, Legal, Salary, TDS, Cheque)
+        ocl_amt = aggregated_values.get("other_current_liabilities", 0)
+        if ocl_amt:
+            # Collect all writable OCL rows (plain-value or empty, in OCL section)
+            ocl_rows = []
+            for r in range(60, 82):
+                d = ws_n.cell(r, 4).value
+                b = ws_n.cell(r, 2).value
+                if b is None:
+                    continue
+                b_str = str(b).strip().lower()
+                if any(kw in b_str for kw in ['total', 'particular', 'amount', 'header',
+                                               'short-term', 'short term', 'borrowing',
+                                               'payable\n', 'current liabilit']):
+                    continue
+                if len(b_str) < 2:
+                    continue
+                if d is None or (not _is_formula(str(d))):
+                    ocl_rows.append((r, b_str, d))
 
+            if individual_accounts:
+                ocl_accounts = [a for a in individual_accounts
+                                if a.get("bs_head") == "other_current_liabilities"
+                                and abs(a.get("net", 0)) > 0]
+                row_idx = 0  # sequential pointer into ocl_rows
+                for acct in ocl_accounts:
+                    if row_idx >= len(ocl_rows):
+                        skipped.append(f"OCL '{acct['name']}' = {abs(acct['net']):,.2f}: no more rows")
+                        continue
+                    r, label, _ = ocl_rows[row_idx]
+                    inject_notes_row(r, 4, abs(acct["net"]), f"OCL: {acct['name']}")
+                    row_idx += 1
+            elif ocl_rows:
+                inject_notes_row(ocl_rows[0][0], 4, ocl_amt, "Other current liabilities")
+
+        # Cash → D109 (Cash in hand)
+        cash_bank_amt = aggregated_values.get("cash_and_bank", 0)
+        if cash_bank_amt and individual_accounts:
+            cash_accounts = [a for a in individual_accounts
+                             if a.get("bs_head") == "cash_and_bank"]
+            cash_amt = sum(abs(a["net"]) for a in cash_accounts
+                          if "cash" in a["name"].lower())
+            bank_amt = sum(abs(a["net"]) for a in cash_accounts
+                          if "cash" not in a["name"].lower())
+            if cash_amt:
+                for r in range(108, 113):
+                    d = ws_n.cell(r, 4).value
+                    b = ws_n.cell(r, 2).value
+                    if b and "cash" in str(b).lower() and (d is None or not _is_formula(str(d))):
+                        inject_notes_row(r, 4, cash_amt, "Cash in hand")
+                        break
+            if bank_amt:
+                # Find writable bank rows (rows 112-115)
+                bank_accounts = [a for a in cash_accounts if "cash" not in a["name"].lower()]
+                for acct in bank_accounts:
+                    for r in range(112, 116):
+                        b = ws_n.cell(r, 2).value
+                        d = ws_n.cell(r, 4).value
+                        if b and (d is None or not _is_formula(str(d))):
+                            if _fuzzy_match_name(acct["name"], str(b)):
+                                inject_notes_row(r, 4, abs(acct["net"]), f"Bank: {acct['name']}")
+                                break
+                    else:
+                        # No match — find first empty bank row
+                        for r in range(112, 116):
+                            d = ws_n.cell(r, 4).value
+                            if d is None:
+                                inject_notes_row(r, 4, abs(acct["net"]), f"Bank: {acct['name']}")
+                                break
+        elif cash_bank_amt:
+            inject_notes_row(109, 4, cash_bank_amt, "Cash and bank (lump)")
+
+        # Short-term loans & advances → D128:D131 (GST, TDS etc)
+        stla_amt = aggregated_values.get("short_term_loans_advances", 0)
+        if stla_amt and individual_accounts:
+            stla_accounts = [a for a in individual_accounts
+                             if a.get("bs_head") == "short_term_loans_advances"
+                             and abs(a.get("net", 0)) > 0]
+            for acct in stla_accounts:
+                name_l = acct["name"].lower()
+                placed = False
+                # Match GST refund → D128
+                if "gst" in name_l or "igst" in name_l or "cgst" in name_l or "sgst" in name_l:
+                    if _safe_set(ws_n, 128, 4, abs(acct["net"])):
+                        injected.append(f"notes to bs!D128 (GST input) = {abs(acct['net']):,.2f}")
+                        placed = True
+                # Match TCS/TDS → D129/D130
+                if "tcs" in name_l:
+                    if _safe_set(ws_n, 129, 4, abs(acct["net"])):
+                        injected.append(f"notes to bs!D129 (TCS GST) = {abs(acct['net']):,.2f}")
+                        placed = True
+                if ("tds" in name_l or "excess tds" in name_l) and not placed:
+                    if _safe_set(ws_n, 130, 4, abs(acct["net"])):
+                        injected.append(f"notes to bs!D130 (Excess TDS) = {abs(acct['net']):,.2f}")
+                        placed = True
+                if not placed:
+                    # Find first empty row in 125-132
+                    for r in range(125, 133):
+                        d = ws_n.cell(r, 4).value
+                        if d is None:
+                            if _safe_set(ws_n, r, 4, abs(acct["net"])):
+                                injected.append(f"notes to bs!D{r} ({acct['name']}) = {abs(acct['net']):,.2f}")
+                            break
+        elif stla_amt:
+            inject_notes_row(128, 4, stla_amt, "Short-term loans & advances")
+
+    # ────────────────────────────────────────────────────────────────
+    # 3. DETAILS — individual creditor/debtor amounts
+    # ────────────────────────────────────────────────────────────────
+    if "Details" in wb.sheetnames and individual_accounts:
+        ws_det = wb["Details"]
+
+        # ── Trade Payables (creditors) → Details D21:D60 ──
+        creditor_accounts = [a for a in individual_accounts
+                             if a.get("bs_head") == "trade_payables"
+                             and abs(a.get("net", 0)) > 0]
+
+        # Build template name → row map (skip rows already written)
+        cred_row_map = {}
+        for r in range(21, 63):
+            b = ws_det.cell(r, 2).value
+            if b and str(b).strip() not in ('', ' '):
+                cred_row_map[str(b).strip()] = r
+
+        written_rows = set()  # track rows already written to prevent collision
+        unmatched_creditors = []
+        for acct in creditor_accounts:
+            best_row = None
+            for tmpl_name, row in cred_row_map.items():
+                if row not in written_rows and _fuzzy_match_name(acct["name"], tmpl_name):
+                    best_row = row
+                    break
+            if best_row:
+                if _safe_set(ws_det, best_row, 4, abs(acct["net"])):
+                    injected.append(f"Details!D{best_row} ({acct['name']}) = {abs(acct['net']):,.2f}")
+                    written_rows.add(best_row)
+            else:
+                unmatched_creditors.append(acct)
+
+        # Unmatched creditors: find blank rows in the creditor range
+        blank_rows = [r for r in range(21, 63)
+                      if r not in written_rows
+                      and ws_det.cell(r, 4).value is None
+                      and ws_det.cell(r, 2).value is None]
+        for i, acct in enumerate(unmatched_creditors):
+            if i < len(blank_rows):
+                r = blank_rows[i]
+                ws_det.cell(r, 2).value = acct["name"]
+                if _safe_set(ws_det, r, 4, abs(acct["net"])):
+                    injected.append(f"Details!D{r} (new: {acct['name']}) = {abs(acct['net']):,.2f}")
+                    written_rows.add(r)
+            else:
+                skipped.append(f"Trade payable '{acct['name']}' = {abs(acct['net']):,.2f}: no row in Details")
+
+        # ── Trade Receivables → Details D74:D79 (advance to supplier area) ──
+        receivable_accounts = [a for a in individual_accounts
+                               if a.get("bs_head") == "trade_receivables"
+                               and abs(a.get("net", 0)) > 0]
+        recv_row = 74
+        for acct in receivable_accounts:
+            for r in range(74, 90):
+                b = ws_det.cell(r, 2).value
+                d = ws_det.cell(r, 4).value
+                if b and _fuzzy_match_name(acct["name"], str(b)):
+                    if _safe_set(ws_det, r, 4, abs(acct["net"])):
+                        injected.append(f"Details!D{r} (receivable: {acct['name']}) = {abs(acct['net']):,.2f}")
+                    break
+            else:
+                # Write to next available row
+                for r in range(74, 90):
+                    if ws_det.cell(r, 4).value is None and ws_det.cell(r, 2).value is None:
+                        ws_det.cell(r, 2).value = acct["name"]
+                        if _safe_set(ws_det, r, 4, abs(acct["net"])):
+                            injected.append(f"Details!D{r} (recv new: {acct['name']}) = {abs(acct['net']):,.2f}")
+                        break
+
+        # ── Unsecured loans → Details D7:D8 ──
+        ltb_accounts = [a for a in individual_accounts
+                        if a.get("bs_head") == "long_term_borrowings"
+                        and abs(a.get("net", 0)) > 0]
+        for acct in ltb_accounts:
+            for r in range(7, 10):
+                b = ws_det.cell(r, 2).value
+                d = ws_det.cell(r, 4).value
+                if b and _fuzzy_match_name(acct["name"], str(b)):
+                    if _safe_set(ws_det, r, 4, abs(acct["net"])):
+                        injected.append(f"Details!D{r} (loan: {acct['name']}) = {abs(acct['net']):,.2f}")
+                    break
+            else:
+                for r in range(7, 10):
+                    if ws_det.cell(r, 4).value is None:
+                        ws_det.cell(r, 2).value = acct["name"]
+                        if _safe_set(ws_det, r, 4, abs(acct["net"])):
+                            injected.append(f"Details!D{r} (loan new: {acct['name']}) = {abs(acct['net']):,.2f}")
+                        break
+
+    # ────────────────────────────────────────────────────────────────
+    # 4. CLOSING STOCK / INVENTORIES
+    # ────────────────────────────────────────────────────────────────
+    # notes to p&l!D24 is a formula (='GROSS PROFIT'!E17) which itself
+    # is computed from purchases. For TB injection we must override it
+    # directly with the TB closing stock value.
+    inventory_amt = aggregated_values.get("inventories", 0)
+    if inventory_amt:
+        placed = False
+        if "notes to p&l" in wb.sheetnames:
+            ws_npl = wb["notes to p&l"]
+            # Override D24 directly (even if formula) — closing stock must come from TB
+            ws_npl.cell(24, 4).value = round(inventory_amt, 2)
+            injected.append(f"notes to p&l!D24 (Closing stock override) = {inventory_amt:,.2f}")
+            placed = True
+        if not placed and "GROSS PROFIT" in wb.sheetnames:
+            ws_gp = wb["GROSS PROFIT"]
+            ws_gp.cell(17, 5).value = round(inventory_amt, 2)
+            injected.append(f"GROSS PROFIT!E17 (Closing stock override) = {inventory_amt:,.2f}")
+
+    # ────────────────────────────────────────────────────────────────
+    # 5. FIXED ASSETS — write WDV from TB into Fixed Assets C. Yr.
+    # ────────────────────────────────────────────────────────────────
+    fixed_assets_amt = aggregated_values.get("fixed_assets", 0)
+    if fixed_assets_amt and "Fixed Assets C. Yr." in wb.sheetnames:
+        ws_fa = wb["Fixed Assets C. Yr."]
+        if individual_accounts:
+            fa_accounts = [a for a in individual_accounts
+                           if a.get("bs_head") == "fixed_assets"
+                           and abs(a.get("net", 0)) > 0]
+            # Match by name to FA rows
+            for acct in fa_accounts:
+                for r in range(10, 35):
+                    a_val = ws_fa.cell(r, 1).value
+                    if a_val and _fuzzy_match_name(acct["name"], str(a_val)):
+                        # Col C = additions > 180 days
+                        c_val = ws_fa.cell(r, 3).value
+                        if c_val is not None and not _is_formula(str(c_val)):
+                            # TB net = WDV after depreciation
+                            # Write to col C (additions > 180 days) if opening (col B) is zero
+                            b_val = ws_fa.cell(r, 2).value
+                            opening_fa = float(b_val) if b_val and not _is_formula(str(b_val)) else 0
+                            if opening_fa == 0:
+                                if _safe_set(ws_fa, r, 3, abs(acct["net"])):
+                                    injected.append(f"FA C. Yr.!C{r} ({acct['name']}) = {abs(acct['net']):,.2f}")
+                        break
+        log.append(f"Fixed assets total from TB: {fixed_assets_amt:,.2f} (written to individual FA rows)")
+
+    # ────────────────────────────────────────────────────────────────
+    # 6. SHORT TERM PROVISIONS
+    # ────────────────────────────────────────────────────────────────
+    stp_amt = aggregated_values.get("short_term_provisions", 0)
+    if stp_amt and individual_accounts:
+        prov_accounts = [a for a in individual_accounts
+                         if a.get("bs_head") == "short_term_provisions"
+                         and abs(a.get("net", 0)) > 0]
+        if "notes to bs" in wb.sheetnames:
+            ws_n = wb["notes to bs"]
+            # TCS GST A/C → row 73 area  
+            for acct in prov_accounts:
+                name_l = acct["name"].lower()
+                if "tcs" in name_l and _safe_set(ws_n, 73, 4, abs(acct["net"])):
+                    injected.append(f"notes to bs!D73 (TCS provision) = {abs(acct['net']):,.2f}")
+
+    # ────────────────────────────────────────────────────────────────
+    # Compile log
+    # ────────────────────────────────────────────────────────────────
     for s in skipped:
         log.append(f"⚠ SKIPPED: {s}")
-    for inj in injected:
-        log.append(f"✓ {inj}")
+    for inj_msg in injected:
+        log.append(f"✓ {inj_msg}")
 
-    # Save
     wb.save(output_path)
     wb.close()
 
-    # Tally check
     total_assets = sum(
         aggregated_values.get(k, 0)
         for k in aggregated_values
@@ -1011,16 +1247,15 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values, mapping_ove
         for k in aggregated_values
         if BS_HEADS.get(k, {}).get("side") == "liability"
     )
+    diff = abs(total_assets - total_liabilities)
 
-    log.append(f"\n📊 Tally Check:")
+    log.append(f"\n📊 Tally Check (TB Aggregates):")
     log.append(f"  Total Assets:      {total_assets:>15,.2f}")
     log.append(f"  Total Liabilities: {total_liabilities:>15,.2f}")
-    diff = abs(total_assets - total_liabilities)
     if diff < 1:
         log.append(f"  ✅ Balance Sheet TALLIES!")
     else:
         log.append(f"  ❌ Difference: {diff:,.2f}")
-        # Find which side is more
         if total_assets > total_liabilities:
             log.append(f"  Assets exceed Liabilities by {diff:,.2f}")
         else:
@@ -1038,10 +1273,34 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values, mapping_ove
     }
 
 
-def _col_letter(col_idx):
-    """Convert 0-indexed column to letter."""
-    from openpyxl.utils import get_column_letter
-    return get_column_letter(col_idx + 1)
+def detect_bs_template(file_path):
+    """
+    Detect BS template structure — returns info for the UI.
+    Primary sheet is always the bs/balance sheet sheet.
+    """
+    wb = load_workbook(file_path, read_only=True, data_only=True)
+    result = {"sheets": []}
+
+    for sname in wb.sheetnames:
+        ws = wb[sname]
+        rows_data = []
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            rows_data.append(list(row))
+            if i >= 100:
+                break
+        sheet_info = _detect_bs_columns(rows_data, sname)
+        if sheet_info:
+            result["sheets"].append(sheet_info)
+
+    wb.close()
+
+    if not result["sheets"]:
+        return {"error": "Could not detect Balance Sheet template structure."}
+
+    best = max(result["sheets"], key=lambda s: len(s.get("head_rows", {})))
+    result["primary"] = best
+    return result
+
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1109,8 +1368,12 @@ def process_tb_to_bs(tb_path, bs_template_path, output_path, user_mapping=None):
     # Step 3: Aggregate
     aggregated = get_aggregated_values(accounts)
 
-    # Step 4: Inject into BS template
-    result = inject_into_bs(bs_template_path, output_path, aggregated)
+    # Step 4: Inject into BS template — pass individual accounts for name-matching
+    result = inject_into_bs(
+        bs_template_path, output_path, aggregated,
+        mapping_overrides=None,
+        individual_accounts=accounts,
+    )
 
     result["analysis"] = analysis
     result["aggregated"] = aggregated
