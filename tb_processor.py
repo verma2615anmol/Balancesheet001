@@ -593,8 +593,10 @@ def get_aggregated_values(classified_accounts):
 # Mapping from BS head keys to common labels found in BS templates
 BS_LABEL_MAP = {
     "capital": [
-        "capital", "partner", "proprietor", "owner", "equity",
-        "reserves", "surplus", "shareholders fund",
+        "capital account", "owner's capital", "owners capital", "owners' capital",
+        "partner capital", "partners capital", "proprietor capital",
+        "share capital", "equity", "reserves", "surplus",
+        "shareholders fund",
     ],
     "long_term_borrowings": [
         "long term borrowing", "long-term borrowing", "secured loan",
@@ -611,18 +613,18 @@ BS_LABEL_MAP = {
         "other current liabilit", "statutory",
     ],
     "short_term_provisions": [
-        "short term provision", "provision",
+        "short term provision", "short-term provision", "provision",
     ],
     "fixed_assets": [
-        "fixed asset", "property", "plant", "ppe",
-        "tangible", "intangible",
+        "fixed asset", "property, plant", "property plant",
+        "tangible asset", "intangible asset", "ppe",
     ],
     "non_current_investments": [
         "non-current investment", "non current investment",
-        "investment", "long term investment",
+        "long term investment",
     ],
     "inventories": [
-        "inventor", "stock", "closing stock",
+        "inventor", "stock in trade", "closing stock",
     ],
     "trade_receivables": [
         "trade receivable", "debtor", "sundry debtor",
@@ -633,25 +635,28 @@ BS_LABEL_MAP = {
     ],
     "short_term_loans_advances": [
         "short term loan", "loan and advance", "loans & advance",
-        "advance",
+        "loans and advance",
     ],
     "other_current_assets": [
         "other current asset",
     ],
     "revenue": [
-        "revenue", "sale", "income from operation",
+        "revenue from operation", "revenue", "sale of goods",
+        "sale of product", "income from operation",
     ],
     "purchases": [
-        "purchase", "cost of material", "cost of goods",
+        "cost of material consumed", "cost of material",
+        "cost of goods", "purchase",
     ],
     "employee_expenses": [
-        "employee", "salary", "staff",
+        "employee benefit", "employee expense", "salary expense",
+        "staff cost",
     ],
     "other_expenses": [
-        "other expense", "indirect expense", "administrative",
+        "other expense", "indirect expense", "administrative expense",
     ],
     "depreciation": [
-        "depreciation", "amortisation",
+        "depreciation and amort", "depreciation",
     ],
 }
 
@@ -704,6 +709,9 @@ def _detect_bs_columns(rows, sheet_name):
         r"as\s+at.*20\d{2}",
     ]
 
+    # Collect ALL year-column candidates first, then pick the best pair
+    year_candidates = []  # list of (row_idx, col_idx, year_int, raw_value)
+
     for ri, row in enumerate(rows[:15]):
         if not row:
             continue
@@ -714,31 +722,58 @@ def _detect_bs_columns(rows, sheet_name):
 
             for pat in current_year_patterns:
                 if re.search(pat, val_lower):
-                    # Determine if this is CY or PY based on position
-                    # CY is usually the first/left date column
                     year_match = re.search(r"20(\d{2})", val)
                     if year_match:
                         yr = int("20" + year_match.group(1))
-                        if cy_col is None:
-                            cy_col = ci
-                        elif ci != cy_col and py_col is None:
-                            py_col = ci
-                            # The later year is CY, earlier is PY
-                            cy_match = re.search(r"20(\d{2})", str(rows[ri][cy_col]) if rows[ri][cy_col] else "")
-                            py_match = re.search(r"20(\d{2})", str(rows[ri][py_col]) if rows[ri][py_col] else "")
-                            if cy_match and py_match:
-                                cy_yr = int("20" + cy_match.group(1))
-                                py_yr = int("20" + py_match.group(1))
-                                if py_yr > cy_yr:
-                                    cy_col, py_col = py_col, cy_col
+                        year_candidates.append((ri, ci, yr, val.strip()))
+                    break
 
-    if cy_col is None:
+    if not year_candidates:
+        return None
+
+    # Filter: prefer candidates in columns >= 2 (skip title/label columns A, B)
+    # Amount headers are almost always in column C (idx 2) or later
+    good_candidates = [c for c in year_candidates if c[1] >= 2]
+    if not good_candidates:
+        # Fallback: use all candidates but prefer rightmost columns
+        good_candidates = year_candidates
+
+    # Group by unique column indices
+    col_years = {}
+    for ri, ci, yr, raw in good_candidates:
+        if ci not in col_years or yr > col_years[ci][0]:
+            col_years[ci] = (yr, ri, raw)
+
+    if len(col_years) >= 2:
+        # Sort by column index — leftmost first
+        sorted_cols = sorted(col_years.items(), key=lambda x: x[0])
+        # The higher year is CY, lower is PY
+        col_a, (yr_a, _, _) = sorted_cols[0]
+        col_b, (yr_b, _, _) = sorted_cols[1]
+        if yr_a >= yr_b:
+            cy_col, py_col = col_a, col_b
+        else:
+            cy_col, py_col = col_b, col_a
+    elif len(col_years) == 1:
+        cy_col = list(col_years.keys())[0]
+    else:
         return None
 
     # Scan for BS head labels
+    # First pass: collect all matches
+    all_head_matches = {}  # {head_key: [(row, col, label, has_note)]}
     for ri, row in enumerate(rows):
         if not row:
             continue
+        # Check if this row has a note number (typically in col 3/D)
+        has_note = False
+        for ci2, val2 in enumerate(row):
+            if val2 is not None and ci2 >= 2:
+                val2_str = str(val2).strip()
+                if re.match(r'^\d{1,2}(\.\d{1,2})?$', val2_str):
+                    has_note = True
+                    break
+
         for ci, val in enumerate(row):
             if not val or not isinstance(val, str):
                 continue
@@ -747,13 +782,25 @@ def _detect_bs_columns(rows, sheet_name):
             for head_key, labels in BS_LABEL_MAP.items():
                 for label in labels:
                     if label in val_lower:
-                        if head_key not in head_rows:
-                            head_rows[head_key] = {
-                                "row": ri,
-                                "col": ci,
-                                "label_found": val.strip(),
-                            }
+                        if head_key not in all_head_matches:
+                            all_head_matches[head_key] = []
+                        all_head_matches[head_key].append({
+                            "row": ri,
+                            "col": ci,
+                            "label_found": val.strip(),
+                            "has_note": has_note,
+                        })
                         break
+
+    # Pick the best match for each head: prefer rows with note numbers
+    for head_key, matches in all_head_matches.items():
+        noted = [m for m in matches if m["has_note"]]
+        best = noted[0] if noted else matches[0]
+        head_rows[head_key] = {
+            "row": best["row"],
+            "col": best["col"],
+            "label_found": best["label_found"],
+        }
 
     # Also look for Note numbers (common in Indian BS templates)
     note_rows = {}
