@@ -6533,7 +6533,7 @@ def tb_process():
 
         # Move output to download folder
         h = os.urandom(8).hex()
-        dest = os.path.join(UPLOAD_DIR, h + ".xlsx")
+        dest = os.path.join(OUTPUT_DIR, h + "_out.xlsx")
         shutil.move(out_path, dest)
 
         try:
@@ -7111,7 +7111,7 @@ function buildResult(data) {
     ${data.log ? '<div style="margin-top:10px;padding:10px;background:#F9FAFB;border-radius:8px;font-size:10px;color:var(--muted);max-height:100px;overflow-y:auto">'+data.log.slice(-10).map(l=>'<div>'+escHtml(l)+'</div>').join('')+'</div>' : ''}`;
 
   const dlBtn = document.getElementById('dlBtn');
-  dlBtn.href = '/download/' + data.file_id;
+  dlBtn.href = '/download/' + data.file_id + '?fn=' + encodeURIComponent(data.filename);
   dlBtn.setAttribute('download', data.filename);
 }
 
