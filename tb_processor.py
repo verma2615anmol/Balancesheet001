@@ -1230,20 +1230,18 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
     # ────────────────────────────────────────────────────────────────
     # 4. CLOSING STOCK / INVENTORIES
     # ────────────────────────────────────────────────────────────────
-    # The formula chain is:
-    #   notes to p&l!D24  = ='GROSS PROFIT'!E17   ← formula, DO NOT override
-    #   GROSS PROFIT!E17  = =B24-SUM(E11:E14)      ← computed from purchases
+    # GROSS PROFIT!E17 has formula =B24-SUM(E11:E14) — closing stock
+    # is the BALANCING FIGURE on the sales side.
+    # DO NOT write to E17 — the formula calculates it automatically
+    # once sales (E11:E14) and total (B24/E24) are filled.
     #
-    # User instruction: closing inventory MUST come from ='GROSS PROFIT'!E17
-    # So we write the TB closing stock VALUE directly to GROSS PROFIT!E17,
-    # which propagates automatically to notes to p&l!D24 via the formula.
-    # We never touch notes to p&l!D24 (that would break the formula chain).
+    # notes to p&l!D24 = ='GROSS PROFIT'!E17 (formula) — also auto.
+    #
+    # Opening stock (D17) IS written (it's a plain constant from TB).
+    # Closing stock flows automatically — no injection needed here.
     inventory_amt = aggregated_values.get("inventories", 0)
     if inventory_amt:
-        if "GROSS PROFIT" in wb.sheetnames:
-            ws_gp = wb["GROSS PROFIT"]
-            ws_gp.cell(17, 5).value = round(inventory_amt, 2)
-            injected.append(f"GROSS PROFIT!E17 (Closing stock) = {inventory_amt:,.2f} → flows to notes to p&l!D24 via formula")
+        log.append(f"· Closing stock {inventory_amt:,.2f} — NOT written to E17 (auto-calculated by formula =B24-SUM(E11:E14))")
 
     # ────────────────────────────────────────────────────────────────
     # 5. FIXED ASSETS — DO NOT inject from TB.
@@ -1401,20 +1399,37 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             ws_npl.cell(31, 4).value = round(total_salary, 2)
             injected.append(f"notes to p&l!D31 (Salaries) = {total_salary:,.2f}")
 
-        # ── E. Finance Cost → notes to p&l!D38 ──────────────────────
-        # D40 = SUM(D38:D39), finance cost rows
-        finance_accounts = [a for a in individual_accounts
-                            if a.get("bs_head") in ("other_expenses",)
-                            and any(kw in a.get("name","").lower()
-                                    for kw in ["bank interest","bank cc intt","intt paid",
-                                               "interest on loan","interest paid","finance"])
-                            and abs(a.get("net", 0)) > 0]
-        if finance_accounts:
-            total_finance = sum(abs(a["net"]) for a in finance_accounts)
-            d38 = ws_npl.cell(38, 4).value
-            if not _is_formula(str(d38 or "")):
-                ws_npl.cell(38, 4).value = round(total_finance, 2)
-                injected.append(f"notes to p&l!D38 (Finance cost) = {total_finance:,.2f}")
+        # ── E. Finance Cost → notes to p&l!D38 (Bank Interest) & D39 (Unsecured Loan) ──
+        # ONLY genuine bank/loan interest goes here.
+        # "INTT PAID ON LATE PAYMENT OF TDS" stays in Other Expenses.
+        BANK_INT_KEYWORDS  = ["bank cc intt", "bank interest", "cc interest",
+                               "bank od interest", "overdraft interest"]
+        LOAN_INT_KEYWORDS  = ["interest on unsecured loan", "interest on loan",
+                               "interest on term loan", "interest paid to"]
+
+        bank_int_accounts = [a for a in individual_accounts
+                             if a.get("bs_head") in ("other_expenses", "finance_cost")
+                             and any(kw in a.get("name","").lower() for kw in BANK_INT_KEYWORDS)
+                             and abs(a.get("net", 0)) > 0]
+        loan_int_accounts = [a for a in individual_accounts
+                             if a.get("bs_head") in ("other_expenses", "finance_cost")
+                             and any(kw in a.get("name","").lower() for kw in LOAN_INT_KEYWORDS)
+                             and abs(a.get("net", 0)) > 0]
+
+        if bank_int_accounts:
+            total_bank_int = sum(abs(a["net"]) for a in bank_int_accounts)
+            ws_npl.cell(38, 4).value = round(total_bank_int, 2)
+            names = ", ".join(a["name"] for a in bank_int_accounts)
+            injected.append(f"notes to p&l!D38 (Bank Interest) = {total_bank_int:,.2f} [{names}]")
+
+        if loan_int_accounts:
+            total_loan_int = sum(abs(a["net"]) for a in loan_int_accounts)
+            ws_npl.cell(39, 4).value = round(total_loan_int, 2)
+            names = ", ".join(a["name"] for a in loan_int_accounts)
+            injected.append(f"notes to p&l!D39 (Loan Interest) = {total_loan_int:,.2f} [{names}]")
+
+        # Combined finance accounts list (for exclusion from Other Expenses)
+        finance_accounts = bank_int_accounts + loan_int_accounts
 
         # ── F. Other Expenses → notes to p&l!D57:D78 ─────────────────
         # Each row in D57:D78 corresponds to a specific expense item.
@@ -1422,19 +1437,20 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         # D79 = SUM(D57:D78), p&l!E16 ← notes to p&l!D79
 
         # Finance-cost keywords to exclude from other_expenses
-        FINANCE_KEYWORDS = {"bank interest","bank cc intt","intt paid",
-                            "interest on loan","interest paid"}
+        # Only EXACT bank/loan interest excluded — NOT "intt paid on late payment of tds"
+        FINANCE_KEYWORDS = set(BANK_INT_KEYWORDS + LOAN_INT_KEYWORDS)
+        finance_acct_names = {a["name"].lower() for a in finance_accounts}
 
         # Also exclude salary and depreciation — handled separately
-        EXCLUDE_FROM_OTHER = FINANCE_KEYWORDS | {"salary","depreciation","dep on","amort"}
+        EXCLUDE_FROM_OTHER = finance_acct_names | {"salary","depreciation","dep on","amort"}
 
         other_exp_accounts = [a for a in individual_accounts
                               if a.get("bs_head") == "other_expenses"
                               and abs(a.get("net", 0)) > 0
+                              and a.get("name","").lower() not in EXCLUDE_FROM_OTHER
                               and not any(kw in a.get("name","").lower()
-                                          for kw in EXCLUDE_FROM_OTHER)
-                              and "salary" not in a.get("name","").lower()
-                              and "depreciation" not in a.get("name","").lower()]
+                                          for kw in {"salary","depreciation","dep on","amort"})
+                              and a["name"].lower() not in finance_acct_names]
 
         # Build template label → row map for D57:D78
         # Key = normalized label from col B, value = row number
