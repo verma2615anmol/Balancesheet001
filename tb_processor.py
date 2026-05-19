@@ -907,16 +907,13 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         _cache[_sn] = _load_sheet_cache(wb, _sn, max_row=250, max_col=12)
 
     # ────────────────────────────────────────────────────────────────
-    # 1. CAPITAL — DO NOT inject from TB
-    #    The TB closing balance of capital is just the net closing figure.
-    #    The opening balance, additions (capital introduced), and
-    #    withdrawals come from the LEDGER, not the trial balance.
-    #    The user's BS template already has the correct capital account
-    #    format with formulas — preserve it untouched.
+    # 1. CAPITAL — DO NOT inject from TB.
+    #    TB only has closing balance. Additions/withdrawals come from
+    #    ledger. User's BS template capital sheet is preserved as-is.
     # ────────────────────────────────────────────────────────────────
     capital_amt = aggregated_values.get("capital", 0)
     if capital_amt:
-        log.append(f"· Capital from TB: {capital_amt:,.2f} — NOT injected (capital A/c values come from ledger, not TB)")
+        log.append(f"· Capital from TB: {capital_amt:,.2f} — skipped (fill from ledger)")
 
     # ────────────────────────────────────────────────────────────────
     # 2. NOTES TO BS — inject by scanning plain-value cells
@@ -1186,15 +1183,13 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             injected.append(f"GROSS PROFIT!E17 (Closing stock override) = {inventory_amt:,.2f}")
 
     # ────────────────────────────────────────────────────────────────
-    # 5. FIXED ASSETS — DO NOT inject from TB
-    #    The TB balance is just the WDV closing figure.
-    #    Additions, sales, and depreciation come from the LEDGER
-    #    and the user's BS template already has the correct Fixed
-    #    Assets chart format with formulas — preserve it untouched.
+    # 5. FIXED ASSETS — DO NOT inject from TB.
+    #    TB only has WDV closing. Additions/sales come from ledger.
+    #    User's BS template FA chart is preserved as-is.
     # ────────────────────────────────────────────────────────────────
     fixed_assets_amt = aggregated_values.get("fixed_assets", 0)
     if fixed_assets_amt:
-        log.append(f"· Fixed Assets from TB: {fixed_assets_amt:,.2f} — NOT injected (FA additions/sales come from ledger, not TB)")
+        log.append(f"· Fixed Assets from TB: {fixed_assets_amt:,.2f} — skipped (fill from ledger)")
 
     # ────────────────────────────────────────────────────────────────
     # 6. SHORT TERM PROVISIONS
@@ -1460,9 +1455,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 if not placed:
                     skipped.append(f"Other expense '{acct['name']}' = {amt:,.2f}: no row in notes to p&l")
 
-    # ── Depreciation note — NOT injected into Fixed Assets chart ────
-    # Since Fixed Assets sheet is preserved from user's template,
-    # depreciation is already handled by the FA chart formulas.
+    # ── Depreciation — FA sheet not touched (user fills from ledger) ──
     for s in skipped:
         log.append(f"⚠ SKIPPED: {s}")
     for inj_msg in injected:
