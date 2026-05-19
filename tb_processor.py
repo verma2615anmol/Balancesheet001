@@ -762,23 +762,28 @@ def _detect_notes_structure(wb):
     notes_map = {}
     if "notes to bs" in wb.sheetnames:
         ws_n = wb["notes to bs"]
-        # Build a map: row → (label, d_val, e_val)
-        for r in range(1, 200):
-            d_val = ws_n.cell(r, 4).value
-            b_val = ws_n.cell(r, 2).value
+        for row in ws_n.iter_rows(min_row=1, max_row=200, min_col=2, max_col=4, values_only=True):
+            b_val, _, d_val = row
+            if b_val is not None:
+                r = ws_n.cell(1,1).row  # placeholder
+                break
+        # Fast scan using iter_rows
+        for r_idx, row in enumerate(ws_n.iter_rows(min_row=1, max_row=200,
+                                                     min_col=2, max_col=4), 1):
+            b_val = row[0].value; d_val = row[2].value
             label = str(b_val).strip().lower() if b_val else ""
             if d_val is not None and not _is_formula(d_val):
-                notes_map[r] = (label, d_val)
+                notes_map[r_idx] = (label, d_val)
 
     # ── Details sheet ────────────────────────────────────────────────
     details_map = {}
     if "Details" in wb.sheetnames:
         ws_det = wb["Details"]
-        for r in range(1, 200):
-            b_val = ws_det.cell(r, 2).value
-            d_val = ws_det.cell(r, 4).value
+        for r_idx, row in enumerate(ws_det.iter_rows(min_row=1, max_row=200,
+                                                       min_col=2, max_col=4), 1):
+            b_val = row[0].value; d_val = row[2].value
             if b_val is not None and not _is_formula(d_val if d_val is not None else "x"):
-                details_map[r] = (str(b_val).strip().lower(), d_val)
+                details_map[r_idx] = (str(b_val).strip().lower(), d_val)
 
     # ── GROSS PROFIT / notes to p&l for inventory ────────────────────
     gp_map = {}
@@ -853,6 +858,20 @@ def _col_letter(col_idx):
     return get_column_letter(col_idx + 1)
 
 
+
+def _load_sheet_cache(wb, sheet_name, max_row=200, max_col=10):
+    """Pre-load all cell values into dict for fast O(1) lookup."""
+    cache = {}
+    if sheet_name not in wb.sheetnames:
+        return cache
+    ws = wb[sheet_name]
+    for row in ws.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col):
+        for cell in row:
+            if cell.value is not None:
+                cache[(cell.row, cell.column)] = cell.value
+    return cache
+
+
 def inject_into_bs(bs_template_path, output_path, aggregated_values,
                    mapping_overrides=None, individual_accounts=None):
     """
@@ -880,6 +899,12 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
     structure = _detect_notes_structure(wb)
     injected = []
     skipped = []
+
+    # Pre-load sheet caches for fast lookup (avoids slow ws.cell(r,c) in loops)
+    _cache = {}
+    for _sn in ["notes to bs", "notes to p&l", "Details", "GROSS PROFIT",
+                "Fixed Assets C. Yr.", "capital"]:
+        _cache[_sn] = _load_sheet_cache(wb, _sn, max_row=250, max_col=12)
 
     # ────────────────────────────────────────────────────────────────
     # 1. CAPITAL — inject closing balance
@@ -1089,93 +1114,89 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             inject_notes_row(128, 4, stla_amt, "Short-term loans & advances")
 
     # ────────────────────────────────────────────────────────────────
-    # 3. DETAILS — individual creditor/debtor amounts
+    # 3. DETAILS — individual creditor/debtor amounts (CACHE-BASED)
     # ────────────────────────────────────────────────────────────────
     if "Details" in wb.sheetnames and individual_accounts:
-        ws_det = wb["Details"]
+        ws_det  = wb["Details"]
+        det_cache = _cache.get("Details", {})
 
-        # ── Trade Payables (creditors) → Details D21:D60 ──
+        # Build name→row map from cache (instant, no cell access)
+        cred_row_map = {}
+        for r in range(21, 63):
+            b = det_cache.get((r, 2))
+            if b and str(b).strip():
+                cred_row_map[str(b).strip()] = r
+
+        written_rows = set()
         creditor_accounts = [a for a in individual_accounts
                              if a.get("bs_head") == "trade_payables"
                              and abs(a.get("net", 0)) > 0]
-
-        # Build template name → row map (skip rows already written)
-        cred_row_map = {}
-        for r in range(21, 63):
-            b = ws_det.cell(r, 2).value
-            if b and str(b).strip() not in ('', ' '):
-                cred_row_map[str(b).strip()] = r
-
-        written_rows = set()  # track rows already written to prevent collision
         unmatched_creditors = []
         for acct in creditor_accounts:
             best_row = None
             for tmpl_name, row in cred_row_map.items():
                 if row not in written_rows and _fuzzy_match_name(acct["name"], tmpl_name):
-                    best_row = row
-                    break
+                    best_row = row; break
             if best_row:
-                if _safe_set(ws_det, best_row, 4, abs(acct["net"])):
-                    injected.append(f"Details!D{best_row} ({acct['name']}) = {abs(acct['net']):,.2f}")
-                    written_rows.add(best_row)
+                ws_det.cell(best_row, 4).value = round(abs(acct["net"]), 2)
+                injected.append(f"Details!D{best_row} ({acct['name']}) = {abs(acct['net']):,.2f}")
+                written_rows.add(best_row)
             else:
                 unmatched_creditors.append(acct)
 
-        # Unmatched creditors: find blank rows in the creditor range
+        # Blank rows for unmatched (from cache)
         blank_rows = [r for r in range(21, 63)
                       if r not in written_rows
-                      and ws_det.cell(r, 4).value is None
-                      and ws_det.cell(r, 2).value is None]
+                      and det_cache.get((r, 4)) is None
+                      and det_cache.get((r, 2)) is None]
         for i, acct in enumerate(unmatched_creditors):
             if i < len(blank_rows):
                 r = blank_rows[i]
                 ws_det.cell(r, 2).value = acct["name"]
-                if _safe_set(ws_det, r, 4, abs(acct["net"])):
-                    injected.append(f"Details!D{r} (new: {acct['name']}) = {abs(acct['net']):,.2f}")
-                    written_rows.add(r)
+                ws_det.cell(r, 4).value = round(abs(acct["net"]), 2)
+                injected.append(f"Details!D{r} (new: {acct['name']}) = {abs(acct['net']):,.2f}")
             else:
-                skipped.append(f"Trade payable '{acct['name']}' = {abs(acct['net']):,.2f}: no row in Details")
+                skipped.append(f"Trade payable '{acct['name']}': no row in Details")
 
-        # ── Trade Receivables → Details D74:D79 (advance to supplier area) ──
+        # Trade Receivables D74:D90
         receivable_accounts = [a for a in individual_accounts
                                if a.get("bs_head") == "trade_rec"
                                and abs(a.get("net", 0)) > 0]
-        recv_row = 74
+        recv_written = set()
         for acct in receivable_accounts:
+            placed = False
             for r in range(74, 90):
-                b = ws_det.cell(r, 2).value
-                d = ws_det.cell(r, 4).value
-                if b and _fuzzy_match_name(acct["name"], str(b)):
-                    if _safe_set(ws_det, r, 4, abs(acct["net"])):
-                        injected.append(f"Details!D{r} (receivable: {acct['name']}) = {abs(acct['net']):,.2f}")
-                    break
-            else:
-                # Write to next available row
+                b = det_cache.get((r, 2))
+                if b and _fuzzy_match_name(acct["name"], str(b)) and r not in recv_written:
+                    ws_det.cell(r, 4).value = round(abs(acct["net"]), 2)
+                    injected.append(f"Details!D{r} ({acct['name']}) = {abs(acct['net']):,.2f}")
+                    recv_written.add(r); placed = True; break
+            if not placed:
                 for r in range(74, 90):
-                    if ws_det.cell(r, 4).value is None and ws_det.cell(r, 2).value is None:
+                    if det_cache.get((r, 4)) is None and det_cache.get((r, 2)) is None and r not in recv_written:
                         ws_det.cell(r, 2).value = acct["name"]
-                        if _safe_set(ws_det, r, 4, abs(acct["net"])):
-                            injected.append(f"Details!D{r} (recv new: {acct['name']}) = {abs(acct['net']):,.2f}")
-                        break
+                        ws_det.cell(r, 4).value = round(abs(acct["net"]), 2)
+                        injected.append(f"Details!D{r} (recv: {acct['name']}) = {abs(acct['net']):,.2f}")
+                        recv_written.add(r); break
 
-        # ── Unsecured loans → Details D7:D8 ──
+        # LT borrowings D7:D10
         ltb_accounts = [a for a in individual_accounts
                         if a.get("bs_head") == "lt_borrowings"
                         and abs(a.get("net", 0)) > 0]
         for acct in ltb_accounts:
-            for r in range(7, 10):
-                b = ws_det.cell(r, 2).value
-                d = ws_det.cell(r, 4).value
+            placed = False
+            for r in range(7, 12):
+                b = det_cache.get((r, 2))
                 if b and _fuzzy_match_name(acct["name"], str(b)):
-                    if _safe_set(ws_det, r, 4, abs(acct["net"])):
-                        injected.append(f"Details!D{r} (loan: {acct['name']}) = {abs(acct['net']):,.2f}")
-                    break
-            else:
-                for r in range(7, 10):
-                    if ws_det.cell(r, 4).value is None:
+                    ws_det.cell(r, 4).value = round(abs(acct["net"]), 2)
+                    injected.append(f"Details!D{r} (loan: {acct['name']}) = {abs(acct['net']):,.2f}")
+                    placed = True; break
+            if not placed:
+                for r in range(7, 12):
+                    if det_cache.get((r, 4)) is None:
                         ws_det.cell(r, 2).value = acct["name"]
-                        if _safe_set(ws_det, r, 4, abs(acct["net"])):
-                            injected.append(f"Details!D{r} (loan new: {acct['name']}) = {abs(acct['net']):,.2f}")
+                        ws_det.cell(r, 4).value = round(abs(acct["net"]), 2)
+                        injected.append(f"Details!D{r} (loan: {acct['name']}) = {abs(acct['net']):,.2f}")
                         break
 
     # ────────────────────────────────────────────────────────────────
@@ -1411,8 +1432,9 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         # Build template label → row map for D57:D78
         # Key = normalized label from col B, value = row number
         exp_row_map = {}
+        npl_cache = _cache.get("notes to p&l", {})
         for r in range(57, 79):
-            b_val = ws_npl.cell(r, 2).value
+            b_val = npl_cache.get((r, 2))
             if b_val:
                 exp_row_map[r] = str(b_val).strip().lower()
 
@@ -1479,7 +1501,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 placed = False
                 for r in range(57, 79):
                     if r not in written_exp_rows:
-                        d_val = ws_npl.cell(r, 4).value
+                        d_val = _cache.get("notes to p&l", {}).get((r, 4))
                         if d_val is None or d_val == 0:
                             ws_npl.cell(r, 4).value = round(amt, 2)
                             written_exp_rows.add(r)
