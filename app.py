@@ -6533,7 +6533,7 @@ def tb_process():
 
         # Move output to download folder
         h = os.urandom(8).hex()
-        dest = os.path.join(UPLOAD_FOLDER, h + ".xlsx")
+        dest = os.path.join(UPLOAD_DIR, h + ".xlsx")
         shutil.move(out_path, dest)
 
         try:
