@@ -701,6 +701,14 @@ def get_aggregated_values(classified_accounts):
             acct["bs_head"]    = "other_cl"
             acct["reclassified_from"] = "trade_rec"
 
+        # Provision with DEBIT balance = receivable/advance (asset not liability)
+        # e.g. TCS GST A/C (debit) = TCS paid to govt = advance to revenue authority
+        elif head == "st_provisions" and net > 0:
+            head = "stla"
+            acct["bs_head"]      = "stla"
+            acct["reclassified_from"] = "st_provisions"
+            acct["stla_subtype"]  = "revenue_authority"  # flag for D127 row
+
         amt = abs(net)
         if head not in totals:
             totals[head] = 0
@@ -1075,10 +1083,19 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 name_l = acct["name"].lower()
                 placed = False
 
+                # ── Revenue Authority advance (TCS/TDS debit provisions) → D127 ─
+                # TCS GST A/C debit = TCS paid to govt = advance to revenue authority
+                if acct.get("stla_subtype") == "revenue_authority" or (
+                    "tcs" in name_l and "gst" in name_l
+                ):
+                    if _safe_set(ws_n, 127, 4, abs(acct["net"])):
+                        injected.append(f"notes to bs!D127 (Advance to Revenue Authority: {acct['name']}) = {abs(acct['net']):,.2f}")
+                    placed = True
+
                 # ── Facebook TDS → D137 (Other current assets) ──────────────
                 # "TDS claimable from Facebook" is NOT a tax deposit —
                 # it's an amount recoverable from a party (Other current asset)
-                if "facebook" in name_l:
+                elif "facebook" in name_l:
                     if _safe_set(ws_n, 137, 4, abs(acct["net"])):
                         injected.append(f"notes to bs!D137 (TDS from Facebook / Other CA) = {abs(acct['net']):,.2f}")
                     placed = True
@@ -1432,10 +1449,6 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         finance_accounts = bank_int_accounts + loan_int_accounts
 
         # ── F. Other Expenses → notes to p&l!D57:D78 ─────────────────
-        # Each row in D57:D78 corresponds to a specific expense item.
-        # Read the template labels (col B) and match TB accounts.
-        # D79 = SUM(D57:D78), p&l!E16 ← notes to p&l!D79
-
         # Finance-cost keywords to exclude from other_expenses
         # Only EXACT bank/loan interest excluded — NOT "intt paid on late payment of tds"
         FINANCE_KEYWORDS = set(BANK_INT_KEYWORDS + LOAN_INT_KEYWORDS)
@@ -1451,6 +1464,27 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                               and not any(kw in a.get("name","").lower()
                                           for kw in {"salary","depreciation","dep on","amort"})
                               and a["name"].lower() not in finance_acct_names]
+
+        # Special pre-routing: "INTT PAID ON LATE PAYMENT OF TDS" → Bank Charges row (D62)
+        # since there is no dedicated row for TDS late payment interest
+        REROUTE_TO_BANK_CHARGES = ["intt paid on late payment", "interest on late payment tds",
+                                    "penal interest", "default interest tds"]
+        bank_charges_extra = 0
+        other_exp_accounts_filtered = []
+        for a in other_exp_accounts:
+            name_l = a["name"].lower()
+            if any(kw in name_l for kw in REROUTE_TO_BANK_CHARGES):
+                bank_charges_extra += abs(a["net"])
+            else:
+                other_exp_accounts_filtered.append(a)
+        other_exp_accounts = other_exp_accounts_filtered
+
+        # Add extra to D62 (Bank Charges) if any
+        if bank_charges_extra > 0:
+            existing_d62 = ws_npl.cell(62, 4).value or 0
+            if not _is_formula(str(existing_d62)):
+                ws_npl.cell(62, 4).value = round(float(existing_d62) + bank_charges_extra, 2)
+                injected.append(f"notes to p&l!D62 (Bank Charges + late int) += {bank_charges_extra:,.2f}")
 
         # Build template label → row map for D57:D78
         # Key = normalized label from col B, value = row number
