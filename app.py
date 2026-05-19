@@ -6512,33 +6512,99 @@ def tb_read_bs():
                         r.append(c.value)
                 rows_data.append(r)
 
-            # Find partner/proprietor rows — look for rows with names and numbers
+            # Find the header row with "Sr. No." or "Name of Proprietor/Partner"
             partners = []
             header_row_idx = None
+            name_col = None  # which column has names
+            opening_col = None  # which column has opening balance
+
             for i, row in enumerate(rows_data):
                 row_str = " ".join(str(v or "").lower() for v in row)
-                if "name of" in row_str and ("proprietor" in row_str or "partner" in row_str):
+                if ("sr" in row_str and "name" in row_str) or \
+                   ("name of" in row_str and ("proprietor" in row_str or "partner" in row_str)):
                     header_row_idx = i
-                    break
-                if "as at" in row_str and "april" in row_str:
-                    header_row_idx = i
+                    # Find which col is "Name" and which is "As at 1st April"
+                    for ci, val in enumerate(row):
+                        vl = str(val or "").lower().strip()
+                        if "name" in vl and ("proprietor" in vl or "partner" in vl or "of" in vl):
+                            name_col = ci
+                        if "as at" in vl and "april" in vl:
+                            opening_col = ci
                     break
 
-            # Scan rows after header for partner names
+            if header_row_idx is None:
+                # Fallback: look for "As at 1st April" row
+                for i, row in enumerate(rows_data):
+                    row_str = " ".join(str(v or "").lower() for v in row)
+                    if "as at" in row_str and "april" in row_str:
+                        header_row_idx = i
+                        for ci, val in enumerate(row):
+                            if isinstance(val, str) and "as at" in val.lower() and "april" in val.lower():
+                                opening_col = ci
+                                break
+                        name_col = 1  # default
+                        break
+
+            # Stop words — rows containing these are NOT partners
+            _cap_stop = {"total", "previous year", "previous year (py)", "py",
+                         "chartered accountant", "ca.", "auditor", "partner ",
+                         "proprietor", "director", "secretary", "for ",
+                         "sd/-", "authorised", "firm", "registration",
+                         "arun gupta", "arun kumar",  # signatory names from image
+                         }
+
             if header_row_idx is not None:
-                for i in range(header_row_idx + 1, min(header_row_idx + 15, len(rows_data))):
+                nc = name_col if name_col is not None else 1
+                oc = opening_col if opening_col is not None else 2
+                for i in range(header_row_idx + 1, min(header_row_idx + 12, len(rows_data))):
                     row = rows_data[i]
-                    # Look for a name in col B (index 1) and numbers in other cols
-                    name = None
+                    if not row or all(v is None for v in row):
+                        break  # blank row = end of data
+
+                    name_val = row[nc] if len(row) > nc else None
+                    if not isinstance(name_val, str) or len(name_val.strip()) < 2:
+                        continue
+
+                    nm = name_val.strip()
+                    nm_low = nm.lower()
+
+                    # Remove parentheses wrapper if present
+                    if nm.startswith("("):
+                        nm = nm.lstrip("(").rstrip(")")
+                        nm_low = nm.lower()
+
+                    # Skip stop words
+                    if any(sw in nm_low for sw in _cap_stop):
+                        continue  # skip this row, keep scanning (don't break)
+
+                    # Skip if too short or looks like a label
+                    if len(nm) < 3:
+                        continue
+                    if "account" in nm_low and "capital" not in nm_low:
+                        continue
+
+                    # Skip rows that have no number at all (pure text rows / signatures)
+                    has_any_number = any(
+                        isinstance(row[ci], (int, float)) and row[ci] != 0
+                        for ci in range(2, min(len(row), 10))
+                    )
+                    # Also check if opening is there (row might have 0 opening for new partner)
+                    has_sr_no = isinstance(row[0], (int, float))
+
+                    if not has_any_number and not has_sr_no:
+                        continue  # no Sr. No. and no numbers = not a data row
+
+                    # Get opening balance
                     opening = 0
-                    for ci, val in enumerate(row):
-                        if isinstance(val, str) and len(val.strip()) > 1 and not val.strip().replace(",","").replace(".","").replace("-","").isdigit():
-                            if ci <= 2 and val.strip().lower() not in ("total","previous year","previous year (py)","py"):
-                                name = val.strip()
-                        if isinstance(val, (int, float)) and ci >= 2 and ci <= 4 and name:
-                            opening = float(val)
-                    if name and name.lower() not in ("total","previous year","previous year (py)","py",""):
-                        partners.append({"name": name, "opening": opening, "row": i + 1})
+                    if len(row) > oc and isinstance(row[oc], (int, float)):
+                        opening = float(row[oc])
+                    else:
+                        for ci in range(oc, min(oc + 3, len(row))):
+                            if isinstance(row[ci], (int, float)) and row[ci] != 0:
+                                opening = float(row[ci])
+                                break
+
+                    partners.append({"name": nm, "opening": opening, "row": i + 1})
 
             if partners:
                 result["capital"] = {
@@ -6566,49 +6632,108 @@ def tb_read_bs():
                         r.append(c.value)
                 rows_data.append(r)
 
-            assets = []
+            # Find header row (PARTICULARS / W.D.V / ADDITIONS / SALE / RATE)
+            fa_header_row = None
+            wdv_col = None  # opening WDV column
+            rate_col = None
             for i, row in enumerate(rows_data):
-                # Look for asset names in col A/B with WDV numbers
-                name = None
+                row_str = " ".join(str(v or "").lower() for v in row)
+                if ("particular" in row_str or "w.d.v" in row_str) and \
+                   ("addition" in row_str or "rate" in row_str or "sale" in row_str):
+                    fa_header_row = i
+                    for ci, val in enumerate(row):
+                        vl = str(val or "").lower().strip()
+                        if "w.d.v" in vl or "opening" in vl or "01.04" in vl or "as on" in vl:
+                            wdv_col = ci
+                        if vl in ("rate", "%", "rate %"):
+                            rate_col = ci
+                    break
+
+            # Skip words for FA — not actual assets
+            import re as _re
+            _fa_skip = {"particular", "w.d.v", "amount", "total", "grand total",
+                        "rate", "addition", "sale", "depreciation",
+                        "as on", "note", "ca.", "chartered", "auditor",
+                        "sd/-", "partner", "proprietor", "director", "for ",
+                        "property, plant", "intangible asset",
+                        "amount in rs", "amount in"}
+
+            # Date pattern: 01.04.2024, 31.03.2025, 1.4.2024 etc
+            _date_re = _re.compile(r'^\d{1,2}[./]\d{1,2}[./]\d{2,4}$')
+            # Note/reference number pattern: "7 Property, Plant..." or starts with digit+space
+            _note_re = _re.compile(r'^\d+\s+\w')
+
+            assets = []
+            start_row = (fa_header_row + 1) if fa_header_row is not None else 5
+            wc = wdv_col if wdv_col is not None else 1  # default col B for opening WDV
+            rc = rate_col  # rate column
+
+            for i in range(start_row, min(start_row + 40, len(rows_data))):
+                row = rows_data[i]
+                if not row or all(v is None for v in row):
+                    continue
+
+                # Get asset name from col A or B
+                name_val = row[0] if len(row) > 0 else None
+                if name_val is None and len(row) > 1:
+                    name_val = row[1]
+
+                if not isinstance(name_val, str) or len(name_val.strip()) < 2:
+                    continue
+
+                nm = name_val.strip()
+                nm_low = nm.lower()
+
+                # Skip "Total" row — stop scanning
+                if nm_low.strip() in ("total", "grand total"):
+                    break
+
+                # Skip if it matches any stop word
+                if any(sw in nm_low for sw in _fa_skip):
+                    continue
+
+                # Skip dates like "01.04.2024"
+                if _date_re.match(nm):
+                    continue
+
+                # Skip note numbers like "7 Property, Plant and Equipment"
+                if _note_re.match(nm):
+                    continue
+
+                # Skip pure numbers
+                if nm.replace(",", "").replace(".", "").replace("-", "").isdigit():
+                    continue
+
+                # Skip ALL-CAPS category headers (PLANT & MACHINERY, VEHICLE, etc.)
+                # These are section headers, not individual assets
+                has_own_number = False
+                if len(row) > wc and isinstance(row[wc], (int, float)) and row[wc] != 0:
+                    has_own_number = True
+                if nm.isupper() and not has_own_number:
+                    continue
+
+                # This is a real asset row
                 opening_wdv = 0
+                if len(row) > wc and isinstance(row[wc], (int, float)):
+                    opening_wdv = float(row[wc])
+
                 rate = 0
-                a_val = row[0] if len(row) > 0 else None
-                b_val = row[1] if len(row) > 1 else None
-
-                name_val = a_val or b_val
-                if isinstance(name_val, str) and len(name_val.strip()) > 1:
-                    nm = name_val.strip()
-                    # Skip headers, categories, totals
-                    nm_low = nm.lower()
-                    if any(kw in nm_low for kw in ["particular","w.d.v","amount","total","grand","rate"]):
-                        continue
-                    # Check if it's a category header (bold, all caps, no numbers in row)
-                    has_number = any(isinstance(v, (int, float)) and v != 0 for v in row[1:] if v is not None)
-                    is_category = nm.isupper() and not has_number
-                    if is_category:
-                        continue
-
-                    name = nm
-                    # Opening WDV is typically col B or C
-                    for ci in [1, 2]:
-                        v = row[ci] if len(row) > ci else None
-                        if isinstance(v, (int, float)) and v > 0:
-                            opening_wdv = float(v)
-                            break
-                    # Rate is typically in a later column
-                    for ci in range(5, min(10, len(row))):
-                        v = row[ci] if len(row) > ci else None
-                        if isinstance(v, (int, float)) and 0 < v <= 100:
+                if rc is not None and len(row) > rc and isinstance(row[rc], (int, float)):
+                    rate = float(row[rc])
+                else:
+                    # Try to find rate in later columns (look for value 10-40)
+                    for ci in range(max(wc + 3, 5), min(len(row), 12)):
+                        v = row[ci]
+                        if isinstance(v, (int, float)) and 5 <= v <= 100:
                             rate = float(v)
                             break
 
-                if name:
-                    assets.append({
-                        "name": name,
-                        "opening_wdv": opening_wdv,
-                        "rate": rate,
-                        "row": i + 1,
-                    })
+                assets.append({
+                    "name": nm,
+                    "opening_wdv": opening_wdv,
+                    "rate": rate,
+                    "row": i + 1,
+                })
 
             if assets:
                 result["fixed_assets"] = {
@@ -7201,14 +7326,21 @@ async function doAnalyse() {
 // ═══════════════════════════════════════
 function buildMappingUI(data) {
   const accts = data.accounts || [];
-  const fi = data.format_detected || {};
+  const fi = data.detection || {};
+  const colLetter = (idx) => idx != null && idx >= 0 ? String.fromCharCode(65 + idx) : null;
+  const drL = colLetter(fi.debit_col);
+  const crL = colLetter(fi.credit_col);
+  const netL = colLetter(fi.net_col);
+  let colInfo = '';
+  if (drL && crL) { colInfo = `Dr: <strong>${drL}</strong> | Cr: <strong>${crL}</strong>`; }
+  else if (netL) { colInfo = `Amount: <strong>${netL}</strong>`; }
+  else { colInfo = `Amounts: <strong>auto</strong>`; }
 
   // Format info
   document.getElementById('tbFormatBox').innerHTML =
-    `<strong>📊 Detected:</strong> ${fi.format||'Unknown'} &nbsp;|&nbsp; ` +
-    `Name col: <strong>${fi.name_col||'A'}</strong> &nbsp;|&nbsp; ` +
-    `Dr col: <strong>${fi.dr_col||'?'}</strong> &nbsp;|&nbsp; ` +
-    `Cr col: <strong>${fi.cr_col||'?'}</strong> &nbsp;|&nbsp; ` +
+    `<strong>📊 Detected:</strong> ${fi.format_type ? 'Format '+fi.format_type : 'Auto'} &nbsp;|&nbsp; ` +
+    `Name col: <strong>${colLetter(fi.account_col)||'A'}</strong> &nbsp;|&nbsp; ` +
+    colInfo + ` &nbsp;|&nbsp; ` +
     `<strong>${accts.length}</strong> accounts`;
 
   // Summary
