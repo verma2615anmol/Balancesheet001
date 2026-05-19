@@ -32,7 +32,7 @@ BS_HEADS = {
         ],
         "negative_keywords": ["capital gain", "capital goods", "working capital loan"],
     },
-    "long_term_borrowings": {
+    "lt_borrowings": {
         "label": "Long Term Borrowings",
         "side": "liability",
         "keywords": [
@@ -44,7 +44,7 @@ BS_HEADS = {
         ],
         "negative_keywords": ["short term", "od", "overdraft", "cc limit"],
     },
-    "short_term_borrowings": {
+    "st_borrowings": {
         "label": "Short Term Borrowings",
         "side": "liability",
         "keywords": [
@@ -64,7 +64,7 @@ BS_HEADS = {
         ],
         "negative_keywords": [],
     },
-    "other_current_liabilities": {
+    "other_cl": {
         "label": "Other Current Liabilities",
         "side": "liability",
         "keywords": [
@@ -81,7 +81,7 @@ BS_HEADS = {
         ],
         "negative_keywords": ["provision for tax", "provision for depreciation", "provision for bad debt"],
     },
-    "short_term_provisions": {
+    "st_provisions": {
         "label": "Short Term Provisions",
         "side": "liability",
         "keywords": [
@@ -134,7 +134,7 @@ BS_HEADS = {
         ],
         "negative_keywords": ["stock broker"],
     },
-    "trade_receivables": {
+    "trade_rec": {
         "label": "Trade Receivables",
         "side": "asset",
         "keywords": [
@@ -144,7 +144,7 @@ BS_HEADS = {
         ],
         "negative_keywords": [],
     },
-    "cash_and_bank": {
+    "cash_bank": {
         "label": "Cash and Bank Balances",
         "side": "asset",
         "keywords": [
@@ -155,7 +155,7 @@ BS_HEADS = {
         ],
         "negative_keywords": ["cash credit", "cc account", "overdraft", "od account", "bank od"],
     },
-    "short_term_loans_advances": {
+    "stla": {
         "label": "Short Term Loans & Advances",
         "side": "asset",
         "keywords": [
@@ -260,15 +260,15 @@ BS_HEADS = {
 # Priority order for classification (most specific first)
 CLASSIFICATION_PRIORITY = [
     "depreciation",
-    "trade_payables", "trade_receivables",
-    "cash_and_bank", "inventories",
-    "short_term_provisions",
-    "short_term_borrowings", "long_term_borrowings",
+    "trade_payables", "trade_rec",
+    "cash_bank", "inventories",
+    "st_provisions",
+    "st_borrowings", "lt_borrowings",
     "employee_expenses", "purchases", "revenue",
     "fixed_assets", "non_current_investments",
-    "short_term_loans_advances",
+    "stla",
     "capital",
-    "other_current_liabilities", "other_current_assets",
+    "other_cl", "other_current_assets",
     "other_expenses",
 ]
 
@@ -581,14 +581,14 @@ def _to_float(val):
 # Group header → BS head mapping for hierarchical TBs
 GROUP_HEAD_MAP = {
     "capital account": "capital",
-    "bank accounts": "cash_and_bank",
-    "bank account": "cash_and_bank",
-    "cash-in-hand": "cash_and_bank",
-    "cash in hand": "cash_and_bank",
+    "bank accounts": "cash_bank",
+    "bank account": "cash_bank",
+    "cash-in-hand": "cash_bank",
+    "cash in hand": "cash_bank",
     "fixed assets": "fixed_assets",
     "sundry creditors": "trade_payables",
-    "sundry debtors": "trade_receivables",
-    "sundry debtor": "trade_receivables",
+    "sundry debtors": "trade_rec",
+    "sundry debtor": "trade_rec",
     "purchase account": "purchases",
     "purchases": "purchases",
     "sales account": "revenue",
@@ -596,13 +596,13 @@ GROUP_HEAD_MAP = {
     "stock in hand": "inventories",
     "indirect expenses": "other_expenses",
     "direct expenses": "purchases",
-    "sundry payables": "other_current_liabilities",
-    "provisions": "short_term_provisions",
-    "unsecure loans": "long_term_borrowings",
-    "unsecured loans": "long_term_borrowings",
-    "deposits (asset)": "short_term_loans_advances",
-    "duties & taxes": "short_term_loans_advances",
-    "duties and taxes": "short_term_loans_advances",
+    "sundry payables": "other_cl",
+    "provisions": "st_provisions",
+    "unsecure loans": "lt_borrowings",
+    "unsecured loans": "lt_borrowings",
+    "deposits (asset)": "stla",
+    "duties & taxes": "stla",
+    "duties and taxes": "stla",
 }
 
 
@@ -665,7 +665,7 @@ def _classify_single(name, net_amount, group=None):
     if net_amount > 0:
         return "other_current_assets", "low"
     elif net_amount < 0:
-        return "other_current_liabilities", "low"
+        return "other_cl", "low"
     else:
         return "unclassified", "none"
 
@@ -942,7 +942,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 return False
 
         # Long-term borrowings → D8 (ICICI Bank or first bank row)
-        ltb_amt = aggregated_values.get("long_term_borrowings", 0)
+        ltb_amt = aggregated_values.get("lt_borrowings", 0)
         if ltb_amt:
             # Find writable bank row in notes to bs rows 7-10
             placed = False
@@ -955,7 +955,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 skipped.append(f"long_term_borrowings {ltb_amt:,.2f}: no writable row found in notes to bs")
 
         # Short-term borrowings → D26 (bank CC row)
-        stb_amt = aggregated_values.get("short_term_borrowings", 0)
+        stb_amt = aggregated_values.get("st_borrowings", 0)
         if stb_amt:
             placed = False
             for r in range(26, 32):
@@ -966,8 +966,19 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             if not placed:
                 skipped.append(f"short_term_borrowings {stb_amt:,.2f}: no writable row in notes to bs")
 
+        # ── Cheques Issued But Not Cleared → D68 (OCL) ─────────────────
+        # These are liabilities, not assets — classifier may put them in stla
+        if individual_accounts:
+            cheque_accounts = [a for a in individual_accounts
+                               if "cheque" in a.get("name","").lower()
+                               or "chq" in a.get("name","").lower()]
+            total_cheques = sum(abs(a["net"]) for a in cheque_accounts)
+            if total_cheques > 0:
+                if _safe_set(ws_n, 68, 4, total_cheques):
+                    injected.append(f"notes to bs!D68 (Cheques issued) = {total_cheques:,.2f}")
+
         # Other current liabilities → D64:D68 (Audit, Legal, Salary, TDS, Cheque)
-        ocl_amt = aggregated_values.get("other_current_liabilities", 0)
+        ocl_amt = aggregated_values.get("other_cl", 0)
         if ocl_amt:
             # Collect all writable OCL rows (plain-value or empty, in OCL section)
             ocl_rows = []
@@ -988,7 +999,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
             if individual_accounts:
                 ocl_accounts = [a for a in individual_accounts
-                                if a.get("bs_head") == "other_current_liabilities"
+                                if a.get("bs_head") == "other_cl"
                                 and abs(a.get("net", 0)) > 0]
                 row_idx = 0  # sequential pointer into ocl_rows
                 for acct in ocl_accounts:
@@ -1001,49 +1012,54 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             elif ocl_rows:
                 inject_notes_row(ocl_rows[0][0], 4, ocl_amt, "Other current liabilities")
 
-        # Cash → D109 (Cash in hand)
-        cash_bank_amt = aggregated_values.get("cash_and_bank", 0)
-        if cash_bank_amt and individual_accounts:
+        # Cash → D109 (Cash in hand), HDFC → D113, ICICI → D114
+        cash_bank_amt = aggregated_values.get("cash_bank", 0)
+        if individual_accounts:
             cash_accounts = [a for a in individual_accounts
-                             if a.get("bs_head") == "cash_and_bank"]
-            cash_amt = sum(abs(a["net"]) for a in cash_accounts
-                          if "cash" in a["name"].lower())
-            bank_amt = sum(abs(a["net"]) for a in cash_accounts
-                          if "cash" not in a["name"].lower())
-            if cash_amt:
-                for r in range(108, 113):
-                    d = ws_n.cell(r, 4).value
-                    b = ws_n.cell(r, 2).value
-                    if b and "cash" in str(b).lower() and (d is None or not _is_formula(str(d))):
-                        inject_notes_row(r, 4, cash_amt, "Cash in hand")
-                        break
-            if bank_amt:
-                # Find writable bank rows (rows 112-115)
-                bank_accounts = [a for a in cash_accounts if "cash" not in a["name"].lower()]
-                for acct in bank_accounts:
-                    for r in range(112, 116):
-                        b = ws_n.cell(r, 2).value
-                        d = ws_n.cell(r, 4).value
-                        if b and (d is None or not _is_formula(str(d))):
-                            if _fuzzy_match_name(acct["name"], str(b)):
-                                inject_notes_row(r, 4, abs(acct["net"]), f"Bank: {acct['name']}")
-                                break
-                    else:
-                        # No match — find first empty bank row
-                        for r in range(112, 116):
-                            d = ws_n.cell(r, 4).value
-                            if d is None:
-                                inject_notes_row(r, 4, abs(acct["net"]), f"Bank: {acct['name']}")
-                                break
+                             if a.get("bs_head") in ("cash_bank", "cash_bank")]
+            cash_only  = [a for a in cash_accounts if "cash" in a["name"].lower()]
+            bank_only  = [a for a in cash_accounts if "cash" not in a["name"].lower()]
+
+            # Cash in hand → D109 directly (plain cell)
+            if cash_only:
+                total_cash = sum(abs(a["net"]) for a in cash_only)
+                if _safe_set(ws_n, 109, 4, total_cash):
+                    injected.append(f"notes to bs!D109 (Cash in hand) = {total_cash:,.2f}")
+
+            # Individual bank accounts → D113, D114 by name match
+            for acct in bank_only:
+                name_l = acct["name"].lower()
+                amt = abs(acct["net"])
+                if "hdfc" in name_l:
+                    if _safe_set(ws_n, 113, 4, amt):
+                        injected.append(f"notes to bs!D113 (HDFC) = {amt:,.2f}")
+                elif "icici" in name_l:
+                    if _safe_set(ws_n, 114, 4, amt):
+                        injected.append(f"notes to bs!D114 (ICICI) = {amt:,.2f}")
+                elif "pnb" in name_l or "punjab national" in name_l:
+                    if _safe_set(ws_n, 113, 4, amt):
+                        injected.append(f"notes to bs!D113 (PNB) = {amt:,.2f}")
+                elif "sbi" in name_l or "state bank" in name_l:
+                    if _safe_set(ws_n, 113, 4, amt):
+                        injected.append(f"notes to bs!D113 (SBI) = {amt:,.2f}")
+                else:
+                    # First empty bank row
+                    for r in range(113, 116):
+                        if ws_n.cell(r, 4).value is None:
+                            if _safe_set(ws_n, r, 4, amt):
+                                injected.append(f"notes to bs!D{r} ({acct['name']}) = {amt:,.2f}")
+                            break
         elif cash_bank_amt:
             inject_notes_row(109, 4, cash_bank_amt, "Cash and bank (lump)")
 
         # Short-term loans & advances → D128:D131 (GST, TDS etc)
-        stla_amt = aggregated_values.get("short_term_loans_advances", 0)
+        stla_amt = aggregated_values.get("stla", 0)
         if stla_amt and individual_accounts:
             stla_accounts = [a for a in individual_accounts
-                             if a.get("bs_head") == "short_term_loans_advances"
-                             and abs(a.get("net", 0)) > 0]
+                             if a.get("bs_head") == "stla"
+                             and abs(a.get("net", 0)) > 0
+                             and "cheque" not in a.get("name","").lower()
+                             and "chq" not in a.get("name","").lower()]
             for acct in stla_accounts:
                 name_l = acct["name"].lower()
                 placed = False
@@ -1122,7 +1138,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
         # ── Trade Receivables → Details D74:D79 (advance to supplier area) ──
         receivable_accounts = [a for a in individual_accounts
-                               if a.get("bs_head") == "trade_receivables"
+                               if a.get("bs_head") == "trade_rec"
                                and abs(a.get("net", 0)) > 0]
         recv_row = 74
         for acct in receivable_accounts:
@@ -1144,7 +1160,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
         # ── Unsecured loans → Details D7:D8 ──
         ltb_accounts = [a for a in individual_accounts
-                        if a.get("bs_head") == "long_term_borrowings"
+                        if a.get("bs_head") == "lt_borrowings"
                         and abs(a.get("net", 0)) > 0]
         for acct in ltb_accounts:
             for r in range(7, 10):
@@ -1213,10 +1229,10 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
     # ────────────────────────────────────────────────────────────────
     # 6. SHORT TERM PROVISIONS
     # ────────────────────────────────────────────────────────────────
-    stp_amt = aggregated_values.get("short_term_provisions", 0)
+    stp_amt = aggregated_values.get("st_provisions", 0)
     if stp_amt and individual_accounts:
         prov_accounts = [a for a in individual_accounts
-                         if a.get("bs_head") == "short_term_provisions"
+                         if a.get("bs_head") == "st_provisions"
                          and abs(a.get("net", 0)) > 0]
         if "notes to bs" in wb.sheetnames:
             ws_n = wb["notes to bs"]
@@ -1227,8 +1243,282 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     injected.append(f"notes to bs!D73 (TCS provision) = {abs(acct['net']):,.2f}")
 
     # ────────────────────────────────────────────────────────────────
-    # Compile log
+    # 7. P&L NOTES INJECTION (notes to p&l + GROSS PROFIT)
     # ────────────────────────────────────────────────────────────────
+    # P&L sheet cells are ALL formulas pulling from notes to p&l and
+    # GROSS PROFIT. We must write to the source sheets, never p&l directly.
+    #
+    # Chain:
+    #  p&l!E7  (Revenue)      ← notes to p&l!D7  ← notes to p&l!D6
+    #                                                ← SUM(GROSS PROFIT!E11:E14)
+    #  p&l!E12 (Cost Mat.)    ← notes to p&l!D26 ← D17+D20+D22-D24
+    #                              D17=E24 (formula←prev yr closing)
+    #                              D20=SUM(GROSS PROFIT!B14:B18)
+    #                              D24='GROSS PROFIT'!E17 (formula=auto)
+    #  p&l!E13 (Employee)     ← notes to p&l!D34 ← SUM(D31:D33)  → write D31
+    #  p&l!E14 (Finance cost) ← notes to p&l!D40 ← SUM(D38:D39)  → write D38
+    #  p&l!E15 (Depreciation) ← notes to p&l!D53 ← D52
+    #                              D52='Fixed Assets C. Yr.'!H31 (formula=auto)
+    #  p&l!E16 (Other exp)    ← notes to p&l!D79 ← SUM(D57:D78)  → write D57:D78
+
+    if individual_accounts and "notes to p&l" in wb.sheetnames:
+        ws_npl = wb["notes to p&l"]
+
+        # ── A. Sales → GROSS PROFIT!E11:E14 ─────────────────────────
+        # GROSS PROFIT!E11 = Sale GST 12% Interstate
+        # GROSS PROFIT!E12 = Sale GST 12% Within State
+        # GROSS PROFIT!E13 = Sale GST 5% Interstate
+        # GROSS PROFIT!E14 = Sale GST 5% Within State
+        if "GROSS PROFIT" in wb.sheetnames:
+            ws_gp = wb["GROSS PROFIT"]
+
+            sale_accounts = [a for a in individual_accounts
+                             if a.get("bs_head") == "revenue"
+                             and abs(a.get("net", 0)) > 0]
+
+            # Map TB sale account names → GROSS PROFIT rows
+            # Row 11=12% Interstate, 12=12% WS, 13=5% Interstate, 14=5% WS
+            SALE_ROW_MAP = {
+                "12% interstate": 11, "12% intertate": 11,
+                "12% within": 12,
+                "5% interstate": 13, "5% intertate": 13,
+                "5% within": 14,
+            }
+            sale_row_totals = {11: 0, 12: 0, 13: 0, 14: 0}
+            unmatched_sale = 0
+
+            for acct in sale_accounts:
+                name_l = acct["name"].lower()
+                matched = False
+                for pattern, row in SALE_ROW_MAP.items():
+                    if pattern in name_l:
+                        sale_row_totals[row] += abs(acct["net"])
+                        matched = True
+                        break
+                if not matched:
+                    # Dump into row 14 (5% within state = largest category)
+                    sale_row_totals[14] += abs(acct["net"])
+
+            for row, amt in sale_row_totals.items():
+                if amt > 0:
+                    e_val = ws_gp.cell(row, 5).value
+                    if not _is_formula(str(e_val or "")):
+                        ws_gp.cell(row, 5).value = round(amt, 2)
+                        injected.append(f"GROSS PROFIT!E{row} (Sale) = {amt:,.2f}")
+                    else:
+                        # Formula cell — override it
+                        ws_gp.cell(row, 5).value = round(amt, 2)
+                        injected.append(f"GROSS PROFIT!E{row} (Sale override) = {amt:,.2f}")
+
+        # ── B. Purchases → GROSS PROFIT!B14:B18 ─────────────────────
+        # Row 14=Purchase GST 12% Interstate, 15=12% WS, 16=18% WS
+        # Row 17=5% Interstate, 18=5% WS
+        if "GROSS PROFIT" in wb.sheetnames:
+            purchase_accounts = [a for a in individual_accounts
+                                  if a.get("bs_head") == "purchases"
+                                  and abs(a.get("net", 0)) > 0]
+
+            PURCH_ROW_MAP = {
+                "12% interstate": 14, "12% intertate": 14,
+                "12% within": 15,
+                "18% within": 16,
+                "5% interstate": 17, "5% intertate": 17,
+                "5% within": 18,
+            }
+            purch_row_totals = {14: 0, 15: 0, 16: 0, 17: 0, 18: 0}
+
+            for acct in purchase_accounts:
+                name_l = acct["name"].lower()
+                matched = False
+                for pattern, row in PURCH_ROW_MAP.items():
+                    if pattern in name_l:
+                        purch_row_totals[row] += abs(acct["net"])
+                        matched = True
+                        break
+                if not matched:
+                    purch_row_totals[18] += abs(acct["net"])
+
+            for row, amt in purch_row_totals.items():
+                if amt > 0:
+                    b_val = ws_gp.cell(row, 2).value
+                    if not _is_formula(str(b_val or "")):
+                        ws_gp.cell(row, 2).value = round(amt, 2)
+                    else:
+                        ws_gp.cell(row, 2).value = round(amt, 2)
+                    injected.append(f"GROSS PROFIT!B{row} (Purchase) = {amt:,.2f}")
+
+        # ── C. Opening Stock → GROSS PROFIT!B9 ──────────────────────
+        # B9 = "='notes to p&l'!D17" which = "=E24" (prev yr closing)
+        # Opening stock should come from TB opening stock account
+        opening_stock_accounts = [a for a in individual_accounts
+                                   if "opening stock" in a.get("name","").lower()
+                                   and abs(a.get("net", 0)) > 0]
+        if opening_stock_accounts and "GROSS PROFIT" in wb.sheetnames:
+            total_opening = sum(abs(a["net"]) for a in opening_stock_accounts)
+            # notes to p&l!D17 is "=E24" — override it directly
+            ws_npl.cell(17, 4).value = round(total_opening, 2)
+            injected.append(f"notes to p&l!D17 (Opening stock) = {total_opening:,.2f}")
+
+        # ── D. Employee Expenses → notes to p&l!D31 ─────────────────
+        # D34 = SUM(D31:D33), p&l!E13 ← notes to p&l!D34
+        # Include accounts classified as employee_expenses OR named "salary"
+        salary_accounts = [a for a in individual_accounts
+                           if (a.get("bs_head") == "employee_expenses"
+                               or "salary" in a.get("name","").lower()
+                               or "wage" in a.get("name","").lower())
+                           and "payable" not in a.get("name","").lower()
+                           and abs(a.get("net", 0)) > 0]
+        if salary_accounts:
+            total_salary = sum(abs(a["net"]) for a in salary_accounts)
+            ws_npl.cell(31, 4).value = round(total_salary, 2)
+            injected.append(f"notes to p&l!D31 (Salaries) = {total_salary:,.2f}")
+
+        # ── E. Finance Cost → notes to p&l!D38 ──────────────────────
+        # D40 = SUM(D38:D39), finance cost rows
+        finance_accounts = [a for a in individual_accounts
+                            if a.get("bs_head") in ("other_expenses",)
+                            and any(kw in a.get("name","").lower()
+                                    for kw in ["bank interest","bank cc intt","intt paid",
+                                               "interest on loan","interest paid","finance"])
+                            and abs(a.get("net", 0)) > 0]
+        if finance_accounts:
+            total_finance = sum(abs(a["net"]) for a in finance_accounts)
+            d38 = ws_npl.cell(38, 4).value
+            if not _is_formula(str(d38 or "")):
+                ws_npl.cell(38, 4).value = round(total_finance, 2)
+                injected.append(f"notes to p&l!D38 (Finance cost) = {total_finance:,.2f}")
+
+        # ── F. Other Expenses → notes to p&l!D57:D78 ─────────────────
+        # Each row in D57:D78 corresponds to a specific expense item.
+        # Read the template labels (col B) and match TB accounts.
+        # D79 = SUM(D57:D78), p&l!E16 ← notes to p&l!D79
+
+        # Finance-cost keywords to exclude from other_expenses
+        FINANCE_KEYWORDS = {"bank interest","bank cc intt","intt paid",
+                            "interest on loan","interest paid"}
+
+        # Also exclude salary and depreciation — handled separately
+        EXCLUDE_FROM_OTHER = FINANCE_KEYWORDS | {"salary","depreciation","dep on","amort"}
+
+        other_exp_accounts = [a for a in individual_accounts
+                              if a.get("bs_head") == "other_expenses"
+                              and abs(a.get("net", 0)) > 0
+                              and not any(kw in a.get("name","").lower()
+                                          for kw in EXCLUDE_FROM_OTHER)
+                              and "salary" not in a.get("name","").lower()
+                              and "depreciation" not in a.get("name","").lower()]
+
+        # Build template label → row map for D57:D78
+        # Key = normalized label from col B, value = row number
+        exp_row_map = {}
+        for r in range(57, 79):
+            b_val = ws_npl.cell(r, 2).value
+            if b_val:
+                exp_row_map[r] = str(b_val).strip().lower()
+
+        # For each TB account, find the best matching template row
+        # Strategy: for each template row label, find the TB account whose
+        # name best matches — not the other way around.
+        # This prevents mismatches from greedy matching.
+
+        # Build reverse: for each TB account → best matching row
+        written_exp_rows = set()
+        account_row_assignments = {}  # acct_key → row
+
+        for acct in other_exp_accounts:
+            name_l = acct["name"].lower().strip()
+            best_row = None
+            best_score = 0
+
+            for r, lbl in exp_row_map.items():
+                if r in written_exp_rows:
+                    continue
+                score = 0
+                # Score based on common significant words
+                name_words = set(w for w in name_l.replace("."," ").split() if len(w) > 2)
+                lbl_words  = set(w for w in lbl.replace("."," ").split() if len(w) > 2)
+                common = name_words & lbl_words
+                if common:
+                    score = sum(len(w) for w in common)
+                # Bonus for exact substring
+                if lbl in name_l or name_l in lbl:
+                    score += 20
+                # Key abbreviation matches
+                abbrev_map = {
+                    "exp": "expenses",
+                    "exp.": "expenses",
+                    "adda": "",
+                    "advertisment": "advertisement",
+                    "advertisement": "advertisement",
+                    "stationery": "stationary",
+                    "stationary": "stationary",
+                }
+                for short, full in abbrev_map.items():
+                    if short in name_l and (short in lbl or full in lbl):
+                        score += 5
+
+                if score > best_score:
+                    best_score = score
+                    best_row = r
+
+            if best_row and best_score > 2:
+                account_row_assignments[acct["name"]] = best_row
+                written_exp_rows.add(best_row)
+
+        # Write matched accounts
+        for acct in other_exp_accounts:
+            amt = abs(acct["net"])
+            row = account_row_assignments.get(acct["name"])
+            if row:
+                d_val = ws_npl.cell(row, 4).value
+                if not _is_formula(str(d_val or "")):
+                    ws_npl.cell(row, 4).value = round(amt, 2)
+                    injected.append(f"notes to p&l!D{row} ({acct['name']}) = {amt:,.2f}")
+            else:
+                # No template match — find first empty D row in 57:78
+                placed = False
+                for r in range(57, 79):
+                    if r not in written_exp_rows:
+                        d_val = ws_npl.cell(r, 4).value
+                        if d_val is None or d_val == 0:
+                            ws_npl.cell(r, 4).value = round(amt, 2)
+                            written_exp_rows.add(r)
+                            injected.append(f"notes to p&l!D{r} (unmatched: {acct['name']}) = {amt:,.2f}")
+                            placed = True
+                            break
+                if not placed:
+                    skipped.append(f"Other expense '{acct['name']}' = {amt:,.2f}: no row in notes to p&l")
+
+    # ── Depreciation note (D52) comes from Fixed Assets C. Yr.!H31 ──
+    # H31 = SUM(H10:H30) which is computed from individual asset rows.
+    # If FA rows are properly filled (section 5 above), this auto-calculates.
+    # For TB-based filing, if depreciation is explicitly in TB:
+    dep_accounts = []
+    if individual_accounts:
+        dep_accounts = [a for a in individual_accounts
+                        if a.get("bs_head") == "depreciation"
+                        and abs(a.get("net", 0)) > 0]
+    if dep_accounts and "Fixed Assets C. Yr." in wb.sheetnames:
+        total_dep = sum(abs(a["net"]) for a in dep_accounts)
+        ws_fa = wb["Fixed Assets C. Yr."]
+        # H31 = SUM formula — override only if sum doesn't match TB
+        h31 = ws_fa.cell(31, 8).value
+        if _is_formula(str(h31 or "")):
+            # H31 is a formula (=SUM(H10:H30)).
+            # Write TB depreciation total to H10 as a lump if H10:H30 are all zero
+            fa_dep_sum = sum(
+                float(ws_fa.cell(r, 8).value or 0)
+                for r in range(10, 31)
+                if not _is_formula(str(ws_fa.cell(r, 8).value or ""))
+            )
+            if abs(fa_dep_sum - total_dep) > 1:
+                # Find first non-formula H row and write the difference
+                for r in range(10, 31):
+                    h_val = ws_fa.cell(r, 8).value
+                    if h_val is not None and not _is_formula(str(h_val)):
+                        ws_fa.cell(r, 8).value = float(h_val) + (total_dep - fa_dep_sum)
+                        injected.append(f"Fixed Assets C. Yr.!H{r} (dep adjustment) = {float(h_val) + (total_dep - fa_dep_sum):,.2f}")
+                        break
     for s in skipped:
         log.append(f"⚠ SKIPPED: {s}")
     for inj_msg in injected:
