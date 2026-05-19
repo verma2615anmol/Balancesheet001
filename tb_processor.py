@@ -907,50 +907,16 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         _cache[_sn] = _load_sheet_cache(wb, _sn, max_row=250, max_col=12)
 
     # ────────────────────────────────────────────────────────────────
-    # 1. CAPITAL — inject closing balance
+    # 1. CAPITAL — DO NOT inject from TB
+    #    The TB closing balance of capital is just the net closing figure.
+    #    The opening balance, additions (capital introduced), and
+    #    withdrawals come from the LEDGER, not the trial balance.
+    #    The user's BS template already has the correct capital account
+    #    format with formulas — preserve it untouched.
     # ────────────────────────────────────────────────────────────────
     capital_amt = aggregated_values.get("capital", 0)
-    if capital_amt and "capital" in wb.sheetnames:
-        ws_cap = wb["capital"]
-        # Strategy: The closing balance formula is =C10+D10-E10+F10
-        # C10=SUM(C8:C9)=opening (from PY closing via =G11)
-        # D10=SUM(D8:D9)=introduced, E10=SUM(E8:E9)=withdrawals, F10=profit from p&l
-        # We cannot break the formula chain. Best approach:
-        # Set D8 (Capital Introduced during year) = closing_from_TB - C8 - F8 + E8
-        # But F8 = profit which is a formula from p&l.
-        # Cleanest: just write to D8 as a "net plug" = capital_amt - (C8_value or 0)
-        # After user processes p&l separately, D8 will reconcile.
-        # For now, write closing directly to G8 if not formula, else use D8 plug.
-        g10 = ws_cap.cell(10, 7).value
-        c8 = ws_cap.cell(8, 3).value
-        opening = 0
-        if c8 is not None and not _is_formula(c8):
-            opening = float(c8) if c8 else 0
-        elif _is_formula(str(c8 or "")):
-            # Try to read G11 (PY closing) as opening
-            g11 = ws_cap.cell(11, 7).value
-            if g11 is not None and not _is_formula(g11):
-                opening = float(g11) if g11 else 0
-
-        if _is_formula(str(g10 or "")):
-            # G10 is formula — inject via D8: Introduced = closing - opening
-            # (sets withdrawals and profit contribution aside for now)
-            e8 = ws_cap.cell(8, 5).value
-            f8 = ws_cap.cell(8, 6).value
-            withdrawals = float(e8) if e8 and not _is_formula(str(e8)) else 0
-            profit = 0  # formula, skip
-            d8_val = capital_amt - opening + withdrawals - profit
-            if _safe_set(ws_cap, 8, 4, max(0, d8_val)):
-                injected.append(f"capital!D8 (Capital Introduced) = {d8_val:,.2f} → closing balance will compute to {capital_amt:,.2f}")
-            else:
-                skipped.append(f"capital!D8 is a formula — could not inject capital {capital_amt:,.2f}")
-        else:
-            if _safe_set(ws_cap, 10, 7, capital_amt):
-                injected.append(f"capital!G10 = {capital_amt:,.2f}")
-            elif _safe_set(ws_cap, 8, 7, capital_amt):
-                injected.append(f"capital!G8 = {capital_amt:,.2f}")
-            else:
-                skipped.append(f"capital: could not find writable cell for {capital_amt:,.2f}")
+    if capital_amt:
+        log.append(f"· Capital from TB: {capital_amt:,.2f} — NOT injected (capital A/c values come from ledger, not TB)")
 
     # ────────────────────────────────────────────────────────────────
     # 2. NOTES TO BS — inject by scanning plain-value cells
@@ -1220,32 +1186,15 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             injected.append(f"GROSS PROFIT!E17 (Closing stock override) = {inventory_amt:,.2f}")
 
     # ────────────────────────────────────────────────────────────────
-    # 5. FIXED ASSETS — write WDV from TB into Fixed Assets C. Yr.
+    # 5. FIXED ASSETS — DO NOT inject from TB
+    #    The TB balance is just the WDV closing figure.
+    #    Additions, sales, and depreciation come from the LEDGER
+    #    and the user's BS template already has the correct Fixed
+    #    Assets chart format with formulas — preserve it untouched.
     # ────────────────────────────────────────────────────────────────
     fixed_assets_amt = aggregated_values.get("fixed_assets", 0)
-    if fixed_assets_amt and "Fixed Assets C. Yr." in wb.sheetnames:
-        ws_fa = wb["Fixed Assets C. Yr."]
-        if individual_accounts:
-            fa_accounts = [a for a in individual_accounts
-                           if a.get("bs_head") == "fixed_assets"
-                           and abs(a.get("net", 0)) > 0]
-            # Match by name to FA rows
-            for acct in fa_accounts:
-                for r in range(10, 35):
-                    a_val = ws_fa.cell(r, 1).value
-                    if a_val and _fuzzy_match_name(acct["name"], str(a_val)):
-                        # Col C = additions > 180 days
-                        c_val = ws_fa.cell(r, 3).value
-                        if c_val is not None and not _is_formula(str(c_val)):
-                            # TB net = WDV after depreciation
-                            # Write to col C (additions > 180 days) if opening (col B) is zero
-                            b_val = ws_fa.cell(r, 2).value
-                            opening_fa = float(b_val) if b_val and not _is_formula(str(b_val)) else 0
-                            if opening_fa == 0:
-                                if _safe_set(ws_fa, r, 3, abs(acct["net"])):
-                                    injected.append(f"FA C. Yr.!C{r} ({acct['name']}) = {abs(acct['net']):,.2f}")
-                        break
-        log.append(f"Fixed assets total from TB: {fixed_assets_amt:,.2f} (written to individual FA rows)")
+    if fixed_assets_amt:
+        log.append(f"· Fixed Assets from TB: {fixed_assets_amt:,.2f} — NOT injected (FA additions/sales come from ledger, not TB)")
 
     # ────────────────────────────────────────────────────────────────
     # 6. SHORT TERM PROVISIONS
@@ -1511,36 +1460,9 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 if not placed:
                     skipped.append(f"Other expense '{acct['name']}' = {amt:,.2f}: no row in notes to p&l")
 
-    # ── Depreciation note (D52) comes from Fixed Assets C. Yr.!H31 ──
-    # H31 = SUM(H10:H30) which is computed from individual asset rows.
-    # If FA rows are properly filled (section 5 above), this auto-calculates.
-    # For TB-based filing, if depreciation is explicitly in TB:
-    dep_accounts = []
-    if individual_accounts:
-        dep_accounts = [a for a in individual_accounts
-                        if a.get("bs_head") == "depreciation"
-                        and abs(a.get("net", 0)) > 0]
-    if dep_accounts and "Fixed Assets C. Yr." in wb.sheetnames:
-        total_dep = sum(abs(a["net"]) for a in dep_accounts)
-        ws_fa = wb["Fixed Assets C. Yr."]
-        # H31 = SUM formula — override only if sum doesn't match TB
-        h31 = ws_fa.cell(31, 8).value
-        if _is_formula(str(h31 or "")):
-            # H31 is a formula (=SUM(H10:H30)).
-            # Write TB depreciation total to H10 as a lump if H10:H30 are all zero
-            fa_dep_sum = sum(
-                float(ws_fa.cell(r, 8).value or 0)
-                for r in range(10, 31)
-                if not _is_formula(str(ws_fa.cell(r, 8).value or ""))
-            )
-            if abs(fa_dep_sum - total_dep) > 1:
-                # Find first non-formula H row and write the difference
-                for r in range(10, 31):
-                    h_val = ws_fa.cell(r, 8).value
-                    if h_val is not None and not _is_formula(str(h_val)):
-                        ws_fa.cell(r, 8).value = float(h_val) + (total_dep - fa_dep_sum)
-                        injected.append(f"Fixed Assets C. Yr.!H{r} (dep adjustment) = {float(h_val) + (total_dep - fa_dep_sum):,.2f}")
-                        break
+    # ── Depreciation note — NOT injected into Fixed Assets chart ────
+    # Since Fixed Assets sheet is preserved from user's template,
+    # depreciation is already handled by the FA chart formulas.
     for s in skipped:
         log.append(f"⚠ SKIPPED: {s}")
     for inj_msg in injected:
