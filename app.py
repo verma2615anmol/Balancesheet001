@@ -14,7 +14,6 @@ from functools import wraps
 from flask import (Flask, request, send_file, jsonify,
                    render_template_string, session, redirect, url_for, g)
 from processor import process
-import tb_processor
 
 # ── Database driver selection ────────────────────────────────────────────────
 # If DATABASE_URL is set (Supabase/PostgreSQL), use psycopg2.
@@ -454,16 +453,12 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <div class="arrow">→</div>
   </a>
 
-  <!-- PREMIUM: Balance Sheet from Trial Balance -->
-  {% if username %}
+  <!-- PREMIUM: Balance Sheet from Trial Balance - NOW LIVE -->
   <a href="/tool/tb-to-bs" class="tool-card" style="position:relative">
-  {% else %}
-  <a href="/login" class="tool-card" style="position:relative">
-  {% endif %}
-    {% if not username %}<div style="position:absolute;top:12px;right:12px;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🔒 Login Required</div>{% else %}<div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">Premium</div>{% endif %}
+    <div style="position:absolute;top:12px;right:12px;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🔒 Premium</div>
     <div class="tool-icon" style="background:#F0FDF4">📋</div>
     <h2>Balance Sheet from Trial Balance</h2>
-    <p>Upload Trial Balance + BS template — auto-classifies accounts, lets you review & adjust mapping, then injects values into your template. Zero formatting change.</p>
+    <p>Upload your trial balance and BS template — tool auto-maps accounts and fills CY figures. Zero formatting change.</p>
     <span class="tool-tag tag-live">✓ Live · Premium</span>
     <div class="arrow">→</div>
   </a>
@@ -523,24 +518,16 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 
 </div>
 
-<section style="max-width:900px;margin:40px auto 0;padding:24px 20px;border-top:1px solid #E5E7EB">
-  <div style="display:flex;flex-wrap:wrap;gap:24px;justify-content:center;font-size:12px;color:#6B7280;line-height:1.7;text-align:center">
-    <div style="flex:1;min-width:260px">
-      <strong style="color:#374151;font-size:13px">🔒 Privacy Note</strong><br>
-      Your uploaded files are processed on our server and automatically deleted within 1 hour. We do not store, share, or analyze your financial data beyond the processing required by the tool. No data is shared with third parties.
-    </div>
-    <div style="flex:1;min-width:260px">
-      <strong style="color:#374151;font-size:13px">⚠️ Disclaimer</strong><br>
-      All tools on this platform are for estimation and reference purposes only and do not constitute professional advice. Always verify results with a qualified Chartered Accountant before filing or submission. This is a utility tools platform for CA professionals and is not a registered CA firm.
-    </div>
-  </div>
-</section>
-
 <footer>
   <p class="footer-brand">CA Toolkit</p>
   <p>Built for Indian Chartered Accountants · Saves hours every year</p>
-  <p style="margin-top:6px">Created by CA Article</p>
-  <p style="margin-top:12px;font-size:11px">© 2026 CA Toolkit · Your data is never stored · <span style="color:#EF4444">No refund after first upload is used</span></p>
+  <p style="margin-top:6px">Created by CA Article · Ludhiana, Punjab</p>
+  <p style="margin-top:12px;font-size:11px;line-height:1.8;max-width:700px;margin-left:auto;margin-right:auto;color:#9CA3AF">
+    ⚠️ <strong style="color:#D1D5DB">Disclaimer:</strong> All tools on this platform are for estimation and reference purposes only and do not constitute professional advice. Results may vary based on specific facts and applicable laws. Always consult a qualified Chartered Accountant before making financial or tax decisions.<br/>
+    🔒 <strong style="color:#D1D5DB">Privacy:</strong> Your uploaded files are processed in memory and never stored on our servers permanently. Files are auto-deleted within minutes of processing.<br/>
+    📌 <strong style="color:#D1D5DB">Platform Notice:</strong> CA Toolkit is a utility tools platform for CA professionals and is not a registered CA firm. Use of the word "CA" refers to the target audience, not the service provider.
+  </p>
+  <p style="margin-top:10px;font-size:11px">© 2026 CA Toolkit · <a href="/privacy" style="color:#6B7280">Privacy Policy</a> · <span style="color:#EF4444">No refund after first upload is used</span></p>
 </footer>
 </body></html>"""
 
@@ -6425,651 +6412,727 @@ def gst_process():
         return jsonify({"status": "error", "message": f"Unexpected error: {e}"}), 500
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  BALANCE SHEET FROM TRIAL BALANCE TOOL
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TRIAL BALANCE → BALANCE SHEET ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
 
-TB_BS_TEMPLATE = r'''<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Balance Sheet from Trial Balance — CA Toolkit</title>
-<style>
-:root {
-  --bg: #F9FAFB; --surface: #FFFFFF; --border: #E5E7EB;
-  --text: #111827; --muted: #6B7280; --brand: #065F46;
-  --accent: #059669; --accent-light: #ECFDF5;
-  --danger: #DC2626; --danger-bg: #FEF2F2;
-  --warn: #D97706; --warn-bg: #FFFBEB;
-  --info-bg: #EFF6FF; --info: #1D4ED8;
-}
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
-.topbar{background:var(--brand);color:#fff;padding:12px 24px;display:flex;justify-content:space-between;align-items:center;font-size:14px}
-.topbar a{color:#A7F3D0;text-decoration:none;font-weight:600}
-.topbar a:hover{color:#fff}
-.topbar .user-info{display:flex;align-items:center;gap:16px}
-.topbar .plan-badge{background:rgba(255,255,255,.15);padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700}
-.container{max-width:1100px;margin:0 auto;padding:24px 16px}
-h1{font-size:24px;font-weight:700;margin-bottom:4px}
-.subtitle{color:var(--muted);font-size:14px;margin-bottom:24px}
-.upload-bar{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:4px;font-size:13px;color:var(--muted)}
-.upload-bar strong{color:var(--text)}
-.bar-track{height:6px;background:#E5E7EB;border-radius:99px;margin-top:6px}
-.bar-fill{height:100%;background:var(--accent);border-radius:99px;transition:width .3s}
-.steps-nav{display:flex;gap:0;margin:24px 0 20px;background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
-.step-tab{flex:1;text-align:center;padding:14px 8px;font-size:13px;font-weight:600;color:var(--muted);background:var(--surface);border-right:1px solid var(--border);cursor:default;transition:all .2s}
-.step-tab:last-child{border-right:none}
-.step-tab.active{background:var(--accent-light);color:var(--brand)}
-.step-tab.done{background:#D1FAE5;color:#065F46}
-.step-tab .num{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:var(--border);color:var(--muted);font-size:11px;font-weight:700;margin-right:6px}
-.step-tab.active .num{background:var(--accent);color:#fff}
-.step-tab.done .num{background:#065F46;color:#fff}
-.step-panel{display:none}
-.step-panel.active{display:block}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:16px}
-.card h2{font-size:16px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:8px}
-.upload-zone{border:2px dashed var(--border);border-radius:10px;padding:32px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s}
-.upload-zone:hover,.upload-zone.drag{border-color:var(--accent);background:var(--accent-light)}
-.upload-zone .icon{font-size:36px;margin-bottom:8px}
-.upload-zone p{font-size:13px;color:var(--muted)}
-.upload-zone .accepted{font-size:11px;color:var(--muted);margin-top:4px}
-.file-selected{display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:var(--accent-light);border-radius:8px;font-size:13px;font-weight:600;color:var(--brand)}
-.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 20px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all .15s}
-.btn-primary{background:var(--accent);color:#fff}
-.btn-primary:hover{background:#047857}
-.btn-primary:disabled{background:#9CA3AF;cursor:not-allowed}
-.btn-secondary{background:var(--surface);color:var(--text);border:1px solid var(--border)}
-.btn-secondary:hover{background:#F3F4F6}
-.btn-sm{padding:6px 12px;font-size:12px;border-radius:6px}
-.btn-row{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}
-.detect-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin:12px 0}
-.detect-chip{background:#F3F4F6;border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:12px}
-.detect-chip .label{color:var(--muted);font-size:10px;text-transform:uppercase;font-weight:700;margin-bottom:2px}
-.detect-chip .value{font-weight:600;color:var(--text)}
-.map-table{width:100%;border-collapse:collapse;font-size:13px}
-.map-table th{text-align:left;padding:10px 12px;background:#F9FAFB;border-bottom:2px solid var(--border);font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:700;position:sticky;top:0;z-index:2}
-.map-table td{padding:8px 12px;border-bottom:1px solid #F3F4F6;vertical-align:middle}
-.map-table tr:hover td{background:#FAFAFA}
-.map-table .acct-name{font-weight:600;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.map-table .amt{text-align:right;font-variant-numeric:tabular-nums;font-family:'SF Mono',Consolas,monospace;font-size:12px}
-.map-table .amt.dr{color:#065F46}
-.map-table .amt.cr{color:#DC2626}
-.conf-badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:10px;font-weight:700;text-transform:uppercase}
-.conf-high{background:#D1FAE5;color:#065F46}
-.conf-low{background:#FEF3C7;color:#92400E}
-.conf-none{background:#FEE2E2;color:#991B1B}
-.conf-user{background:#DBEAFE;color:#1E40AF}
-.head-select{padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--surface);min-width:180px;cursor:pointer}
-.head-select:focus{outline:2px solid var(--accent);outline-offset:-1px}
-.head-select.changed{border-color:var(--info);background:var(--info-bg)}
-.table-scroll{max-height:500px;overflow-y:auto;border:1px solid var(--border);border-radius:10px}
-.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:16px 0}
-.summary-card{background:#F9FAFB;border:1px solid var(--border);border-radius:10px;padding:16px}
-.summary-card .s-label{font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:4px}
-.summary-card .s-value{font-size:20px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
-.summary-card.asset .s-value{color:#065F46}
-.summary-card.liability .s-value{color:#1D4ED8}
-.summary-card.pl .s-value{color:var(--warn)}
-.summary-card.tally-ok{border-color:#059669;background:#ECFDF5}
-.summary-card.tally-fail{border-color:#DC2626;background:#FEF2F2}
-.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;align-items:center;justify-content:center}
-.overlay.show{display:flex}
-.progress-box{background:var(--surface);border-radius:16px;padding:32px;text-align:center;min-width:300px;box-shadow:0 20px 60px rgba(0,0,0,.15)}
-.spinner{width:40px;height:40px;border:4px solid #E5E7EB;border-top:4px solid var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px}
-@keyframes spin{to{transform:rotate(360deg)}}
-.dl-section{text-align:center;padding:24px;background:var(--accent-light);border-radius:12px;margin-top:16px}
-.dl-section h2{color:var(--brand);margin-bottom:12px}
-.dl-link{display:inline-flex;align-items:center;gap:8px;padding:12px 28px;background:var(--accent);color:#fff;border-radius:10px;font-size:15px;font-weight:700;text-decoration:none;transition:background .15s}
-.dl-link:hover{background:#047857}
-.pricing-section{margin-top:32px;padding-top:24px;border-top:1px solid var(--border)}
-.plans{max-width:1080px;margin:0 auto;display:grid;grid-template-columns:repeat(6,1fr);gap:14px}
-@media(max-width:900px){.plans{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:500px){.plans{grid-template-columns:repeat(2,1fr)}}
-.plan{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 14px;text-align:center}
-.plan-name{font-weight:700;font-size:14px;margin-bottom:6px}
-.plan-price{font-size:22px;font-weight:800;color:var(--brand)}
-.plan-uploads{font-size:12px;color:var(--muted);margin:4px 0}
-.plan-validity{font-size:11px;color:var(--muted)}
-.plan ul{list-style:none;margin:10px 0 12px;font-size:11px;color:var(--muted)}
-.plan ul li{padding:2px 0}
-.plan-btn{display:block;padding:8px;background:var(--accent-light);color:var(--brand);border-radius:8px;font-size:12px;font-weight:700;text-decoration:none;transition:background .15s}
-.plan-btn:hover{background:#D1FAE5}
-.log-area{max-height:250px;overflow-y:auto;background:#F9FAFB;border:1px solid var(--border);border-radius:8px;padding:12px;font-family:'SF Mono',Consolas,monospace;font-size:11px;line-height:1.6;white-space:pre-wrap}
-.log-area .ok{color:#059669}
-.log-area .warn{color:#D97706}
-.log-area .err{color:#DC2626}
-footer{text-align:center;padding:24px 16px 32px;font-size:12px;color:var(--muted);margin-top:32px;border-top:1px solid var(--border)}
-footer .footer-brand{font-weight:700;font-size:14px;color:var(--text);margin-bottom:4px}
-.disclaimer-box{max-width:800px;margin:20px auto 0;padding:16px 20px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;font-size:12px;color:#92400E;line-height:1.6;text-align:left}
-.privacy-box{max-width:800px;margin:12px auto 0;padding:16px 20px;background:var(--info-bg);border:1px solid #BFDBFE;border-radius:10px;font-size:12px;color:#1E40AF;line-height:1.6;text-align:left}
-.toast{position:fixed;bottom:24px;right:24px;background:#065F46;color:#fff;padding:12px 20px;border-radius:10px;font-size:13px;font-weight:600;opacity:0;transition:opacity .3s;pointer-events:none;z-index:999}
-.toast.show{opacity:1}
-.filter-bar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
-.filter-btn{padding:5px 12px;border:1px solid var(--border);border-radius:99px;font-size:11px;font-weight:600;cursor:pointer;background:var(--surface);color:var(--muted);transition:all .15s}
-.filter-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
-.filter-btn .count{background:rgba(0,0,0,.1);padding:1px 6px;border-radius:99px;margin-left:4px;font-size:10px}
-.filter-btn.active .count{background:rgba(255,255,255,.3)}
-.search-box{padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;width:100%;max-width:300px;margin-bottom:12px}
-.search-box:focus{outline:2px solid var(--accent);outline-offset:-1px}
-@media(max-width:700px){
-  .container{padding:16px 10px}
-  .steps-nav{flex-direction:column}
-  .step-tab{border-right:none;border-bottom:1px solid var(--border)}
-  .detect-grid{grid-template-columns:1fr 1fr}
-}
-</style>
-</head>
-<body>
+try:
+    from tb_processor import analyze_trial_balance, process_tb_to_bs
+    TB_PROCESSOR_AVAILABLE = True
+except ImportError:
+    TB_PROCESSOR_AVAILABLE = False
 
-<div class="topbar">
-  <div><a href="/" style="font-size:16px;font-weight:800">CA Toolkit</a></div>
-  <div class="user-info">
-    <span>{{ username }}</span>
-    <span class="plan-badge">{{ plan_label }}</span>
-    <a href="/logout">Logout</a>
-  </div>
-</div>
-
-<div class="container">
-  <h1>📋 Balance Sheet from Trial Balance</h1>
-  <p class="subtitle">Upload your Trial Balance + BS template → auto-classify → review mapping → download completed BS</p>
-
-  <div class="upload-bar">
-    <strong>{{ uploads_used }}</strong> / <strong>{{ uploads_total }}</strong> uploads used
-    <span style="float:right">{{ uploads_remaining }} remaining</span>
-    <div class="bar-track"><div class="bar-fill" style="width:{{ bar_pct }}%"></div></div>
-  </div>
-
-  <div class="steps-nav">
-    <div class="step-tab active" id="stab1"><span class="num">1</span>Upload Files</div>
-    <div class="step-tab" id="stab2"><span class="num">2</span>Review Detection</div>
-    <div class="step-tab" id="stab3"><span class="num">3</span>Map Accounts</div>
-    <div class="step-tab" id="stab4"><span class="num">4</span>Download Result</div>
-  </div>
-
-  <!-- STEP 1: Upload -->
-  <div class="step-panel active" id="step1">
-    <div class="card">
-      <h2>📄 Upload Trial Balance</h2>
-      <div class="upload-zone" id="tbZone" onclick="document.getElementById('tbFile').click()">
-        <div class="icon">📊</div>
-        <p><strong>Click to upload</strong> or drag & drop your Trial Balance</p>
-        <p class="accepted">.xlsx / .xls files · Max 10 MB</p>
-        <input type="file" id="tbFile" accept=".xlsx,.xls,.csv" style="display:none">
-      </div>
-      <div class="file-selected" id="tbSelected" style="display:none">
-        <span>📎</span> <span id="tbFileName"></span>
-        <button class="btn btn-sm btn-secondary" onclick="clearFile('tb')" style="margin-left:auto">✕ Remove</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>📋 Upload Balance Sheet Template</h2>
-      <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Your BS template with PY figures filled and CY column blank. Formatting will be preserved exactly.</p>
-      <div class="upload-zone" id="bsZone" onclick="document.getElementById('bsFile').click()">
-        <div class="icon">📝</div>
-        <p><strong>Click to upload</strong> or drag & drop your BS Template</p>
-        <p class="accepted">.xlsx / .xls files · Max 10 MB</p>
-        <input type="file" id="bsFile" accept=".xlsx,.xls" style="display:none">
-      </div>
-      <div class="file-selected" id="bsSelected" style="display:none">
-        <span>📎</span> <span id="bsFileName"></span>
-        <button class="btn btn-sm btn-secondary" onclick="clearFile('bs')" style="margin-left:auto">✕ Remove</button>
-      </div>
-    </div>
-
-    <div class="btn-row">
-      <button class="btn btn-primary" id="analyzeBtn" disabled onclick="analyzeFiles()">
-        🔍 Analyze Trial Balance
-      </button>
-    </div>
-  </div>
-
-  <!-- STEP 2: Detection Results -->
-  <div class="step-panel" id="step2">
-    <div class="card">
-      <h2>🔍 Auto-Detection Results</h2>
-      <p style="font-size:13px;color:var(--muted);margin-bottom:12px">We detected the following structure in your Trial Balance. Please verify and confirm.</p>
-      <div class="detect-grid" id="detectGrid"></div>
-    </div>
-    <div class="card">
-      <h2>📊 Classification Summary</h2>
-      <div class="summary-grid" id="summaryGrid"></div>
-    </div>
-    <div class="btn-row">
-      <button class="btn btn-secondary" onclick="goToStep(1)">← Back</button>
-      <button class="btn btn-primary" onclick="goToStep(3)">Continue to Mapping →</button>
-    </div>
-  </div>
-
-  <!-- STEP 3: Account Mapping -->
-  <div class="step-panel" id="step3">
-    <div class="card">
-      <h2>🗂️ Account → BS Head Mapping</h2>
-      <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Review each account's classification. Change the dropdown to reassign any account to a different head.</p>
-      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
-        <input type="text" class="search-box" id="acctSearch" placeholder="🔍 Search accounts..." oninput="filterAccounts()">
-      </div>
-      <div class="filter-bar" id="filterBar"></div>
-      <div class="table-scroll">
-        <table class="map-table">
-          <thead>
-            <tr>
-              <th style="width:30px">#</th>
-              <th>Account Name</th>
-              <th style="text-align:right">Debit (₹)</th>
-              <th style="text-align:right">Credit (₹)</th>
-              <th>Classified Under</th>
-              <th style="width:60px">Conf.</th>
-            </tr>
-          </thead>
-          <tbody id="mapBody"></tbody>
-        </table>
-      </div>
-    </div>
-    <div class="card" id="aggregateCard" style="display:none">
-      <h2>📊 Aggregated Totals (Preview)</h2>
-      <div class="summary-grid" id="aggGrid"></div>
-    </div>
-    <div class="btn-row">
-      <button class="btn btn-secondary" onclick="goToStep(2)">← Back</button>
-      <button class="btn btn-primary" id="processBtn" onclick="processAndInject()">
-        ⚡ Generate Balance Sheet
-      </button>
-    </div>
-  </div>
-
-  <!-- STEP 4: Download -->
-  <div class="step-panel" id="step4">
-    <div class="dl-section" id="dlSection">
-      <h2>✅ Balance Sheet Generated!</h2>
-      <p style="color:var(--muted);margin-bottom:16px;font-size:14px">Your values have been injected into the BS template. Download below.</p>
-      <a class="dl-link" id="dlLink" href="#">📥 Download Balance Sheet</a>
-    </div>
-    <div class="card" style="margin-top:16px">
-      <h2>📊 Tally Check</h2>
-      <div class="summary-grid" id="tallyGrid"></div>
-    </div>
-    <div class="card" style="margin-top:16px">
-      <h2>📜 Processing Log</h2>
-      <div class="log-area" id="logArea"></div>
-    </div>
-    <div class="btn-row">
-      <button class="btn btn-secondary" onclick="goToStep(3)">← Back to Mapping</button>
-      <button class="btn btn-secondary" onclick="location.reload()">🔄 Process Another File</button>
-    </div>
-  </div>
-
-  <!-- Pricing -->
-  <div class="pricing-section">
-    <h2 style="text-align:center;font-size:18px;margin-bottom:16px">📋 Plans & Pricing</h2>
-    <div class="plans">
-      <div class="plan"><div class="plan-name">Free</div><div class="plan-price">₹0</div><div class="plan-uploads">2 uploads</div><div class="plan-validity">Trial</div><ul><li>All features</li><li>Basic support</li></ul><span class="plan-btn" style="cursor:default;opacity:.5">Current</span></div>
-      <div class="plan"><div class="plan-name">Starter</div><div class="plan-price">₹60</div><div class="plan-uploads">10 uploads</div><div class="plan-validity">3 month validity</div><ul><li>All features</li><li>Email support</li></ul><a href="#contact" class="plan-btn">Contact to Buy</a></div>
-      <div class="plan"><div class="plan-name">Standard</div><div class="plan-price">₹130</div><div class="plan-uploads">25 uploads</div><div class="plan-validity">3 month validity</div><ul><li>All features</li><li>Priority support</li></ul><a href="#contact" class="plan-btn">Contact to Buy</a></div>
-      <div class="plan"><div class="plan-name">Professional</div><div class="plan-price">₹270</div><div class="plan-uploads">60 uploads</div><div class="plan-validity">3 month validity</div><ul><li>All features</li><li>WhatsApp support</li></ul><a href="#contact" class="plan-btn">Contact to Buy</a></div>
-      <div class="plan"><div class="plan-name">Firm</div><div class="plan-price">₹600</div><div class="plan-uploads">150 uploads</div><div class="plan-validity">3 month validity</div><ul><li>All features</li><li>WhatsApp support</li><li>Up to 20 MB</li></ul><a href="#contact" class="plan-btn">Contact to Buy</a></div>
-      <div class="plan"><div class="plan-name">CA Admin</div><div class="plan-price">₹1,000</div><div class="plan-uploads">500 uploads</div><div class="plan-validity">3 month validity</div><ul><li>All features + GST</li><li>WhatsApp support</li><li>Best for CA firms</li></ul><a href="#contact" class="plan-btn">Contact to Buy</a></div>
-    </div>
-  </div>
-
-  <section id="contact" style="text-align:center;margin-top:24px;padding:20px">
-    <h3 style="font-size:16px;margin-bottom:8px">📞 Contact to Upgrade</h3>
-    <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Pay via UPI, share screenshot to email. Account upgraded within a few hours.</p>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:400px;margin:0 auto">
-      <div style="text-align:center"><strong style="font-size:11px;color:var(--muted);text-transform:uppercase">Email</strong><br><a href="mailto:{{ contact_email }}" style="font-size:13px;color:var(--brand)">{{ contact_email }}</a></div>
-      <div style="text-align:center"><strong style="font-size:11px;color:var(--muted);text-transform:uppercase">UPI Payment</strong><br><span style="font-size:13px;font-weight:600">{{ contact_upi }}</span></div>
-    </div>
-  </section>
-
-  <div class="privacy-box">
-    <strong>🔒 Privacy Note:</strong> Your uploaded files are processed on our server and automatically deleted within 1 hour. We do not store, share, or analyze your financial data beyond the processing required by this tool. No data is shared with third parties.
-  </div>
-  <div class="disclaimer-box">
-    <strong>⚠️ Disclaimer:</strong> This tool is for estimation and reference purposes only and does not constitute professional advice. Always verify results with a qualified Chartered Accountant before filing or submission. This is a utility tools platform for CA professionals and is not a registered CA firm.
-  </div>
-</div>
-
-<footer>
-  <p class="footer-brand">CA Toolkit</p>
-  <p>Built for Indian Chartered Accountants · Saves hours every year</p>
-  <p style="margin-top:6px">Created by CA Article</p>
-  <p style="margin-top:12px;font-size:11px">&copy; 2026 CA Toolkit</p>
-</footer>
-
-<div class="overlay" id="overlay">
-  <div class="progress-box">
-    <div class="spinner"></div>
-    <p id="progressMsg" style="font-weight:600;font-size:14px">Analyzing Trial Balance...</p>
-    <p style="font-size:12px;color:var(--muted);margin-top:6px">This may take a few seconds</p>
-  </div>
-</div>
-
-<div class="toast" id="toast"></div>
-
-<script>
-let analysisData = null;
-let currentStep = 1;
-
-const BS_HEAD_OPTIONS = {
-  "--- Liabilities ---": null,
-  "Owner's Capital / Partners Capital": "capital",
-  "Long Term Borrowings": "long_term_borrowings",
-  "Short Term Borrowings": "short_term_borrowings",
-  "Trade Payables": "trade_payables",
-  "Other Current Liabilities": "other_current_liabilities",
-  "Short Term Provisions": "short_term_provisions",
-  "--- Assets ---": null,
-  "Fixed Assets / PPE": "fixed_assets",
-  "Non-Current Investments": "non_current_investments",
-  "Inventories / Stock": "inventories",
-  "Trade Receivables": "trade_receivables",
-  "Cash and Bank Balances": "cash_and_bank",
-  "Short Term Loans & Advances": "short_term_loans_advances",
-  "Other Current Assets": "other_current_assets",
-  "--- P&L Heads ---": null,
-  "Revenue / Sales": "revenue",
-  "Purchases / Cost of Material": "purchases",
-  "Employee / Salary Expenses": "employee_expenses",
-  "Other Expenses": "other_expenses",
-  "Depreciation": "depreciation",
-  "--- Other ---": null,
-  "Unclassified": "unclassified",
-};
-
-const HEAD_LABELS = {};
-for (const [label, key] of Object.entries(BS_HEAD_OPTIONS)) {
-  if (key) HEAD_LABELS[key] = label;
-}
-
-function setupUploadZone(zoneId, inputId, selectedId, nameId, type) {
-  const zone = document.getElementById(zoneId);
-  const input = document.getElementById(inputId);
-  ['dragover','dragenter'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.add('drag'); }));
-  ['dragleave','drop'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.remove('drag'); }));
-  zone.addEventListener('drop', ev => { const f = ev.dataTransfer.files[0]; if (f) { input.files = ev.dataTransfer.files; fileSelected(type, f); } });
-  input.addEventListener('change', () => { if (input.files[0]) fileSelected(type, input.files[0]); });
-}
-
-function fileSelected(type, file) {
-  document.getElementById(type+'FileName').textContent = file.name + ' (' + (file.size/1024).toFixed(1) + ' KB)';
-  document.getElementById(type+'Selected').style.display = 'flex';
-  document.getElementById(type+'Zone').style.display = 'none';
-  checkReady();
-}
-
-function clearFile(type) {
-  document.getElementById(type+'File').value = '';
-  document.getElementById(type+'Selected').style.display = 'none';
-  document.getElementById(type+'Zone').style.display = '';
-  checkReady();
-}
-
-function checkReady() {
-  document.getElementById('analyzeBtn').disabled = !(document.getElementById('tbFile').files[0] && document.getElementById('bsFile').files[0]);
-}
-
-setupUploadZone('tbZone','tbFile','tbSelected','tbFileName','tb');
-setupUploadZone('bsZone','bsFile','bsSelected','bsFileName','bs');
-
-function goToStep(n) {
-  currentStep = n;
-  document.querySelectorAll('.step-panel').forEach((p,i) => p.classList.toggle('active', i+1===n));
-  document.querySelectorAll('.step-tab').forEach((t,i) => { t.classList.remove('active','done'); if (i+1===n) t.classList.add('active'); else if (i+1<n) t.classList.add('done'); });
-  window.scrollTo({top:0,behavior:'smooth'});
-}
-
-function fmt(n) {
-  if (n===0) return '\u2014';
-  const neg = n<0; n = Math.abs(n);
-  const parts = n.toFixed(2).split('.');
-  let int = parts[0], dec = parts[1];
-  if (int.length>3) { let last3=int.slice(-3); let rest=int.slice(0,-3); let groups=[]; while(rest.length>2){groups.unshift(rest.slice(-2));rest=rest.slice(0,-2);} if(rest)groups.unshift(rest); int=groups.join(',')+','+last3; }
-  return (neg?'-':'')+'\u20b9'+int+'.'+dec;
-}
-
-function showToast(msg) { const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),3000); }
-
-async function analyzeFiles() {
-  const tb=document.getElementById('tbFile').files[0], bs=document.getElementById('bsFile').files[0];
-  if (!tb||!bs) return;
-  const overlay=document.getElementById('overlay'); overlay.classList.add('show');
-  document.getElementById('progressMsg').textContent='Uploading & analyzing Trial Balance...';
-  const fd=new FormData(); fd.append('tb_file',tb); fd.append('bs_file',bs);
-  try {
-    const res=await fetch('/tb-analyze',{method:'POST',body:fd});
-    const data=await res.json(); overlay.classList.remove('show');
-    if (data.status==='error'){showToast('\u274c '+data.message);return;}
-    analysisData=data; renderDetection(data); renderMapping(data.accounts); goToStep(2);
-  } catch(e) { overlay.classList.remove('show'); showToast('\u274c Error: '+e.message); }
-}
-
-function colLetter(idx) { if(idx===null||idx===undefined)return'\u2014'; let s='',n=idx; while(n>=0){s=String.fromCharCode(65+(n%26))+s;n=Math.floor(n/26)-1;} return s; }
-
-function renderDetection(data) {
-  const det=data.detection, grid=document.getElementById('detectGrid');
-  const chips=[{label:'Format Type',value:'Type '+det.format_type},{label:'Sheet',value:det.sheet_name},{label:'Account Col',value:colLetter(det.account_col)},{label:'Debit Col',value:det.debit_col!==null?colLetter(det.debit_col):'\u2014'},{label:'Credit Col',value:det.credit_col!==null?colLetter(det.credit_col):'\u2014'},{label:'Net Col',value:det.net_col!==null?colLetter(det.net_col):'\u2014'},{label:'Header Row',value:(det.header_row+1)},{label:'Accounts Found',value:data.summary.total_accounts}];
-  grid.innerHTML=chips.map(c=>`<div class="detect-chip"><div class="label">${c.label}</div><div class="value">${c.value}</div></div>`).join('');
-  const sg=document.getElementById('summaryGrid');
-  sg.innerHTML=`<div class="summary-card"><div class="s-label">Total Accounts</div><div class="s-value">${data.summary.total_accounts}</div></div><div class="summary-card" style="border-color:#059669"><div class="s-label">High Confidence</div><div class="s-value" style="color:#059669">${data.summary.high_confidence}</div></div><div class="summary-card" style="border-color:#D97706"><div class="s-label">Low Confidence</div><div class="s-value" style="color:#D97706">${data.summary.low_confidence}</div></div><div class="summary-card" style="border-color:#DC2626"><div class="s-label">Unclassified</div><div class="s-value" style="color:#DC2626">${data.summary.unclassified}</div></div>`;
-}
-
-function renderMapping(accounts) {
-  const tbody=document.getElementById('mapBody');
-  let optHtml='';
-  for (const [label,key] of Object.entries(BS_HEAD_OPTIONS)) {
-    if (key===null) optHtml+=`<option disabled style="font-weight:bold;color:#666">\u2500\u2500\u2500 ${label.replace(/---/g,'')} \u2500\u2500\u2500</option>`;
-    else optHtml+=`<option value="${key}">${label}</option>`;
-  }
-  let rows='';
-  accounts.forEach((a,i)=>{
-    const confClass=a.confidence==='high'?'conf-high':a.confidence==='low'?'conf-low':a.confidence==='user'?'conf-user':'conf-none';
-    const confLabel=a.confidence==='high'?'HIGH':a.confidence==='low'?'LOW':a.confidence==='user'?'USER':'NONE';
-    rows+=`<tr data-head="${a.bs_head}" data-conf="${a.confidence}" data-name="${a.name.toLowerCase()}"><td style="color:var(--muted);font-size:11px">${i+1}</td><td class="acct-name" title="${a.name}">${a.name}</td><td class="amt ${a.debit>0?'dr':''}">${a.debit>0?fmt(a.debit):'\u2014'}</td><td class="amt ${a.credit>0?'cr':''}">${a.credit>0?fmt(a.credit):'\u2014'}</td><td><select class="head-select" data-idx="${i}" onchange="onHeadChange(this,${i})">${optHtml}</select></td><td><span class="conf-badge ${confClass}">${confLabel}</span></td></tr>`;
-  });
-  tbody.innerHTML=rows;
-  tbody.querySelectorAll('.head-select').forEach((sel,i)=>{sel.value=accounts[i].bs_head;});
-  renderFilterBar(accounts); updateAggregates();
-}
-
-function onHeadChange(sel,idx) {
-  analysisData.accounts[idx].bs_head=sel.value; analysisData.accounts[idx].confidence='user';
-  sel.classList.add('changed');
-  const tr=sel.closest('tr'); tr.dataset.head=sel.value; tr.dataset.conf='user';
-  const badge=tr.querySelector('.conf-badge'); badge.className='conf-badge conf-user'; badge.textContent='USER';
-  renderFilterBar(analysisData.accounts); updateAggregates();
-}
-
-function renderFilterBar(accounts) {
-  const heads={};
-  accounts.forEach(a=>{heads[a.bs_head]=(heads[a.bs_head]||0)+1;});
-  const bar=document.getElementById('filterBar');
-  let html=`<button class="filter-btn active" data-filter="all" onclick="setFilter('all',this)">All <span class="count">${accounts.length}</span></button>`;
-  for (const [key,count] of Object.entries(heads)) { const lbl=HEAD_LABELS[key]||key; const short=lbl.length>20?lbl.slice(0,18)+'\u2026':lbl; html+=`<button class="filter-btn" data-filter="${key}" onclick="setFilter('${key}',this)">${short} <span class="count">${count}</span></button>`; }
-  bar.innerHTML=html;
-}
-
-function setFilter(key,btn) {
-  document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active')); btn.classList.add('active');
-  const rows=document.querySelectorAll('#mapBody tr'), search=document.getElementById('acctSearch').value.toLowerCase();
-  rows.forEach(tr=>{ tr.style.display=(key==='all'||tr.dataset.head===key)&&(!search||tr.dataset.name.includes(search))?'':'none'; });
-}
-
-function filterAccounts() {
-  const search=document.getElementById('acctSearch').value.toLowerCase();
-  const activeFilter=document.querySelector('.filter-btn.active');
-  const key=activeFilter?activeFilter.dataset.filter:'all';
-  document.querySelectorAll('#mapBody tr').forEach(tr=>{ tr.style.display=(key==='all'||tr.dataset.head===key)&&(!search||tr.dataset.name.includes(search))?'':'none'; });
-}
-
-function getSide(key) {
-  const a=['fixed_assets','non_current_investments','inventories','trade_receivables','cash_and_bank','short_term_loans_advances','other_current_assets'];
-  const l=['capital','long_term_borrowings','short_term_borrowings','trade_payables','other_current_liabilities','short_term_provisions'];
-  if(a.includes(key))return'asset'; if(l.includes(key))return'liability'; return'pl';
-}
-
-function updateAggregates() {
-  if(!analysisData)return;
-  const agg={};
-  analysisData.accounts.forEach(a=>{if(a.bs_head==='unclassified')return;if(!agg[a.bs_head])agg[a.bs_head]=0;agg[a.bs_head]+=Math.abs(a.net);});
-  const grid=document.getElementById('aggGrid'); let html='';
-  const sides={asset:[],liability:[],pl:[]};
-  for(const [key,amt] of Object.entries(agg)){sides[getSide(key)].push({key,amt,label:HEAD_LABELS[key]||key});}
-  const totalAssets=sides.asset.reduce((s,x)=>s+x.amt,0), totalLiab=sides.liability.reduce((s,x)=>s+x.amt,0);
-  sides.asset.forEach(x=>{html+=`<div class="summary-card asset"><div class="s-label">${x.label}</div><div class="s-value">${fmt(x.amt)}</div></div>`;});
-  sides.liability.forEach(x=>{html+=`<div class="summary-card liability"><div class="s-label">${x.label}</div><div class="s-value">${fmt(x.amt)}</div></div>`;});
-  sides.pl.forEach(x=>{html+=`<div class="summary-card pl"><div class="s-label">${x.label}</div><div class="s-value">${fmt(x.amt)}</div></div>`;});
-  const diff=Math.abs(totalAssets-totalLiab), tallyClass=diff<1?'tally-ok':'tally-fail';
-  html+=`<div class="summary-card asset"><div class="s-label">Total Assets</div><div class="s-value">${fmt(totalAssets)}</div></div>`;
-  html+=`<div class="summary-card liability"><div class="s-label">Total Liabilities</div><div class="s-value">${fmt(totalLiab)}</div></div>`;
-  html+=`<div class="summary-card ${tallyClass}"><div class="s-label">Difference</div><div class="s-value">${diff<1?'\u2705 Tallied!':'\u274c '+fmt(diff)}</div></div>`;
-  grid.innerHTML=html; document.getElementById('aggregateCard').style.display='block';
-}
-
-async function processAndInject() {
-  if(!analysisData)return;
-  const overlay=document.getElementById('overlay'); overlay.classList.add('show');
-  document.getElementById('progressMsg').textContent='Injecting values into Balance Sheet template...';
-  const userMapping={};
-  analysisData.accounts.forEach(a=>{userMapping[a.name]=a.bs_head;});
-  try {
-    const res=await fetch('/tb-process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:analysisData.session_id,user_mapping:userMapping})});
-    const data=await res.json(); overlay.classList.remove('show');
-    if(data.status==='error'){showToast('\u274c '+data.message);return;}
-    renderResult(data); goToStep(4);
-  } catch(e) { overlay.classList.remove('show'); showToast('\u274c Error: '+e.message); }
-}
-
-function renderResult(data) {
-  document.getElementById('dlLink').href='/download/'+data.file_id+'?fn='+encodeURIComponent(data.filename||'BS_from_TB.xlsx');
-  const tg=document.getElementById('tallyGrid'), tallyClass=data.tally_ok?'tally-ok':'tally-fail';
-  tg.innerHTML=`<div class="summary-card asset"><div class="s-label">Total Assets</div><div class="s-value">${fmt(data.total_assets||0)}</div></div><div class="summary-card liability"><div class="s-label">Total Liabilities</div><div class="s-value">${fmt(data.total_liabilities||0)}</div></div><div class="summary-card ${tallyClass}"><div class="s-label">Tally Status</div><div class="s-value">${data.tally_ok?'\u2705 Tallied!':'\u274c Difference: '+fmt(Math.abs((data.total_assets||0)-(data.total_liabilities||0)))}</div></div><div class="summary-card"><div class="s-label">Values Injected</div><div class="s-value">${data.injected_count||0}</div></div><div class="summary-card"><div class="s-label">Heads Skipped</div><div class="s-value">${data.skipped_count||0}</div></div>`;
-  const logArea=document.getElementById('logArea');
-  logArea.innerHTML=(data.log||[]).map(line=>{if(line.startsWith('\u2713'))return`<span class="ok">${line}</span>`;if(line.startsWith('\u26a0'))return`<span class="warn">${line}</span>`;if(line.startsWith('\u274c'))return`<span class="err">${line}</span>`;return line;}).join('\n');
-}
-</script>
-</body>
-</html>'''
-
-
-# ── TB → BS TOOL ROUTES ─────────────────────────────────────────────────────
 
 @app.route("/tool/tb-to-bs")
-@login_required
-def tool_tb_to_bs():
-    user = get_user_by_id(session["uid"])
-    return render_template_string(TB_BS_TEMPLATE, **user_ctx(user))
+def tb_to_bs_page():
+    user = get_user()
+    if not user:
+        return redirect("/login")
+    plan = user.get("plan", "free")
+    if plan not in ("premium", "pro", "enterprise", "ca_firm", "annual", "lifetime"):
+        flash_msg = "This is a Premium tool. Please upgrade to access."
+        return redirect(f"/?msg=premium_required")
+    ctx = user_ctx(user)
+    return render_template_string(TB_BS_TEMPLATE, **ctx)
 
 
-@app.route("/tb-analyze", methods=["POST"])
-@login_required
-def tb_analyze():
+@app.route("/tb-analyse", methods=["POST"])
+def tb_analyse():
+    user = get_user()
+    if not user:
+        return jsonify({"status": "error", "message": "Not logged in"}), 401
+    if not TB_PROCESSOR_AVAILABLE:
+        return jsonify({"status": "error", "message": "TB processor not available"}), 500
+
     try:
-        user = get_user_by_id(session["uid"])
-        if not user["is_admin"] and uploads_remaining(user) <= 0:
-            return jsonify({"status": "error",
-                "message": f"No uploads remaining. Contact {CONTACT_EMAIL} to recharge."})
-
         tb_file = request.files.get("tb_file")
-        bs_file = request.files.get("bs_file")
-        if not tb_file or not bs_file:
-            return jsonify({"status": "error", "message": "Both files are required."})
+        if not tb_file:
+            return jsonify({"status": "error", "message": "No trial balance file uploaded"})
 
-        for f, label in [(tb_file, "Trial Balance"), (bs_file, "BS Template")]:
-            ext = os.path.splitext(f.filename)[1].lower()
-            if ext not in ('.xlsx', '.xls', '.csv'):
-                return jsonify({"status": "error",
-                    "message": f"{label}: Only .xlsx, .xls, .csv files supported."})
-
-        sid = uuid.uuid4().hex
-        tb_path = os.path.join(UPLOAD_DIR, f"{sid}_tb{os.path.splitext(tb_file.filename)[1]}")
-        bs_path = os.path.join(UPLOAD_DIR, f"{sid}_bs{os.path.splitext(bs_file.filename)[1]}")
-
+        import tempfile, os
+        tmp = tempfile.mkdtemp()
+        tb_path = os.path.join(tmp, "tb.xlsx")
         tb_file.save(tb_path)
-        bs_file.save(bs_path)
 
-        if tb_path.endswith('.xls'):
-            xlsx_path = tb_path + 'x'
-            _convert_xls_to_xlsx(tb_path, xlsx_path)
+        result = analyze_trial_balance(tb_path)
+
+        try:
             os.remove(tb_path)
-            tb_path = xlsx_path
-
-        if bs_path.endswith('.xls'):
-            xlsx_path = bs_path + 'x'
-            _convert_xls_to_xlsx(bs_path, xlsx_path)
-            os.remove(bs_path)
-            bs_path = xlsx_path
-
-        result = tb_processor.analyze_trial_balance(tb_path)
+            os.rmdir(tmp)
+        except Exception:
+            pass
 
         if "error" in result:
             return jsonify({"status": "error", "message": result["error"]})
 
-        result["session_id"] = sid
-        return jsonify(result)
+        return jsonify({"status": "success", **result})
 
     except Exception as e:
         import traceback
-        traceback.print_exc()
-        return jsonify({"status": "error", "message": str(e)})
+        return jsonify({"status": "error", "message": f"Analysis failed: {e}\n{traceback.format_exc()}"}), 500
 
 
 @app.route("/tb-process", methods=["POST"])
-@login_required
 def tb_process():
+    user = get_user()
+    if not user:
+        return jsonify({"status": "error", "message": "Not logged in"}), 401
+    plan = user.get("plan", "free")
+    if plan not in ("premium", "pro", "enterprise", "ca_firm", "annual", "lifetime"):
+        return jsonify({"status": "error", "message": "Premium required"}), 403
+    if not TB_PROCESSOR_AVAILABLE:
+        return jsonify({"status": "error", "message": "TB processor not available"}), 500
+
     try:
-        user = get_user_by_id(session["uid"])
-        if not user["is_admin"] and uploads_remaining(user) <= 0:
-            return jsonify({"status": "error",
-                "message": f"No uploads remaining. Contact {CONTACT_EMAIL} to recharge."})
+        import tempfile, os, json, shutil
 
-        data = request.get_json()
-        sid = data.get("session_id")
-        user_mapping = data.get("user_mapping", {})
+        tb_file = request.files.get("tb_file")
+        bs_file = request.files.get("bs_file")
 
-        if not sid or not re.fullmatch(r"[a-f0-9]{32}", sid):
-            return jsonify({"status": "error", "message": "Invalid session."})
+        if not tb_file or not bs_file:
+            return jsonify({"status": "error", "message": "Both Trial Balance and BS template files are required"})
 
-        tb_path = None
-        bs_path = None
-        for f in os.listdir(UPLOAD_DIR):
-            if f.startswith(sid + "_tb"):
-                tb_path = os.path.join(UPLOAD_DIR, f)
-            elif f.startswith(sid + "_bs"):
-                bs_path = os.path.join(UPLOAD_DIR, f)
+        # ── READ USER MAPPINGS FROM FORM ──────────────────────────────────
+        # The frontend sends ALL dropdown values as JSON:
+        # {"ACCOUNT NAME_row": "bs_head_value", ...}
+        raw_mappings = request.form.get("user_mappings", "{}")
+        try:
+            user_mapping = json.loads(raw_mappings)
+        except (json.JSONDecodeError, ValueError):
+            user_mapping = {}
 
-        if not tb_path or not bs_path:
-            return jsonify({"status": "error", "message": "Session expired. Please re-upload files."})
+        # Filter out empty/auto values
+        user_mapping = {k: v for k, v in user_mapping.items()
+                        if v and v not in ("", "auto", "none")}
 
-        fid = uuid.uuid4().hex
-        output_path = os.path.join(OUTPUT_DIR, f"{fid}_out.xlsx")
+        client_name = request.form.get("client_name", "Balance_Sheet").strip()
+        cy_year = request.form.get("cy_year", "2025").strip()
 
-        result = tb_processor.process_tb_to_bs(tb_path, bs_path, output_path, user_mapping)
+        tmp = tempfile.mkdtemp()
+        tb_path  = os.path.join(tmp, "tb.xlsx")
+        bs_path  = os.path.join(tmp, "bs_template.xlsx")
+        out_path = os.path.join(tmp, "bs_output.xlsx")
+
+        tb_file.save(tb_path)
+        bs_file.save(bs_path)
+
+        # ── CALL PROCESSOR WITH USER MAPPINGS ─────────────────────────────
+        result = process_tb_to_bs(
+            tb_path,
+            bs_path,
+            out_path,
+            user_mapping=user_mapping,    # ← THIS IS THE FIX — was missing before
+        )
 
         if result.get("status") == "error":
+            try:
+                shutil.rmtree(tmp, ignore_errors=True)
+            except Exception:
+                pass
             return jsonify(result)
 
-        if not user["is_admin"]:
-            log_usage(user["id"], f"BS_from_TB_{sid[:8]}.xlsx")
+        # Move output to download folder
+        h = os.urandom(8).hex()
+        dest = os.path.join(UPLOAD_FOLDER, h + ".xlsx")
+        shutil.move(out_path, dest)
+
+        try:
+            shutil.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
+
+        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in client_name)
+        fname = f"{safe_name}_BS_{cy_year}.xlsx"
+        log_usage(user["id"], fname)
+
+        # Build tally summary for UI
+        agg = result.get("aggregated", {})
+        total_assets = sum(agg.get(h, 0) for h in
+                           ["fixed_assets", "investments", "inventories",
+                            "trade_rec", "cash_bank", "stla", "other_ca"])
+        total_liab   = sum(agg.get(h, 0) for h in
+                           ["capital", "lt_borrowings", "st_borrowings",
+                            "trade_payables", "other_cl", "st_provisions"])
+
+        tally = {
+            "total_assets":           round(total_assets, 2),
+            "total_liabilities":      round(total_liab, 2),
+            "difference":             round(abs(total_assets - total_liab), 2),
+            "balanced":               abs(total_assets - total_liab) < 100,
+            "profit":                 round(agg.get("profit", 0), 2),
+            "user_mappings_applied":  len(user_mapping),
+        }
 
         return jsonify({
-            "status": "success",
-            "file_id": fid,
-            "filename": f"BS_from_TB_{sid[:8]}.xlsx",
-            "log": result.get("log", []),
-            "injected_count": result.get("injected_count", 0),
-            "skipped_count": result.get("skipped_count", 0),
-            "tally_ok": result.get("tally_ok", False),
-            "total_assets": result.get("total_assets", 0),
-            "total_liabilities": result.get("total_liabilities", 0),
+            "status":   "success",
+            "log":      result.get("log", []),
+            "tally":    tally,
+            "file_id":  h,
+            "filename": fname,
         })
 
     except Exception as e:
         import traceback
-        traceback.print_exc()
-        return jsonify({"status": "error", "message": str(e)})
+        return jsonify({
+            "status":  "error",
+            "message": f"Processing failed: {e}\n{traceback.format_exc()}"
+        }), 500
+
+
+# ── TB→BS Page Template ───────────────────────────────────────────────────────
+TB_BS_TEMPLATE = r"""<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Balance Sheet from Trial Balance – CA Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+<style>
+""" + BASE_CSS + """
+nav{background:#fff;border-bottom:1px solid var(--border);padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.hero{background:linear-gradient(135deg,#0F172A,#1E3A5F);color:#fff;padding:40px 24px 32px;text-align:center}
+.hero h1{font-size:clamp(22px,4vw,32px);font-weight:800;margin-bottom:8px}
+.hero p{color:#94A3B8;font-size:14px;max-width:600px;margin:0 auto}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.15);border-radius:20px;padding:4px 14px;font-size:11px;font-weight:600;color:#CBD5E1;margin-bottom:14px}
+.page{max-width:1000px;margin:0 auto;padding:24px 16px 60px}
+.card{background:#fff;border:1px solid var(--border);border-radius:14px;box-shadow:0 2px 8px rgba(0,0,0,.05);margin-bottom:20px;overflow:hidden}
+.card-head{display:flex;align-items:center;gap:14px;padding:16px 20px;border-bottom:1px solid var(--border);background:#FAFAFA}
+.card-head .icon{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.card-head h2{font-size:15px;font-weight:700;margin:0}
+.card-head p{font-size:12px;color:var(--muted);margin:2px 0 0}
+.card-body{padding:20px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.field label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px}
+.upload-zone{border:2px dashed var(--border);border-radius:10px;padding:24px 20px;text-align:center;cursor:pointer;transition:all .2s;background:#FAFAFA;position:relative;min-height:90px}
+.upload-zone:hover,.upload-zone.drag{border-color:var(--brand);background:#EFF6FF}
+.upload-zone input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.upload-zone .uzicon{font-size:26px;margin-bottom:6px}
+.upload-zone .uztitle{font-size:13px;font-weight:600;color:var(--ink)}
+.upload-zone .uzsub{font-size:11px;color:var(--muted);margin-top:3px}
+.uz-done{display:none;margin-top:8px;padding:6px 12px;background:#ECFDF5;border-radius:6px;font-size:11px;font-weight:700;color:#065F46}
+select,input[type=text]{width:100%;border:1.5px solid var(--border);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;box-sizing:border-box}
+select:focus,input:focus{outline:none;border-color:var(--brand)}
+.btn-main{width:100%;padding:14px;background:var(--brand);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .2s}
+.btn-main:hover{background:#1D4ED8}
+.btn-main:disabled{background:#93C5FD;cursor:not-allowed}
+.btn-sec{padding:10px 20px;background:#F3F4F6;color:var(--ink);border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
+.btn-sec:hover{background:#E5E7EB}
+
+/* Steps */
+.steps{display:flex;margin-bottom:20px;border-radius:10px;overflow:hidden;border:1px solid var(--border)}
+.step-item{flex:1;padding:10px 8px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);background:#F9FAFB;border-right:1px solid var(--border);transition:all .2s}
+.step-item:last-child{border-right:none}
+.step-item.active{background:var(--brand);color:#fff}
+.step-item.done{background:#ECFDF5;color:#065F46}
+.step-num{display:block;font-size:15px;margin-bottom:2px}
+
+/* Mapping table */
+.map-table{width:100%;border-collapse:collapse;font-size:12px}
+.map-table th{padding:8px 10px;border-bottom:2px solid var(--border);font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:#F9FAFB;text-align:left}
+.map-table td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
+.map-table tr:hover td{background:#F9FAFB}
+.acc-name{font-weight:600;color:var(--ink);font-size:12px}
+.acc-grp{font-size:10px;color:var(--muted)}
+.amt{font-weight:700;text-align:right;white-space:nowrap;font-size:12px}
+.amt.cr{color:var(--green)}
+.amt.dr{color:#2563EB}
+.conf-pill{display:inline-flex;align-items:center;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;white-space:nowrap}
+.conf-high{background:#ECFDF5;color:#065F46}
+.conf-med{background:#FFFBEB;color:#92400E}
+.conf-low{background:#FEF2F2;color:#B91C1C}
+.conf-user{background:#EFF6FF;color:#1E40AF}
+.map-sel{width:100%;border:1.5px solid var(--border);border-radius:6px;padding:5px 7px;font-size:11px;font-family:inherit;background:#fff;cursor:pointer}
+.map-sel:focus{border-color:var(--brand);outline:none}
+.map-sel.changed{border-color:#F59E0B;background:#FFFBEB;font-weight:700}
+.map-sel.user{border-color:var(--brand);background:#EFF6FF;font-weight:700}
+
+/* Summary */
+.sum-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px}
+.sum-card{padding:10px;background:#F9FAFB;border:1px solid var(--border);border-radius:10px;text-align:center}
+.sum-val{font-size:18px;font-weight:800;color:var(--brand)}
+.sum-lbl{font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-top:2px}
+
+/* Spinner */
+.spinner{width:44px;height:44px;border:4px solid #E5E7EB;border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Result */
+.result-ok{padding:16px;background:#F0FDF4;border:1.5px solid #BBF7D0;border-radius:10px;text-align:center}
+.result-err{padding:16px;background:#FEF2F2;border:1.5px solid #FECACA;border-radius:10px;text-align:center}
+.trow{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(0,0,0,.05);font-size:13px}
+.trow:last-child{border:none}
+.tlbl{color:var(--muted);font-weight:500}
+.tval{font-weight:700}
+.note-box{font-size:11px;color:var(--muted);line-height:1.7;padding:10px 14px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;margin-top:12px}
+footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-size:11px}
+@media(max-width:600px){.row2{grid-template-columns:1fr}.steps{flex-direction:column}}
+</style></head><body>
+<nav>
+  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <div class="nav-right">
+    <span class="nav-user">👤 <strong>{{ username }}</strong>
+      <span class="badge b-{{ plan }}">{{ plan_label }}</span></span>
+    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
+    <a href="/logout" class="nav-link">Sign out</a>
+  </div>
+</nav>
+<section class="hero">
+  <div class="hero-badge">📋 Premium · Zero Formatting Change</div>
+  <h1>Balance Sheet from Trial Balance</h1>
+  <p>Upload trial balance + BS template. Auto-maps accounts, lets you correct, then injects CY figures.</p>
+</section>
+
+<div class="page">
+  <div class="steps">
+    <div class="step-item active" id="s1"><span class="step-num">1</span>Upload</div>
+    <div class="step-item" id="s2"><span class="step-num">2</span>Review Mapping</div>
+    <div class="step-item" id="s3"><span class="step-num">3</span>Download</div>
+  </div>
+
+  <!-- STEP 1 -->
+  <div id="step1">
+    <div class="card">
+      <div class="card-head"><div class="icon" style="background:#EFF6FF">📤</div>
+        <div><h2>Upload Files</h2><p>Trial Balance (.xlsx) and Balance Sheet template (.xlsx)</p></div></div>
+      <div class="card-body">
+        <div class="row2">
+          <div class="field">
+            <label>Trial Balance</label>
+            <div class="upload-zone" id="tbZone">
+              <input type="file" id="tbFile" accept=".xlsx" onchange="onFile(this,'tb')"/>
+              <div class="uzicon">📊</div>
+              <div class="uztitle">Click or drag Trial Balance</div>
+              <div class="uzsub">Tally / Busy / Manual — any format</div>
+            </div>
+            <div class="uz-done" id="tbDone"></div>
+          </div>
+          <div class="field">
+            <label>Balance Sheet Template</label>
+            <div class="upload-zone" id="bsZone">
+              <input type="file" id="bsFile" accept=".xlsx" onchange="onFile(this,'bs')"/>
+              <div class="uzicon">📋</div>
+              <div class="uztitle">Click or drag BS Template</div>
+              <div class="uzsub">PY filled · CY blank · formatting intact</div>
+            </div>
+            <div class="uz-done" id="bsDone"></div>
+          </div>
+        </div>
+        <div class="row2" style="margin-top:14px">
+          <div class="field">
+            <label>Financial Year (CY)</label>
+            <select id="cyYear">
+              <option value="2025">2024-25 (31 March 2025)</option>
+              <option value="2026">2025-26 (31 March 2026)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Client / Firm Name</label>
+            <input type="text" id="clientName" placeholder="e.g. Fashion Adda"/>
+          </div>
+        </div>
+        <div style="margin-top:18px">
+          <button class="btn-main" id="analyseBtn" onclick="doAnalyse()" disabled>
+            🔍 Analyse Trial Balance
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 2 -->
+  <div id="step2" style="display:none">
+    <div class="card">
+      <div class="card-head"><div class="icon" style="background:#FEF3C7">🗂️</div>
+        <div><h2>Review &amp; Confirm Account Mapping</h2>
+          <p id="mapSub">Verify auto-detected heads — change any using the dropdown</p></div></div>
+      <div class="card-body">
+        <div id="tbFormatBox" style="padding:10px 14px;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;font-size:12px;color:#1E40AF;margin-bottom:14px"></div>
+        <div class="sum-grid" id="sumGrid"></div>
+        <div id="preChecks"></div>
+
+        <div style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <div style="font-size:12px;color:var(--muted)">
+            🟢 Auto-mapped &nbsp;|&nbsp; 🟡 Needs review &nbsp;|&nbsp; 🔴 Manual map needed &nbsp;|&nbsp; 🔵 You changed
+          </div>
+          <button class="btn-sec" onclick="expandAll()">Expand All Groups</button>
+        </div>
+
+        <div id="mappingArea"></div>
+
+        <div style="margin-top:20px;display:flex;gap:12px">
+          <button class="btn-sec" onclick="goStep(1)">← Back</button>
+          <button class="btn-main" id="generateBtn" onclick="doGenerate()" style="flex:1">
+            ✅ Confirm Mapping &amp; Generate Balance Sheet
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PROCESSING -->
+  <div id="loadWrap" style="display:none">
+    <div class="card"><div class="card-body" style="text-align:center;padding:48px">
+      <div class="spinner"></div>
+      <div style="font-size:15px;font-weight:700">Generating Balance Sheet...</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:6px" id="loadMsg">Applying your mapping and injecting figures...</div>
+    </div></div>
+  </div>
+
+  <!-- STEP 3 -->
+  <div id="step3" style="display:none">
+    <div class="card">
+      <div class="card-head"><div class="icon" style="background:#ECFDF5">✅</div>
+        <div><h2>Balance Sheet Ready</h2><p id="resSub"></p></div></div>
+      <div class="card-body">
+        <div id="resBox"></div>
+        <div style="margin-top:18px;display:flex;gap:12px">
+          <button class="btn-sec" onclick="goStep(2)">← Fix Mapping</button>
+          <a id="dlBtn" class="btn-main" style="flex:1;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:8px" href="#">
+            📥 Download Balance Sheet
+          </a>
+        </div>
+        <button class="btn-sec" style="width:100%;margin-top:10px" onclick="location.reload()">🔄 New Client</button>
+      </div>
+    </div>
+    <div class="note-box">⚠️ <strong>Always verify:</strong> Total Assets = Total Liabilities · All figures match TB · Profit matches capital account · Notes sheets populated correctly.</div>
+  </div>
+</div>
+
+<footer><p style="font-weight:700;color:#D1D5DB;margin-bottom:4px">CA Toolkit</p>
+<p>Tools are for estimation only — not professional advice. Platform is not a registered CA firm. Files auto-deleted after download.</p></footer>
+
+<script>
+// ═══════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════
+let tbFile = null, bsFile = null;
+let analysisData = null;
+// KEY STORAGE: maps account unique key → currently selected bs_head
+// This is what gets sent to the server on Generate
+let userMappings = {};
+
+const BS_HEADS = [
+  {v:"capital",       l:"Owner's Capital Account"},
+  {v:"lt_borrowings", l:"Long Term Borrowings"},
+  {v:"st_borrowings", l:"Short Term Borrowings"},
+  {v:"trade_payables",l:"Trade Payables (Creditors)"},
+  {v:"other_cl",      l:"Other Current Liabilities"},
+  {v:"st_provisions", l:"Short Term Provisions"},
+  {v:"fixed_assets",  l:"Fixed Assets / PPE"},
+  {v:"investments",   l:"Non-Current Investments"},
+  {v:"inventories",   l:"Closing Stock / Inventories"},
+  {v:"trade_rec",     l:"Trade Receivables (Debtors)"},
+  {v:"cash_bank",     l:"Cash and Bank Balances"},
+  {v:"stla",          l:"Short Term Loans & Advances"},
+  {v:"other_ca",      l:"Other Current Assets"},
+  {v:"revenue",       l:"Revenue from Operations"},
+  {v:"opening_stock", l:"Opening Stock"},
+  {v:"purchases",     l:"Purchases"},
+  {v:"direct_expenses",l:"Direct Expenses"},
+  {v:"employee_expenses",l:"Employee / Salary Expenses"},
+  {v:"finance_cost",  l:"Finance Cost / Bank Interest"},
+  {v:"depreciation",  l:"Depreciation"},
+  {v:"other_expenses",l:"Other Expenses"},
+  {v:"tax_expense",   l:"Tax Expense"},
+  {v:"ignore",        l:"⊘ Ignore / Skip"},
+];
+
+const HEAD_LABEL = Object.fromEntries(BS_HEADS.map(h=>[h.v, h.l]));
+
+// ═══════════════════════════════════════
+//  STEPS
+// ═══════════════════════════════════════
+function goStep(n) {
+  document.getElementById('step1').style.display = n===1?'block':'none';
+  document.getElementById('step2').style.display = n===2?'block':'none';
+  document.getElementById('step3').style.display = n===3?'block':'none';
+  document.getElementById('loadWrap').style.display = 'none';
+  [1,2,3].forEach(i=>{
+    const s = document.getElementById('s'+i);
+    s.className = 'step-item' + (i===n?' active':(i<n?' done':''));
+  });
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+// ═══════════════════════════════════════
+//  FILE UPLOAD
+// ═══════════════════════════════════════
+function onFile(inp, type) {
+  const f = inp.files[0]; if(!f) return;
+  if (type==='tb') {
+    tbFile = f;
+    document.getElementById('tbDone').style.display='block';
+    document.getElementById('tbDone').textContent='✓ '+f.name;
+    document.getElementById('tbZone').style.borderColor='var(--green)';
+  } else {
+    bsFile = f;
+    document.getElementById('bsDone').style.display='block';
+    document.getElementById('bsDone').textContent='✓ '+f.name;
+    document.getElementById('bsZone').style.borderColor='var(--green)';
+  }
+  document.getElementById('analyseBtn').disabled = !(tbFile && bsFile);
+}
+
+// ═══════════════════════════════════════
+//  ANALYSE
+// ═══════════════════════════════════════
+async function doAnalyse() {
+  const btn = document.getElementById('analyseBtn');
+  btn.disabled = true; btn.textContent = '⏳ Analysing...';
+  document.getElementById('step1').style.display='none';
+  document.getElementById('loadWrap').style.display='block';
+  document.getElementById('loadMsg').textContent = 'Reading trial balance and auto-classifying accounts...';
+
+  const fd = new FormData();
+  fd.append('tb_file', tbFile);
+
+  try {
+    const res = await fetch('/tb-analyse', {method:'POST', body:fd});
+    const data = await res.json();
+
+    if (data.status !== 'success') {
+      alert('Error: ' + data.message);
+      document.getElementById('step1').style.display='block';
+      document.getElementById('loadWrap').style.display='none';
+      btn.disabled=false; btn.textContent='🔍 Analyse Trial Balance';
+      return;
+    }
+
+    analysisData = data;
+    // Initialise userMappings with auto-detected heads
+    userMappings = {};
+    (data.accounts || []).forEach(a => {
+      userMappings[a.key] = a.bs_head || 'ignore';
+    });
+
+    buildMappingUI(data);
+    goStep(2);
+
+  } catch(e) {
+    alert('Network error: '+e);
+    document.getElementById('step1').style.display='block';
+    document.getElementById('loadWrap').style.display='none';
+    btn.disabled=false; btn.textContent='🔍 Analyse Trial Balance';
+  }
+}
+
+// ═══════════════════════════════════════
+//  BUILD MAPPING UI
+// ═══════════════════════════════════════
+function buildMappingUI(data) {
+  const accts = data.accounts || [];
+  const fi = data.format_detected || {};
+
+  // Format info
+  document.getElementById('tbFormatBox').innerHTML =
+    `<strong>📊 Detected:</strong> ${fi.format||'Unknown'} &nbsp;|&nbsp; ` +
+    `Name col: <strong>${fi.name_col||'A'}</strong> &nbsp;|&nbsp; ` +
+    `Dr col: <strong>${fi.dr_col||'?'}</strong> &nbsp;|&nbsp; ` +
+    `Cr col: <strong>${fi.cr_col||'?'}</strong> &nbsp;|&nbsp; ` +
+    `<strong>${accts.length}</strong> accounts`;
+
+  // Summary
+  const hi = accts.filter(a=>a.confidence==='high').length;
+  const me = accts.filter(a=>a.confidence==='med').length;
+  const lo = accts.filter(a=>a.confidence==='low').length;
+  document.getElementById('sumGrid').innerHTML = `
+    <div class="sum-card"><div class="sum-val">${accts.length}</div><div class="sum-lbl">Total</div></div>
+    <div class="sum-card"><div class="sum-val" style="color:var(--green)">${hi}</div><div class="sum-lbl">Auto ✅</div></div>
+    <div class="sum-card"><div class="sum-val" style="color:#F59E0B">${me}</div><div class="sum-lbl">Review ⚠️</div></div>
+    <div class="sum-card"><div class="sum-val" style="color:#EF4444">${lo}</div><div class="sum-lbl">Manual ❌</div></div>`;
+
+  // Pre-checks
+  const checks = data.pre_checks || [];
+  document.getElementById('preChecks').innerHTML = checks.map(c=>
+    `<div style="padding:6px 12px;border-radius:6px;font-size:12px;margin-bottom:6px;
+      background:${c.ok?'#F0FDF4':'#FFFBEB'};color:${c.ok?'#065F46':'#92400E'};
+      border:1px solid ${c.ok?'#BBF7D0':'#FDE68A'}">${c.ok?'✅':'⚠️'} ${c.message}</div>`
+  ).join('');
+
+  // Group accounts by bs_head
+  const groups = {};
+  accts.forEach(a => {
+    const h = a.bs_head || 'ignore';
+    if (!groups[h]) groups[h] = [];
+    groups[h].push(a);
+  });
+
+  const lowConf = accts.filter(a => a.confidence === 'low');
+  let html = '';
+
+  // Show unclassified first
+  if (lowConf.length) {
+    html += buildGroup('❌ Needs Manual Mapping', lowConf, true);
+  }
+
+  // Show each head group
+  const ORDER = ['capital','lt_borrowings','st_borrowings','trade_payables','other_cl',
+    'st_provisions','fixed_assets','investments','inventories','trade_rec','cash_bank',
+    'stla','other_ca','revenue','opening_stock','purchases','direct_expenses',
+    'employee_expenses','finance_cost','depreciation','other_expenses','tax_expense','ignore'];
+
+  ORDER.forEach(h => {
+    const g = (groups[h]||[]).filter(a=>a.confidence!=='low');
+    if (g.length) html += buildGroup(HEAD_LABEL[h]||h, g, false);
+  });
+
+  document.getElementById('mappingArea').innerHTML = html;
+  document.getElementById('mapSub').textContent =
+    `${accts.length} accounts · ${hi} auto-mapped · ${me+lo} need review`;
+}
+
+function buildGroup(title, accounts, highlight) {
+  const total = accounts.reduce((s,a)=>s+Math.abs(a.net||0),0);
+  const opts = BS_HEADS.map(h=>`<option value="${h.v}">${h.l}</option>`).join('');
+  const rows = accounts.map(a => {
+    const net = a.net || 0;
+    const amtCls = net < 0 ? 'cr' : 'dr';
+    const amtStr = (net<0?'Cr ':'Dr ') + '₹' + Math.abs(net).toLocaleString('en-IN',{maximumFractionDigits:2});
+    const conf = a.confidence || 'low';
+    const pill = conf==='high' ? '<span class="conf-pill conf-high">✅ Auto</span>'
+               : conf==='med'  ? '<span class="conf-pill conf-med">⚠️ Review</span>'
+               : conf==='user' ? '<span class="conf-pill conf-user">🔵 User</span>'
+               :                 '<span class="conf-pill conf-low">❌ Manual</span>';
+
+    // Build select with correct option selected
+    const selOpts = BS_HEADS.map(h =>
+      `<option value="${h.v}"${a.bs_head===h.v?' selected':''}>${h.l}</option>`
+    ).join('');
+
+    return `<tr>
+      <td><div class="acc-name">${escHtml(a.name)}</div><div class="acc-grp">${escHtml(a.group||'')}</div></td>
+      <td class="amt ${amtCls}">${amtStr}</td>
+      <td>${pill}</td>
+      <td><select class="map-sel" data-key="${escHtml(a.key)}" onchange="onMapChange(this)">
+        ${selOpts}
+      </select></td>
+    </tr>`;
+  }).join('');
+
+  const bg = highlight ? '#FFFBEB' : '#FAFAFA';
+  const border = highlight ? '1px solid #FDE68A' : '1px solid var(--border)';
+  const id = 'grp_' + title.replace(/[^a-z0-9]/gi,'_');
+
+  return `<div style="margin-bottom:14px;border-radius:10px;overflow:hidden;border:${border}">
+    <div style="padding:9px 14px;background:${bg};display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleGroup('${id}')">
+      <span style="font-size:12px;font-weight:700">${escHtml(title)}</span>
+      <span style="font-size:11px;color:var(--muted)">${accounts.length} accounts · ₹${Math.round(total).toLocaleString('en-IN')}</span>
+    </div>
+    <div id="${id}">
+      <table class="map-table">
+        <thead><tr><th>Account Name</th><th style="text-align:right">Balance</th><th>Status</th><th>Map To BS Head</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function toggleGroup(id) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = el.style.display==='none' ? '' : 'none';
+}
+function expandAll() {
+  document.querySelectorAll('[id^="grp_"]').forEach(el=>el.style.display='');
+}
+
+// ═══════════════════════════════════════
+//  KEY FIX: onMapChange stores to userMappings immediately
+// ═══════════════════════════════════════
+function onMapChange(sel) {
+  const key = sel.dataset.key;
+  const val = sel.value;
+  // Always update the mapping store with the latest user selection
+  userMappings[key] = val;
+  sel.classList.add('changed');
+}
+
+// ═══════════════════════════════════════
+//  GENERATE — sends ALL mappings to server
+// ═══════════════════════════════════════
+async function doGenerate() {
+  // Collect ALL current dropdown values (not just changed ones)
+  // This is the critical fix — the previous version only sent changed ones
+  document.querySelectorAll('.map-sel').forEach(sel => {
+    const key = sel.dataset.key;
+    if (key) userMappings[key] = sel.value;
+  });
+
+  document.getElementById('step2').style.display = 'none';
+  document.getElementById('loadWrap').style.display = 'block';
+  document.getElementById('loadMsg').textContent = 'Applying your mapping and injecting figures into Balance Sheet...';
+
+  const fd = new FormData();
+  fd.append('tb_file', tbFile);
+  fd.append('bs_file', bsFile);
+  fd.append('cy_year', document.getElementById('cyYear').value);
+  fd.append('client_name', document.getElementById('clientName').value || 'Client');
+  // ← THE CRITICAL FIX: send user_mappings as JSON
+  fd.append('user_mappings', JSON.stringify(userMappings));
+
+  try {
+    const res = await fetch('/tb-process', {method:'POST', body:fd});
+    const data = await res.json();
+    document.getElementById('loadWrap').style.display = 'none';
+
+    if (data.status !== 'success') {
+      alert('Error: ' + data.message);
+      document.getElementById('step2').style.display = 'block';
+      return;
+    }
+
+    buildResult(data);
+    goStep(3);
+
+  } catch(e) {
+    alert('Error: '+e);
+    document.getElementById('step2').style.display = 'block';
+    document.getElementById('loadWrap').style.display = 'none';
+  }
+}
+
+// ═══════════════════════════════════════
+//  RESULT
+// ═══════════════════════════════════════
+function buildResult(data) {
+  const t = data.tally || {};
+  const ok = t.balanced;
+  document.getElementById('resSub').textContent =
+    (document.getElementById('clientName').value||'Balance Sheet') + ' · CY figures populated';
+
+  document.getElementById('resBox').innerHTML = `
+    <div class="${ok?'result-ok':'result-err'}">
+      <div style="font-size:22px;margin-bottom:6px">${ok?'🎉':'⚠️'}</div>
+      <div style="font-size:16px;font-weight:800;color:${ok?'#065F46':'#B91C1C'}">${ok?'Balance Sheet Tallied ✅':'Tally Mismatch — Review Needed'}</div>
+    </div>
+    <div style="margin-top:14px">
+      <div class="trow"><span class="tlbl">Total Assets</span><span class="tval">₹${fmt(t.total_assets)}</span></div>
+      <div class="trow"><span class="tlbl">Total Liabilities + Capital</span><span class="tval">₹${fmt(t.total_liabilities)}</span></div>
+      <div class="trow"><span class="tlbl">Difference</span><span class="tval" style="color:${t.difference<1?'var(--green)':'#EF4444'}">₹${fmt(t.difference)}</span></div>
+      <div class="trow"><span class="tlbl">Profit / (Loss)</span><span class="tval">₹${fmt(t.profit)}</span></div>
+      <div class="trow"><span class="tlbl">User Mapping Overrides Applied</span><span class="tval" style="color:var(--brand)">${t.user_mappings_applied||0}</span></div>
+    </div>
+    ${data.log ? '<div style="margin-top:10px;padding:10px;background:#F9FAFB;border-radius:8px;font-size:10px;color:var(--muted);max-height:100px;overflow-y:auto">'+data.log.slice(-10).map(l=>'<div>'+escHtml(l)+'</div>').join('')+'</div>' : ''}`;
+
+  const dlBtn = document.getElementById('dlBtn');
+  dlBtn.href = '/download/' + data.file_id;
+  dlBtn.setAttribute('download', data.filename);
+}
+
+function fmt(n) { return (Math.round(n||0)).toLocaleString('en-IN'); }
+function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// Drag & drop
+['tbZone','bsZone'].forEach(id=>{
+  const el=document.getElementById(id);
+  el.addEventListener('dragover',e=>{e.preventDefault();el.classList.add('drag')});
+  el.addEventListener('dragleave',()=>el.classList.remove('drag'));
+  el.addEventListener('drop',e=>{
+    e.preventDefault();el.classList.remove('drag');
+    const f=e.dataTransfer.files[0]; if(!f) return;
+    const type=id==='tbZone'?'tb':'bs';
+    onFile({files:[f]},type);
+    if(type==='tb') tbFile=f; else bsFile=f;
+    document.getElementById('analyseBtn').disabled=!(tbFile&&bsFile);
+  });
+});
+</script></body></html>"""
 
 
 init_db()
