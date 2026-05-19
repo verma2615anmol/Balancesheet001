@@ -6621,6 +6621,59 @@ def tb_read_bs():
                 break
 
         if fa_sheet:
+            # ── Build opening WDV lookup from Fixed Assets P. Yr. sheet ──
+            # Col I (index 8) of P.Yr. sheet = closing WDV = opening for current year
+            # This is the authoritative source — C.Yr. col B is just =P.Yr.!I9 formula
+            py_opening = {}  # {asset_name_lower: opening_wdv}
+            py_sheet_name = None
+            for sn in wb.sheetnames:
+                if "p. yr" in sn.lower() or "p.yr" in sn.lower() or \
+                   ("fixed" in sn.lower() and "p" in sn.lower()):
+                    py_sheet_name = sn
+                    break
+
+            if py_sheet_name:
+                ws_py = wb[py_sheet_name]
+                py_rows = []
+                for row in ws_py.iter_rows(min_row=1, max_row=45, max_col=12, values_only=False):
+                    r = []
+                    for c in row:
+                        r.append(None if isinstance(c, MergedCell) else c.value)
+                    py_rows.append(r)
+
+                # Find header to locate closing WDV col (W.D.V AS ON 31.03.xxxx)
+                py_closing_col = 8  # col I default (0-indexed)
+                py_rate_col = None
+                for i, row in enumerate(py_rows[:8]):
+                    row_str = " ".join(str(v or "").lower() for v in row)
+                    if "w.d.v" in row_str and ("31.03" in row_str or "closing" in row_str):
+                        for ci, val in enumerate(row):
+                            vl = str(val or "").lower()
+                            if ("w.d.v" in vl or "as on" in vl) and ci > 4:
+                                py_closing_col = ci
+                        break
+
+                # Read asset names and closing WDV
+                import re as _re2
+                _date_re2 = _re2.compile(r'^\d{1,2}[./]\d{1,2}[./]\d{2,4}$')
+                for row in py_rows[5:]:
+                    if not row:
+                        continue
+                    nm = str(row[0] or "").strip()
+                    if not nm or len(nm) < 2:
+                        continue
+                    if nm.isupper():  # skip category headers
+                        continue
+                    if _date_re2.match(nm):
+                        continue
+                    if any(sw in nm.lower() for sw in
+                           {"total", "particular", "addition", "amount", "rate",
+                            "w.d.v", "building", "property", "chair"}):
+                        continue
+                    closing = row[py_closing_col] if len(row) > py_closing_col else None
+                    if isinstance(closing, (int, float)):
+                        py_opening[nm.lower().strip()] = float(closing)
+
             ws = wb[fa_sheet]
             rows_data = []
             for row in ws.iter_rows(min_row=1, max_row=60, max_col=15, values_only=False):
@@ -6705,23 +6758,28 @@ def tb_read_bs():
                     continue
 
                 # Skip ALL-CAPS category headers (PLANT & MACHINERY, VEHICLE, etc.)
-                # These are section headers, not individual assets
                 has_own_number = False
                 if len(row) > wc and isinstance(row[wc], (int, float)) and row[wc] != 0:
                     has_own_number = True
                 if nm.isupper() and not has_own_number:
                     continue
 
-                # This is a real asset row
-                opening_wdv = 0
-                if len(row) > wc and isinstance(row[wc], (int, float)):
-                    opening_wdv = float(row[wc])
+                # ── Opening WDV: prefer P.Yr. closing col I (authoritative) ──
+                # The C.Yr. col B is a formula (=P.Yr.!I9) — data_only may be stale.
+                # Match by name to P.Yr. lookup table first.
+                opening_wdv = py_opening.get(nm_low.strip(), None)
+                if opening_wdv is None:
+                    # Fallback: read C.Yr. col B (data_only cached value)
+                    if len(row) > wc and isinstance(row[wc], (int, float)):
+                        opening_wdv = float(row[wc])
+                    else:
+                        opening_wdv = 0
 
                 rate = 0
                 if rc is not None and len(row) > rc and isinstance(row[rc], (int, float)):
                     rate = float(row[rc])
                 else:
-                    # Try to find rate in later columns (look for value 10-40)
+                    # Try to find rate in later columns (look for value 5-100)
                     for ci in range(max(wc + 3, 5), min(len(row), 12)):
                         v = row[ci]
                         if isinstance(v, (int, float)) and 5 <= v <= 100:
@@ -6831,7 +6889,8 @@ def _inject_cap_fa(output_path, cap_entries, fa_entries, log):
     wb.close()
 
 
-
+@app.route("/tb-process", methods=["POST"])
+def tb_process():
     if "uid" not in session:
         return jsonify({"status": "error", "message": "Not logged in"}), 401
     user = get_user_by_id(session["uid"])
