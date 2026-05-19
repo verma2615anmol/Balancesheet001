@@ -1083,13 +1083,28 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 name_l = acct["name"].lower()
                 placed = False
 
-                # ── Revenue Authority advance (TCS/TDS debit provisions) → D127 ─
+                # ── Revenue Authority advance (TCS/TDS debit provisions) → D129 ─
                 # TCS GST A/C debit = TCS paid to govt = advance to revenue authority
+                # FIX (Issue 1): D127 is the section header row and is NOT included
+                # in the Total (D) formula at D131. Writing here is invisible to the total.
+                # The TCS GST A/C debit balance must go into the TCS GST sub-item row (D129),
+                # accumulating with any existing TCS GST balance so it is summed correctly.
                 if acct.get("stla_subtype") == "revenue_authority" or (
                     "tcs" in name_l and "gst" in name_l
                 ):
-                    if _safe_set(ws_n, 127, 4, abs(acct["net"])):
-                        injected.append(f"notes to bs!D127 (Advance to Revenue Authority: {acct['name']}) = {abs(acct['net']):,.2f}")
+                    existing = ws_n.cell(129, 4).value
+                    base = 0.0
+                    if existing is not None and not _is_formula(str(existing)):
+                        try:
+                            base = float(existing)
+                        except (TypeError, ValueError):
+                            base = 0.0
+                    new_val = base + abs(acct["net"])
+                    if _safe_set(ws_n, 129, 4, new_val):
+                        injected.append(
+                            f"notes to bs!D129 (Advance to Revenue Authority — TCS GST: {acct['name']}) "
+                            f"= {new_val:,.2f} (base {base:,.2f} + provision-debit {abs(acct['net']):,.2f})"
+                        )
                     placed = True
 
                 # ── Facebook TDS → D137 (Other current assets) ──────────────
@@ -1465,26 +1480,14 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                           for kw in {"salary","depreciation","dep on","amort"})
                               and a["name"].lower() not in finance_acct_names]
 
-        # Special pre-routing: "INTT PAID ON LATE PAYMENT OF TDS" → Bank Charges row (D62)
-        # since there is no dedicated row for TDS late payment interest
-        REROUTE_TO_BANK_CHARGES = ["intt paid on late payment", "interest on late payment tds",
-                                    "penal interest", "default interest tds"]
-        bank_charges_extra = 0
-        other_exp_accounts_filtered = []
-        for a in other_exp_accounts:
-            name_l = a["name"].lower()
-            if any(kw in name_l for kw in REROUTE_TO_BANK_CHARGES):
-                bank_charges_extra += abs(a["net"])
-            else:
-                other_exp_accounts_filtered.append(a)
-        other_exp_accounts = other_exp_accounts_filtered
-
-        # Add extra to D62 (Bank Charges) if any
-        if bank_charges_extra > 0:
-            existing_d62 = ws_npl.cell(62, 4).value or 0
-            if not _is_formula(str(existing_d62)):
-                ws_npl.cell(62, 4).value = round(float(existing_d62) + bank_charges_extra, 2)
-                injected.append(f"notes to p&l!D62 (Bank Charges + late int) += {bank_charges_extra:,.2f}")
+        # FIX (Issue 2): "INTT PAID ON LATE PAYMENT OF TDS" must stay in Other Expenses.
+        # Previously these were rerouted to D62 (Bank Charges), which was wrong
+        # because interest on late payment of TDS is a statutory penal expense,
+        # not a bank charge. We now leave them in `other_exp_accounts` so they
+        # get placed into a row of the Other Expenses section (D57:D78), and we
+        # also write the account name into column B for that row so the label is visible.
+        # (No-op block kept for clarity — see unmatched-placement logic below where
+        #  the account name is now written to column B as well.)
 
         # Build template label → row map for D57:D78
         # Key = normalized label from col B, value = row number
@@ -1555,12 +1558,19 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     injected.append(f"notes to p&l!D{row} ({acct['name']}) = {amt:,.2f}")
             else:
                 # No template match — find first empty D row in 57:78
+                # FIX (Issue 2): also write the account name to column B so the
+                # label is visible alongside the amount (otherwise interest on
+                # late payment of TDS would appear as an unlabelled amount).
                 placed = False
                 for r in range(57, 79):
                     if r not in written_exp_rows:
                         d_val = _cache.get("notes to p&l", {}).get((r, 4))
+                        b_val = _cache.get("notes to p&l", {}).get((r, 2))
                         if d_val is None or d_val == 0:
                             ws_npl.cell(r, 4).value = round(amt, 2)
+                            # Write the account name to col B if the row is unlabelled
+                            if b_val is None or str(b_val).strip() == "":
+                                ws_npl.cell(r, 2).value = acct["name"]
                             written_exp_rows.add(r)
                             injected.append(f"notes to p&l!D{r} (unmatched: {acct['name']}) = {amt:,.2f}")
                             placed = True
@@ -1577,19 +1587,105 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
     wb.save(output_path)
     wb.close()
 
-    total_assets = sum(
-        aggregated_values.get(k, 0)
-        for k in aggregated_values
-        if BS_HEADS.get(k, {}).get("side") == "asset"
+    # ─────────────────────────────────────────────────────────────
+    # FIX (Issue 3): On-screen totals must mirror what the downloaded BS shows.
+    #
+    # The old logic simply summed asset-side vs. liability-side TB aggregates,
+    # which always tallies (debits = credits in any TB) — so the UI permanently
+    # displayed equal Assets/Liabilities and zero profit, even though the
+    # downloaded Excel file (after recomputing formulas in Excel/LibreOffice)
+    # shows real numbers with a P&L balance.
+    #
+    # We now compute the actual BS figures the spreadsheet will resolve to:
+    #   1. Net Profit = Revenue − (Opening Stock + Purchases + Employee
+    #                  + Finance Cost + Depreciation + Other Expenses) + Closing Stock
+    #   2. Closing Stock is the balancing figure in the Trading A/c:
+    #      Closing Stock = (Opening Stock + Purchases) − (Sales − Gross Profit)
+    #      For display purposes we use the inventory aggregate from TB if present,
+    #      otherwise treat closing stock as the Trading A/c balancing figure.
+    # ─────────────────────────────────────────────────────────────
+    revenue_total       = aggregated_values.get("revenue", 0)
+    purchases_total     = aggregated_values.get("purchases", 0)
+    employee_total      = aggregated_values.get("employee_expenses", 0)
+    other_exp_total     = aggregated_values.get("other_expenses", 0)
+    depreciation_total  = aggregated_values.get("depreciation", 0)
+    inventories_total   = aggregated_values.get("inventories", 0)
+
+    # Opening stock is included inside the `inventories` aggregate in some TBs
+    # and as a separate line in others. Use individual_accounts to separate.
+    opening_stock = 0.0
+    closing_stock_from_tb = 0.0
+    if individual_accounts:
+        for a in individual_accounts:
+            n = a.get("name", "").lower()
+            if "opening stock" in n:
+                opening_stock += abs(a.get("net", 0))
+            elif "closing stock" in n:
+                closing_stock_from_tb += abs(a.get("net", 0))
+
+    # If no explicit opening/closing rows, treat the whole inventories aggregate
+    # as opening stock (typical Tally TB convention).
+    if opening_stock == 0 and closing_stock_from_tb == 0:
+        opening_stock = inventories_total
+
+    # Closing stock used in the BS = explicit value if TB has one,
+    # otherwise the Trading A/c balancing figure.
+    # Trading A/c balancing figure rule:
+    #   Closing Stock = max(0, (Opening Stock + Purchases) − Sales) when Sales < Cost
+    # We instead compute Net Profit using a single equation that does NOT rely
+    # on a separately-supplied closing stock.
+    if closing_stock_from_tb > 0:
+        closing_stock_bs = closing_stock_from_tb
+    else:
+        # Closing stock acts as the credit-side balancing figure on the
+        # Trading A/c. Without an explicit value, we cannot derive it
+        # independently — leave at 0 and let Net Profit absorb the difference.
+        closing_stock_bs = 0.0
+
+    # Net Profit = Sales + Closing Stock − Opening Stock − Purchases
+    #              − Employee − Other Expenses − Depreciation
+    net_profit = (
+        revenue_total + closing_stock_bs
+        - opening_stock - purchases_total
+        - employee_total - other_exp_total - depreciation_total
     )
-    total_liabilities = sum(
-        aggregated_values.get(k, 0)
-        for k in aggregated_values
-        if BS_HEADS.get(k, {}).get("side") == "liability"
+
+    # ── Asset side ──
+    total_assets = (
+        aggregated_values.get("fixed_assets", 0)
+        + aggregated_values.get("non_current_investments", 0)
+        + closing_stock_bs
+        + aggregated_values.get("trade_rec", 0)
+        + aggregated_values.get("cash_bank", 0)
+        + aggregated_values.get("stla", 0)
+        + aggregated_values.get("other_current_assets", 0)
     )
+
+    # ── Liability side (Capital + Profit + Borrowings + Payables + OCL + Provisions) ──
+    capital_total = aggregated_values.get("capital", 0)
+    total_liabilities = (
+        capital_total
+        + net_profit
+        + aggregated_values.get("lt_borrowings", 0)
+        + aggregated_values.get("st_borrowings", 0)
+        + aggregated_values.get("trade_payables", 0)
+        + aggregated_values.get("other_cl", 0)
+        + aggregated_values.get("st_provisions", 0)
+    )
+
     diff = abs(total_assets - total_liabilities)
 
-    log.append(f"\n📊 Tally Check (TB Aggregates):")
+    log.append(f"\n📊 P&L Summary:")
+    log.append(f"  Revenue:           {revenue_total:>15,.2f}")
+    log.append(f"  Opening Stock:     {opening_stock:>15,.2f}")
+    log.append(f"  Purchases:         {purchases_total:>15,.2f}")
+    log.append(f"  Employee Exp:      {employee_total:>15,.2f}")
+    log.append(f"  Other Expenses:    {other_exp_total:>15,.2f}")
+    log.append(f"  Depreciation:      {depreciation_total:>15,.2f}")
+    log.append(f"  Closing Stock:     {closing_stock_bs:>15,.2f}")
+    log.append(f"  → Net Profit:      {net_profit:>15,.2f}")
+
+    log.append(f"\n📊 Balance Sheet Totals (computed):")
     log.append(f"  Total Assets:      {total_assets:>15,.2f}")
     log.append(f"  Total Liabilities: {total_liabilities:>15,.2f}")
     if diff < 1:
@@ -1610,6 +1706,11 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         "tally_ok": diff < 1,
         "total_assets": total_assets,
         "total_liabilities": total_liabilities,
+        "net_profit": net_profit,
+        "revenue": revenue_total,
+        "opening_stock": opening_stock,
+        "closing_stock": closing_stock_bs,
+        "capital": capital_total,
     }
 
 
