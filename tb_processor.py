@@ -1638,8 +1638,13 @@ def analyze_trial_balance(tb_path):
 def process_tb_to_bs(tb_path, bs_template_path, output_path, user_mapping=None):
     """
     Full pipeline: analyze TB → classify → inject into BS.
-    user_mapping: dict {account_name: head_key} for user overrides.
-    Returns result dict.
+
+    user_mapping: dict of overrides. Supports TWO formats:
+      1. {"ACCOUNT NAME": "bs_head"}   — matched by name (case-insensitive)
+      2. {"ACCOUNT NAME_rownum": "bs_head"} — matched by unique key
+
+    This is the SINGLE SOURCE OF TRUTH for user overrides.
+    The Flask /tb-process route must pass user_mapping here.
     """
     # Step 1: Analyze TB
     analysis = analyze_trial_balance(tb_path)
@@ -1648,23 +1653,42 @@ def process_tb_to_bs(tb_path, bs_template_path, output_path, user_mapping=None):
 
     accounts = analysis["accounts"]
 
-    # Step 2: Apply user overrides if any
+    # Step 2: Apply user overrides — match by unique key first, then by name
     if user_mapping:
+        name_map = {}
+        key_map  = {}
+        for raw_key, head in user_mapping.items():
+            if not head or head in ("auto", "", None):
+                continue
+            rk = str(raw_key).strip()
+            # Key format: "ACCOUNT NAME_123"  (ends with underscore + digits)
+            parts = rk.rsplit("_", 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                key_map[rk] = head
+            else:
+                name_map[rk.upper()] = head
+
         for acct in accounts:
-            if acct["name"] in user_mapping:
-                acct["bs_head"] = user_mapping[acct["name"]]
+            acct_key  = str(acct.get("key", "")).strip()
+            acct_name = str(acct.get("name", "")).strip().upper()
+            if acct_key in key_map:
+                acct["bs_head"]    = key_map[acct_key]
+                acct["confidence"] = "user"
+            elif acct_name in name_map:
+                acct["bs_head"]    = name_map[acct_name]
                 acct["confidence"] = "user"
 
-    # Step 3: Aggregate
+    # Step 3: Aggregate by bs_head (uses overridden heads)
     aggregated = get_aggregated_values(accounts)
 
-    # Step 4: Inject into BS template — pass individual accounts for name-matching
+    # Step 4: Inject into BS template
     result = inject_into_bs(
         bs_template_path, output_path, aggregated,
         mapping_overrides=None,
         individual_accounts=accounts,
     )
 
-    result["analysis"] = analysis
-    result["aggregated"] = aggregated
+    result["analysis"]            = analysis
+    result["aggregated"]          = aggregated
+    result["classified_accounts"] = accounts   # full list with final bs_head applied
     return result
