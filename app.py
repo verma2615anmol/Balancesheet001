@@ -6472,8 +6472,241 @@ def tb_analyse():
         return jsonify({"status": "error", "message": f"Analysis failed: {e}\n{traceback.format_exc()}"}), 500
 
 
-@app.route("/tb-process", methods=["POST"])
-def tb_process():
+@app.route("/tb-read-bs", methods=["POST"])
+def tb_read_bs():
+    """Read Capital Account and Fixed Assets sheets from uploaded BS template."""
+    if "uid" not in session:
+        return jsonify({"status": "error", "message": "Not logged in"}), 401
+    try:
+        import tempfile, os
+        from openpyxl import load_workbook
+        from openpyxl.cell import MergedCell
+
+        bs_file = request.files.get("bs_file")
+        if not bs_file:
+            return jsonify({"status": "error", "message": "No BS template uploaded"})
+
+        tmp = tempfile.mkdtemp()
+        bs_path = os.path.join(tmp, "bs.xlsx")
+        bs_file.save(bs_path)
+
+        wb = load_workbook(bs_path, read_only=True, data_only=True)
+        result = {"capital": None, "fixed_assets": None}
+
+        # ── Read Capital Account sheet ──────────────────────────────────
+        cap_sheet = None
+        for sn in wb.sheetnames:
+            if "capital" in sn.lower():
+                cap_sheet = sn
+                break
+
+        if cap_sheet:
+            ws = wb[cap_sheet]
+            rows_data = []
+            for row in ws.iter_rows(min_row=1, max_row=50, max_col=15, values_only=False):
+                r = []
+                for c in row:
+                    if isinstance(c, MergedCell):
+                        r.append(None)
+                    else:
+                        r.append(c.value)
+                rows_data.append(r)
+
+            # Find partner/proprietor rows — look for rows with names and numbers
+            partners = []
+            header_row_idx = None
+            for i, row in enumerate(rows_data):
+                row_str = " ".join(str(v or "").lower() for v in row)
+                if "name of" in row_str and ("proprietor" in row_str or "partner" in row_str):
+                    header_row_idx = i
+                    break
+                if "as at" in row_str and "april" in row_str:
+                    header_row_idx = i
+                    break
+
+            # Scan rows after header for partner names
+            if header_row_idx is not None:
+                for i in range(header_row_idx + 1, min(header_row_idx + 15, len(rows_data))):
+                    row = rows_data[i]
+                    # Look for a name in col B (index 1) and numbers in other cols
+                    name = None
+                    opening = 0
+                    for ci, val in enumerate(row):
+                        if isinstance(val, str) and len(val.strip()) > 1 and not val.strip().replace(",","").replace(".","").replace("-","").isdigit():
+                            if ci <= 2 and val.strip().lower() not in ("total","previous year","previous year (py)","py"):
+                                name = val.strip()
+                        if isinstance(val, (int, float)) and ci >= 2 and ci <= 4 and name:
+                            opening = float(val)
+                    if name and name.lower() not in ("total","previous year","previous year (py)","py",""):
+                        partners.append({"name": name, "opening": opening, "row": i + 1})
+
+            if partners:
+                result["capital"] = {
+                    "sheet": cap_sheet,
+                    "partners": partners,
+                }
+
+        # ── Read Fixed Assets sheet ─────────────────────────────────────
+        fa_sheet = None
+        for sn in wb.sheetnames:
+            sl = sn.lower()
+            if "fixed asset" in sl or "fa " in sl or sl.startswith("fa") or "ppe" in sl:
+                fa_sheet = sn
+                break
+
+        if fa_sheet:
+            ws = wb[fa_sheet]
+            rows_data = []
+            for row in ws.iter_rows(min_row=1, max_row=60, max_col=15, values_only=False):
+                r = []
+                for c in row:
+                    if isinstance(c, MergedCell):
+                        r.append(None)
+                    else:
+                        r.append(c.value)
+                rows_data.append(r)
+
+            assets = []
+            for i, row in enumerate(rows_data):
+                # Look for asset names in col A/B with WDV numbers
+                name = None
+                opening_wdv = 0
+                rate = 0
+                a_val = row[0] if len(row) > 0 else None
+                b_val = row[1] if len(row) > 1 else None
+
+                name_val = a_val or b_val
+                if isinstance(name_val, str) and len(name_val.strip()) > 1:
+                    nm = name_val.strip()
+                    # Skip headers, categories, totals
+                    nm_low = nm.lower()
+                    if any(kw in nm_low for kw in ["particular","w.d.v","amount","total","grand","rate"]):
+                        continue
+                    # Check if it's a category header (bold, all caps, no numbers in row)
+                    has_number = any(isinstance(v, (int, float)) and v != 0 for v in row[1:] if v is not None)
+                    is_category = nm.isupper() and not has_number
+                    if is_category:
+                        continue
+
+                    name = nm
+                    # Opening WDV is typically col B or C
+                    for ci in [1, 2]:
+                        v = row[ci] if len(row) > ci else None
+                        if isinstance(v, (int, float)) and v > 0:
+                            opening_wdv = float(v)
+                            break
+                    # Rate is typically in a later column
+                    for ci in range(5, min(10, len(row))):
+                        v = row[ci] if len(row) > ci else None
+                        if isinstance(v, (int, float)) and 0 < v <= 100:
+                            rate = float(v)
+                            break
+
+                if name:
+                    assets.append({
+                        "name": name,
+                        "opening_wdv": opening_wdv,
+                        "rate": rate,
+                        "row": i + 1,
+                    })
+
+            if assets:
+                result["fixed_assets"] = {
+                    "sheet": fa_sheet,
+                    "assets": assets,
+                }
+
+        wb.close()
+        try:
+            os.remove(bs_path)
+            os.rmdir(tmp)
+        except:
+            pass
+
+        return jsonify({"status": "success", **result})
+
+    except Exception as e:
+        import traceback
+        return jsonify({"status": "error", "message": f"Failed to read BS: {e}\n{traceback.format_exc()}"}), 500
+
+
+def _inject_cap_fa(output_path, cap_entries, fa_entries, log):
+    """Inject user-entered Capital A/c and Fixed Assets values into the output BS."""
+    from openpyxl import load_workbook
+    wb = load_workbook(output_path)
+
+    def _is_formula(v):
+        return isinstance(v, str) and v.startswith("=")
+
+    # ── Capital Account injection ──────────────────────────────────────
+    if cap_entries:
+        # Find capital sheet
+        cap_sheet = None
+        for sn in wb.sheetnames:
+            if "capital" in sn.lower():
+                cap_sheet = sn
+                break
+        if cap_sheet:
+            ws = wb[cap_sheet]
+            for entry in cap_entries:
+                row = entry.get("row")
+                if not row:
+                    continue
+                # Columns: C=opening(skip), D=introduced, E=withdrawals
+                # The opening and closing formulas are preserved from template
+                introduced = entry.get("introduced", 0)
+                withdrawals = entry.get("withdrawals", 0)
+                if introduced:
+                    cell = ws.cell(row, 4)  # Col D
+                    if not _is_formula(str(cell.value or "")):
+                        cell.value = round(float(introduced), 2)
+                        log.append(f"✓ {cap_sheet}!D{row} (Capital Introduced) = {float(introduced):,.2f}")
+                if withdrawals:
+                    cell = ws.cell(row, 5)  # Col E
+                    if not _is_formula(str(cell.value or "")):
+                        cell.value = round(float(withdrawals), 2)
+                        log.append(f"✓ {cap_sheet}!E{row} (Withdrawals) = {float(withdrawals):,.2f}")
+
+    # ── Fixed Assets injection ─────────────────────────────────────────
+    if fa_entries:
+        fa_sheet = None
+        for sn in wb.sheetnames:
+            sl = sn.lower()
+            if "fixed asset" in sl or "fa " in sl or sl.startswith("fa") or "ppe" in sl:
+                fa_sheet = sn
+                break
+        if fa_sheet:
+            ws = wb[fa_sheet]
+            for entry in fa_entries:
+                row = entry.get("row")
+                if not row:
+                    continue
+                # Columns vary but typically:
+                # B=opening WDV, C=additions>180d, D=additions<180d, E=sale
+                add_gt180 = entry.get("additions_gt180", 0)
+                add_lt180 = entry.get("additions_lt180", 0)
+                sale = entry.get("sale", 0)
+                if add_gt180:
+                    cell = ws.cell(row, 3)  # Col C
+                    if not _is_formula(str(cell.value or "")):
+                        cell.value = round(float(add_gt180), 2)
+                        log.append(f"✓ {fa_sheet}!C{row} (Addition >180d) = {float(add_gt180):,.2f}")
+                if add_lt180:
+                    cell = ws.cell(row, 4)  # Col D
+                    if not _is_formula(str(cell.value or "")):
+                        cell.value = round(float(add_lt180), 2)
+                        log.append(f"✓ {fa_sheet}!D{row} (Addition <180d) = {float(add_lt180):,.2f}")
+                if sale:
+                    cell = ws.cell(row, 5)  # Col E
+                    if not _is_formula(str(cell.value or "")):
+                        cell.value = round(float(sale), 2)
+                        log.append(f"✓ {fa_sheet}!E{row} (Sale) = {float(sale):,.2f}")
+
+    wb.save(output_path)
+    wb.close()
+
+
+
     if "uid" not in session:
         return jsonify({"status": "error", "message": "Not logged in"}), 401
     user = get_user_by_id(session["uid"])
@@ -6492,18 +6725,25 @@ def tb_process():
         if not tb_file or not bs_file:
             return jsonify({"status": "error", "message": "Both Trial Balance and BS template files are required"})
 
-        # ── READ USER MAPPINGS FROM FORM ──────────────────────────────────
-        # The frontend sends ALL dropdown values as JSON:
-        # {"ACCOUNT NAME_row": "bs_head_value", ...}
         raw_mappings = request.form.get("user_mappings", "{}")
         try:
             user_mapping = json.loads(raw_mappings)
         except (json.JSONDecodeError, ValueError):
             user_mapping = {}
-
-        # Filter out empty/auto values
         user_mapping = {k: v for k, v in user_mapping.items()
                         if v and v not in ("", "auto", "none")}
+
+        # ── Read Capital & FA user entries ────────────────────────────
+        raw_cap = request.form.get("capital_entries", "[]")
+        raw_fa  = request.form.get("fa_entries", "[]")
+        try:
+            cap_entries = json.loads(raw_cap)
+        except:
+            cap_entries = []
+        try:
+            fa_entries = json.loads(raw_fa)
+        except:
+            fa_entries = []
 
         client_name = request.form.get("client_name", "Balance_Sheet").strip()
         cy_year = request.form.get("cy_year", "2025").strip()
@@ -6516,30 +6756,26 @@ def tb_process():
         tb_file.save(tb_path)
         bs_file.save(bs_path)
 
-        # ── CALL PROCESSOR WITH USER MAPPINGS ─────────────────────────────
         result = process_tb_to_bs(
-            tb_path,
-            bs_path,
-            out_path,
-            user_mapping=user_mapping,    # ← THIS IS THE FIX — was missing before
+            tb_path, bs_path, out_path,
+            user_mapping=user_mapping,
         )
 
         if result.get("status") == "error":
-            try:
-                shutil.rmtree(tmp, ignore_errors=True)
-            except Exception:
-                pass
+            try: shutil.rmtree(tmp, ignore_errors=True)
+            except: pass
             return jsonify(result)
 
-        # Move output to download folder
-        h = os.urandom(8).hex()
+        # ── Inject Capital & FA user entries into output ─────────────
+        if cap_entries or fa_entries:
+            _inject_cap_fa(out_path, cap_entries, fa_entries, result.get("log", []))
+
+        h = os.urandom(16).hex()
         dest = os.path.join(OUTPUT_DIR, h + "_out.xlsx")
         shutil.move(out_path, dest)
 
-        try:
-            shutil.rmtree(tmp, ignore_errors=True)
-        except Exception:
-            pass
+        try: shutil.rmtree(tmp, ignore_errors=True)
+        except: pass
 
         safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in client_name)
         fname = f"{safe_name}_BS_{cy_year}.xlsx"
@@ -6683,7 +6919,8 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
   <div class="steps">
     <div class="step-item active" id="s1"><span class="step-num">1</span>Upload</div>
     <div class="step-item" id="s2"><span class="step-num">2</span>Review Mapping</div>
-    <div class="step-item" id="s3"><span class="step-num">3</span>Download</div>
+    <div class="step-item" id="s2b"><span class="step-num">3</span>Capital &amp; FA</div>
+    <div class="step-item" id="s3"><span class="step-num">4</span>Download</div>
   </div>
 
   <!-- STEP 1 -->
@@ -6758,8 +6995,51 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
 
         <div style="margin-top:20px;display:flex;gap:12px">
           <button class="btn-sec" onclick="goStep(1)">← Back</button>
-          <button class="btn-main" id="generateBtn" onclick="doGenerate()" style="flex:1">
-            ✅ Confirm Mapping &amp; Generate Balance Sheet
+          <button class="btn-main" id="generateBtn" onclick="goToCapFA()" style="flex:1">
+            ✅ Confirm Mapping → Next: Capital &amp; Fixed Assets
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 2.5: Capital Account & Fixed Assets -->
+  <div id="step2b" style="display:none">
+    <div class="card">
+      <div class="card-head"><div class="icon" style="background:#FEF3C7">📋</div>
+        <div><h2>Capital Account &amp; Fixed Assets</h2>
+        <p>Enter additions, withdrawals (capital) and additions, sales (fixed assets) from ledger. These are NOT taken from Trial Balance.</p></div></div>
+      <div class="card-body">
+
+        <div style="background:#FEF3C7;border:1px solid #FDE68A;border-radius:10px;padding:12px 16px;font-size:12px;color:#92400E;margin-bottom:16px;line-height:1.7">
+          <strong>Why this step?</strong> The Trial Balance only has closing balances. Capital A/c needs opening + additions + withdrawals from the ledger. Same for Fixed Assets — additions &amp; sales come from ledger, not TB. Opening balances are read from your BS template.
+        </div>
+
+        <!-- Capital Account Section -->
+        <div style="margin-bottom:24px">
+          <h3 style="font-size:14px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px">
+            👤 Owner's Capital Account
+          </h3>
+          <div id="capTableWrap" style="overflow-x:auto">
+            <p style="color:var(--muted);font-size:12px">Loading from BS template...</p>
+          </div>
+        </div>
+
+        <!-- Fixed Assets Section -->
+        <div style="margin-bottom:20px">
+          <h3 style="font-size:14px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px">
+            🏭 Fixed Assets Chart
+            <button onclick="addFARow()" style="margin-left:auto;background:none;border:1px dashed var(--border);border-radius:6px;padding:4px 12px;font-size:11px;cursor:pointer;color:var(--brand)">+ Add Asset</button>
+          </h3>
+          <div id="faTableWrap" style="overflow-x:auto">
+            <p style="color:var(--muted);font-size:12px">Loading from BS template...</p>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:12px">
+          <button class="btn-sec" onclick="goStep(2)">← Back to Mapping</button>
+          <button class="btn-main" onclick="doGenerate()" style="flex:1">
+            ✅ Generate Balance Sheet
           </button>
         </div>
       </div>
@@ -6783,7 +7063,7 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
       <div class="card-body">
         <div id="resBox"></div>
         <div style="margin-top:18px;display:flex;gap:12px">
-          <button class="btn-sec" onclick="goStep(2)">← Fix Mapping</button>
+          <button class="btn-sec" onclick="goStep('2b')">← Back</button>
           <a id="dlBtn" class="btn-main" style="flex:1;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:8px" href="#">
             📥 Download Balance Sheet
           </a>
@@ -6842,11 +7122,14 @@ const HEAD_LABEL = Object.fromEntries(BS_HEADS.map(h=>[h.v, h.l]));
 function goStep(n) {
   document.getElementById('step1').style.display = n===1?'block':'none';
   document.getElementById('step2').style.display = n===2?'block':'none';
+  document.getElementById('step2b').style.display = n==='2b'?'block':'none';
   document.getElementById('step3').style.display = n===3?'block':'none';
   document.getElementById('loadWrap').style.display = 'none';
-  [1,2,3].forEach(i=>{
-    const s = document.getElementById('s'+i);
-    s.className = 'step-item' + (i===n?' active':(i<n?' done':''));
+  ['s1','s2','s2b','s3'].forEach(id=>{
+    const s = document.getElementById(id);
+    const order = {s1:1,s2:2,s2b:2.5,s3:3};
+    const cur = n==='2b'?2.5:n;
+    s.className = 'step-item' + (order[id]===cur?' active':(order[id]<cur?' done':''));
   });
   window.scrollTo({top:0,behavior:'smooth'});
 }
@@ -7044,11 +7327,12 @@ function onMapChange(sel) {
 }
 
 // ═══════════════════════════════════════
-//  GENERATE — sends ALL mappings to server
+//  STEP 2.5: CAPITAL & FIXED ASSETS
 // ═══════════════════════════════════════
-async function doGenerate() {
-  // Collect ALL current dropdown values (not just changed ones)
-  // This is the critical fix — the previous version only sent changed ones
+let capData = null, faData = null;
+
+async function goToCapFA() {
+  // Save all mapping selections first
   document.querySelectorAll('.map-sel').forEach(sel => {
     const key = sel.dataset.key;
     if (key) userMappings[key] = sel.value;
@@ -7056,15 +7340,150 @@ async function doGenerate() {
 
   document.getElementById('step2').style.display = 'none';
   document.getElementById('loadWrap').style.display = 'block';
-  document.getElementById('loadMsg').textContent = 'Applying your mapping and injecting figures into Balance Sheet...';
+  document.getElementById('loadMsg').textContent = 'Reading Capital Account & Fixed Assets from BS template...';
+
+  try {
+    const fd = new FormData();
+    fd.append('bs_file', bsFile);
+    const res = await fetch('/tb-read-bs', {method:'POST', body:fd});
+    const data = await res.json();
+    document.getElementById('loadWrap').style.display = 'none';
+
+    if (data.status !== 'success') {
+      alert('Could not read BS template: ' + (data.message||''));
+      goStep('2b');
+      buildCapTable(null);
+      buildFATable(null);
+      return;
+    }
+
+    capData = data.capital;
+    faData  = data.fixed_assets;
+    buildCapTable(capData);
+    buildFATable(faData);
+    goStep('2b');
+
+  } catch(e) {
+    document.getElementById('loadWrap').style.display = 'none';
+    capData = null; faData = null;
+    buildCapTable(null);
+    buildFATable(null);
+    goStep('2b');
+  }
+}
+
+function buildCapTable(cap) {
+  const wrap = document.getElementById('capTableWrap');
+  if (!cap || !cap.partners || !cap.partners.length) {
+    wrap.innerHTML = '<p style="color:var(--muted);font-size:12px">No capital account sheet found in BS template. You can fill it manually in Excel after download.</p>';
+    return;
+  }
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+  html += '<tr style="background:#F1F5F9"><th style="padding:8px;text-align:left;border:1px solid var(--border)">Name</th>';
+  html += '<th style="padding:8px;text-align:right;border:1px solid var(--border)">Opening Balance</th>';
+  html += '<th style="padding:8px;text-align:center;border:1px solid var(--border)">Capital Introduced</th>';
+  html += '<th style="padding:8px;text-align:center;border:1px solid var(--border)">Withdrawals</th></tr>';
+  cap.partners.forEach((p, i) => {
+    html += `<tr>
+      <td style="padding:8px;border:1px solid var(--border);font-weight:600">${escHtml(p.name)}<input type="hidden" class="cap-row" value="${p.row}"></td>
+      <td style="padding:8px;border:1px solid var(--border);text-align:right;color:var(--muted)">₹${(p.opening||0).toLocaleString('en-IN',{maximumFractionDigits:2})}</td>
+      <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="cap-intro" data-idx="${i}" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
+      <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="cap-wd" data-idx="${i}" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
+    </tr>`;
+  });
+  html += '</table>';
+  wrap.innerHTML = html;
+}
+
+function buildFATable(fa) {
+  const wrap = document.getElementById('faTableWrap');
+  if (!fa || !fa.assets || !fa.assets.length) {
+    wrap.innerHTML = '<p style="color:var(--muted);font-size:12px">No fixed assets sheet found in BS template. You can fill it manually in Excel after download.</p>';
+    return;
+  }
+  let html = '<table id="faTable" style="width:100%;border-collapse:collapse;font-size:12px">';
+  html += '<tr style="background:#F1F5F9"><th style="padding:8px;text-align:left;border:1px solid var(--border)">Asset</th>';
+  html += '<th style="padding:8px;text-align:right;border:1px solid var(--border)">Opening WDV</th>';
+  html += '<th style="padding:8px;text-align:center;border:1px solid var(--border)">Additions &gt;180d</th>';
+  html += '<th style="padding:8px;text-align:center;border:1px solid var(--border)">Additions &lt;180d</th>';
+  html += '<th style="padding:8px;text-align:center;border:1px solid var(--border)">Sale</th>';
+  html += '<th style="padding:8px;text-align:right;border:1px solid var(--border)">Rate %</th></tr>';
+  fa.assets.forEach((a, i) => {
+    html += buildFARow(a, i);
+  });
+  html += '</table>';
+  wrap.innerHTML = html;
+}
+
+function buildFARow(a, i) {
+  return `<tr class="fa-row" data-idx="${i}">
+    <td style="padding:8px;border:1px solid var(--border);font-weight:600">${escHtml(a.name)}<input type="hidden" class="fa-rownum" value="${a.row}"></td>
+    <td style="padding:8px;border:1px solid var(--border);text-align:right;color:var(--muted)">₹${(a.opening_wdv||0).toLocaleString('en-IN',{maximumFractionDigits:2})}</td>
+    <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="fa-add-gt" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
+    <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="fa-add-lt" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
+    <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="fa-sale" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
+    <td style="padding:8px;border:1px solid var(--border);text-align:right;color:var(--muted)">${a.rate||0}%</td>
+  </tr>`;
+}
+
+function addFARow() {
+  const tbl = document.getElementById('faTable');
+  if (!tbl) return;
+  const name = prompt('Asset name:');
+  if (!name) return;
+  const idx = tbl.querySelectorAll('.fa-row').length;
+  const tr = document.createElement('tr');
+  tr.className = 'fa-row';
+  tr.dataset.idx = idx;
+  tr.innerHTML = `
+    <td style="padding:8px;border:1px solid var(--border);font-weight:600">${escHtml(name)}<input type="hidden" class="fa-rownum" value="0"></td>
+    <td style="padding:8px;border:1px solid var(--border);text-align:right;color:var(--muted)">₹0</td>
+    <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="fa-add-gt" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
+    <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="fa-add-lt" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
+    <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="fa-sale" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
+    <td style="padding:8px;border:1px solid var(--border);text-align:right;color:var(--muted)">—</td>`;
+  tbl.appendChild(tr);
+}
+
+function collectCapEntries() {
+  const entries = [];
+  document.querySelectorAll('.cap-row').forEach((el, i) => {
+    const row = parseInt(el.value);
+    const intro = parseFloat(document.querySelectorAll('.cap-intro')[i]?.value) || 0;
+    const wd = parseFloat(document.querySelectorAll('.cap-wd')[i]?.value) || 0;
+    if (row && (intro || wd)) entries.push({row, introduced: intro, withdrawals: wd});
+  });
+  return entries;
+}
+
+function collectFAEntries() {
+  const entries = [];
+  document.querySelectorAll('.fa-row').forEach(tr => {
+    const row = parseInt(tr.querySelector('.fa-rownum')?.value) || 0;
+    const gt = parseFloat(tr.querySelector('.fa-add-gt')?.value) || 0;
+    const lt = parseFloat(tr.querySelector('.fa-add-lt')?.value) || 0;
+    const sale = parseFloat(tr.querySelector('.fa-sale')?.value) || 0;
+    if (row && (gt || lt || sale)) entries.push({row, additions_gt180: gt, additions_lt180: lt, sale});
+  });
+  return entries;
+}
+
+// ═══════════════════════════════════════
+//  GENERATE — sends ALL data to server
+// ═══════════════════════════════════════
+async function doGenerate() {
+  document.getElementById('step2b').style.display = 'none';
+  document.getElementById('loadWrap').style.display = 'block';
+  document.getElementById('loadMsg').textContent = 'Applying mapping and injecting figures into Balance Sheet...';
 
   const fd = new FormData();
   fd.append('tb_file', tbFile);
   fd.append('bs_file', bsFile);
   fd.append('cy_year', document.getElementById('cyYear').value);
   fd.append('client_name', document.getElementById('clientName').value || 'Client');
-  // ← THE CRITICAL FIX: send user_mappings as JSON
   fd.append('user_mappings', JSON.stringify(userMappings));
+  fd.append('capital_entries', JSON.stringify(collectCapEntries()));
+  fd.append('fa_entries', JSON.stringify(collectFAEntries()));
 
   try {
     const res = await fetch('/tb-process', {method:'POST', body:fd});
@@ -7073,7 +7492,7 @@ async function doGenerate() {
 
     if (data.status !== 'success') {
       alert('Error: ' + data.message);
-      document.getElementById('step2').style.display = 'block';
+      document.getElementById('step2b').style.display = 'block';
       return;
     }
 
@@ -7082,7 +7501,7 @@ async function doGenerate() {
 
   } catch(e) {
     alert('Error: '+e);
-    document.getElementById('step2').style.display = 'block';
+    document.getElementById('step2b').style.display = 'block';
     document.getElementById('loadWrap').style.display = 'none';
   }
 }
