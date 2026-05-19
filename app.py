@@ -6425,20 +6425,20 @@ except ImportError:
 
 @app.route("/tool/tb-to-bs")
 def tb_to_bs_page():
-    user = get_user()
+    if "uid" not in session:
+        return redirect("/login")
+    user = get_user_by_id(session["uid"])
     if not user:
         return redirect("/login")
-    plan = user.get("plan", "free")
-    if plan not in ("premium", "pro", "enterprise", "ca_firm", "annual", "lifetime"):
-        flash_msg = "This is a Premium tool. Please upgrade to access."
-        return redirect(f"/?msg=premium_required")
     ctx = user_ctx(user)
     return render_template_string(TB_BS_TEMPLATE, **ctx)
 
 
 @app.route("/tb-analyse", methods=["POST"])
 def tb_analyse():
-    user = get_user()
+    if "uid" not in session:
+        return jsonify({"status": "error", "message": "Not logged in"}), 401
+    user = get_user_by_id(session["uid"])
     if not user:
         return jsonify({"status": "error", "message": "Not logged in"}), 401
     if not TB_PROCESSOR_AVAILABLE:
@@ -6474,12 +6474,12 @@ def tb_analyse():
 
 @app.route("/tb-process", methods=["POST"])
 def tb_process():
-    user = get_user()
+    if "uid" not in session:
+        return jsonify({"status": "error", "message": "Not logged in"}), 401
+    user = get_user_by_id(session["uid"])
     if not user:
         return jsonify({"status": "error", "message": "Not logged in"}), 401
     plan = user.get("plan", "free")
-    if plan not in ("premium", "pro", "enterprise", "ca_firm", "annual", "lifetime"):
-        return jsonify({"status": "error", "message": "Premium required"}), 403
     if not TB_PROCESSOR_AVAILABLE:
         return jsonify({"status": "error", "message": "TB processor not available"}), 500
 
@@ -6580,10 +6580,10 @@ def tb_process():
 
 
 # ── TB→BS Page Template ───────────────────────────────────────────────────────
-TB_BS_TEMPLATE = r"""<!DOCTYPE html><html lang="en"><head>
+TB_BS_TEMPLATE = """<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Balance Sheet from Trial Balance – CA Toolkit</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap\"/>
 <style>
 """ + BASE_CSS + """
 nav{background:#fff;border-bottom:1px solid var(--border);padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 1px 4px rgba(0,0,0,.06)}
