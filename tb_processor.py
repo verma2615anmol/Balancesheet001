@@ -674,13 +674,34 @@ def get_aggregated_values(classified_accounts):
     """
     Aggregate classified accounts into BS head totals.
     Returns dict: {head_key: total_amount}
+
+    Sign-aware reclassification rules (Indian accounting standards):
+    - Creditor with DEBIT balance (net > 0) → advance to supplier → stla
+    - Debtor with CREDIT balance (net < 0)  → advance from customer → other_cl
+    These accounts are reclassified before aggregation.
     """
     totals = {}
     for acct in classified_accounts:
         head = acct["bs_head"]
+        net  = acct["net"]
+
         if head == "unclassified":
             continue
-        amt = abs(acct["net"])
+
+        # ── Sign-aware reclassification ──────────────────────────────
+        # Creditor with debit balance = advance paid to supplier (asset)
+        if head == "trade_payables" and net > 0:
+            head = "stla"
+            acct["bs_head"]    = "stla"
+            acct["reclassified_from"] = "trade_payables"
+
+        # Debtor with credit balance = advance received from customer (liability)
+        elif head == "trade_rec" and net < 0:
+            head = "other_cl"
+            acct["bs_head"]    = "other_cl"
+            acct["reclassified_from"] = "trade_rec"
+
+        amt = abs(net)
         if head not in totals:
             totals[head] = 0
         totals[head] += amt
@@ -1040,33 +1061,48 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         elif cash_bank_amt:
             inject_notes_row(109, 4, cash_bank_amt, "Cash and bank (lump)")
 
-        # Short-term loans & advances → D128:D131 (GST, TDS etc)
+        # Short-term loans & advances → D128 (GST), D129 (TCS GST), D130 (Excess TDS)
+        # Special case: "TDS claimable from Facebook" → D137 (Other current assets)
         stla_amt = aggregated_values.get("stla", 0)
         if stla_amt and individual_accounts:
             stla_accounts = [a for a in individual_accounts
                              if a.get("bs_head") == "stla"
                              and abs(a.get("net", 0)) > 0
                              and "cheque" not in a.get("name","").lower()
-                             and "chq" not in a.get("name","").lower()]
+                             and "chq" not in a.get("name","").lower()
+                             and a.get("reclassified_from") != "trade_payables"]
             for acct in stla_accounts:
                 name_l = acct["name"].lower()
                 placed = False
-                # Match GST refund → D128
-                if "gst" in name_l or "igst" in name_l or "cgst" in name_l or "sgst" in name_l:
+
+                # ── Facebook TDS → D137 (Other current assets) ──────────────
+                # "TDS claimable from Facebook" is NOT a tax deposit —
+                # it's an amount recoverable from a party (Other current asset)
+                if "facebook" in name_l:
+                    if _safe_set(ws_n, 137, 4, abs(acct["net"])):
+                        injected.append(f"notes to bs!D137 (TDS from Facebook / Other CA) = {abs(acct['net']):,.2f}")
+                    placed = True
+
+                # ── GST Refund Receivable → D128 ─────────────────────────────
+                elif "gst" in name_l or "igst" in name_l or "cgst" in name_l or "sgst" in name_l:
                     if _safe_set(ws_n, 128, 4, abs(acct["net"])):
-                        injected.append(f"notes to bs!D128 (GST input) = {abs(acct['net']):,.2f}")
-                        placed = True
-                # Match TCS/TDS → D129/D130
-                if "tcs" in name_l:
+                        injected.append(f"notes to bs!D128 (GST refund) = {abs(acct['net']):,.2f}")
+                    placed = True
+
+                # ── TCS GST → D129 ────────────────────────────────────────────
+                elif "tcs" in name_l:
                     if _safe_set(ws_n, 129, 4, abs(acct["net"])):
                         injected.append(f"notes to bs!D129 (TCS GST) = {abs(acct['net']):,.2f}")
-                        placed = True
-                if ("tds" in name_l or "excess tds" in name_l) and not placed:
+                    placed = True
+
+                # ── Excess TDS Deposited → D130 ──────────────────────────────
+                elif "tds" in name_l or "excess tds" in name_l:
                     if _safe_set(ws_n, 130, 4, abs(acct["net"])):
-                        injected.append(f"notes to bs!D130 (Excess TDS) = {abs(acct['net']):,.2f}")
-                        placed = True
+                        injected.append(f"notes to bs!D130 (Excess TDS deposited) = {abs(acct['net']):,.2f}")
+                    placed = True
+
                 if not placed:
-                    # Find first empty row in 125-132
+                    # Find first empty row in STLA section 125-132
                     for r in range(125, 133):
                         d = ws_n.cell(r, 4).value
                         if d is None:
@@ -1094,6 +1130,10 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         creditor_accounts = [a for a in individual_accounts
                              if a.get("bs_head") == "trade_payables"
                              and abs(a.get("net", 0)) > 0]
+        # Debit-balance creditors are reclassified to stla (advance to supplier)
+        # — they must NOT appear in creditor rows, handled below in stla section
+        adv_to_supplier = [a for a in individual_accounts
+                           if a.get("reclassified_from") == "trade_payables"]
         unmatched_creditors = []
         for acct in creditor_accounts:
             best_row = None
@@ -1142,45 +1182,68 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         injected.append(f"Details!D{r} (recv: {acct['name']}) = {abs(acct['net']):,.2f}")
                         recv_written.add(r); break
 
-        # LT borrowings D7:D10
-        ltb_accounts = [a for a in individual_accounts
-                        if a.get("bs_head") == "lt_borrowings"
-                        and abs(a.get("net", 0)) > 0]
-        for acct in ltb_accounts:
+        # NOTE: LT borrowings are written to notes to bs!D8 directly (Section 2 above).
+        # Do NOT also write to Details D7-D12 — that would double-count because
+        # notes to bs!D16 = =Details!D9 (formula), creating a second entry.
+
+        # ── Advance to Suppliers (debit-balance creditors) → Details D74:D90 ──
+        # These creditors had a debit balance in TB → reclassified to stla
+        # They appear in the same row range as trade receivables (advances section)
+        for acct in adv_to_supplier:
             placed = False
-            for r in range(7, 12):
+            for r in range(74, 90):
                 b = det_cache.get((r, 2))
-                if b and _fuzzy_match_name(acct["name"], str(b)):
+                if b and _fuzzy_match_name(acct["name"], str(b)) and r not in recv_written:
                     ws_det.cell(r, 4).value = round(abs(acct["net"]), 2)
-                    injected.append(f"Details!D{r} (loan: {acct['name']}) = {abs(acct['net']):,.2f}")
-                    placed = True; break
+                    injected.append(f"Details!D{r} (adv-to-supplier: {acct['name']}) = {abs(acct['net']):,.2f}")
+                    recv_written.add(r); placed = True; break
             if not placed:
-                for r in range(7, 12):
-                    if det_cache.get((r, 4)) is None:
+                for r in range(74, 90):
+                    if det_cache.get((r, 4)) is None and det_cache.get((r, 2)) is None and r not in recv_written:
                         ws_det.cell(r, 2).value = acct["name"]
                         ws_det.cell(r, 4).value = round(abs(acct["net"]), 2)
-                        injected.append(f"Details!D{r} (loan: {acct['name']}) = {abs(acct['net']):,.2f}")
-                        break
+                        injected.append(f"Details!D{r} (adv-to-supplier new: {acct['name']}) = {abs(acct['net']):,.2f}")
+                        recv_written.add(r); break
+
+        # ── Advance from Customers (credit-balance debtors) → OCL in notes to bs ──
+        # These debtors had a credit balance → reclassified to other_cl
+        # They go into the OCL section of notes to bs (rows 60-82)
+        adv_from_customer = [a for a in individual_accounts
+                             if a.get("reclassified_from") == "trade_rec"]
+        if adv_from_customer and "notes to bs" in wb.sheetnames:
+            ws_n_ocl = wb["notes to bs"]
+            for acct in adv_from_customer:
+                # Find first writable OCL row not yet used
+                for r in range(60, 82):
+                    d = ws_n_ocl.cell(r, 4).value
+                    b = ws_n_ocl.cell(r, 2).value
+                    if b is None or len(str(b).strip()) < 2:
+                        continue
+                    b_str = str(b).strip().lower()
+                    if any(kw in b_str for kw in ['total', 'particular', 'header']):
+                        continue
+                    if d is None or (not _is_formula(str(d))):
+                        if _safe_set(ws_n_ocl, r, 4, abs(acct["net"])):
+                            injected.append(f"notes to bs!D{r} (adv-from-customer: {acct['name']}) = {abs(acct['net']):,.2f}")
+                            break
 
     # ────────────────────────────────────────────────────────────────
     # 4. CLOSING STOCK / INVENTORIES
     # ────────────────────────────────────────────────────────────────
-    # notes to p&l!D24 is a formula (='GROSS PROFIT'!E17) which itself
-    # is computed from purchases. For TB injection we must override it
-    # directly with the TB closing stock value.
+    # The formula chain is:
+    #   notes to p&l!D24  = ='GROSS PROFIT'!E17   ← formula, DO NOT override
+    #   GROSS PROFIT!E17  = =B24-SUM(E11:E14)      ← computed from purchases
+    #
+    # User instruction: closing inventory MUST come from ='GROSS PROFIT'!E17
+    # So we write the TB closing stock VALUE directly to GROSS PROFIT!E17,
+    # which propagates automatically to notes to p&l!D24 via the formula.
+    # We never touch notes to p&l!D24 (that would break the formula chain).
     inventory_amt = aggregated_values.get("inventories", 0)
     if inventory_amt:
-        placed = False
-        if "notes to p&l" in wb.sheetnames:
-            ws_npl = wb["notes to p&l"]
-            # Override D24 directly (even if formula) — closing stock must come from TB
-            ws_npl.cell(24, 4).value = round(inventory_amt, 2)
-            injected.append(f"notes to p&l!D24 (Closing stock override) = {inventory_amt:,.2f}")
-            placed = True
-        if not placed and "GROSS PROFIT" in wb.sheetnames:
+        if "GROSS PROFIT" in wb.sheetnames:
             ws_gp = wb["GROSS PROFIT"]
             ws_gp.cell(17, 5).value = round(inventory_amt, 2)
-            injected.append(f"GROSS PROFIT!E17 (Closing stock override) = {inventory_amt:,.2f}")
+            injected.append(f"GROSS PROFIT!E17 (Closing stock) = {inventory_amt:,.2f} → flows to notes to p&l!D24 via formula")
 
     # ────────────────────────────────────────────────────────────────
     # 5. FIXED ASSETS — DO NOT inject from TB.
