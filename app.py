@@ -272,6 +272,15 @@ nav{background:var(--white);border-bottom:1px solid var(--border);padding:0 24px
 footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:24px;font-size:12px}
 footer a{color:#6B7280;text-decoration:none}
 .footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:6px}
+/* WhatsApp floating button */
+.wa-float{position:fixed;bottom:24px;left:24px;width:52px;height:52px;background:#25D366;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:999;text-decoration:none;transition:transform .2s,box-shadow .2s}
+.wa-float:hover{transform:scale(1.1);box-shadow:0 6px 24px rgba(0,0,0,.25)}
+.wa-float svg{width:28px;height:28px;fill:#fff}
+/* Animations */
+@keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.anim-up{animation:fadeUp .4s ease-out both}
+.anim-in{animation:fadeIn .3s ease-out both}
 """
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -319,7 +328,8 @@ input:focus{border-color:var(--brand)}
     <button class="btn" type="submit">Sign In →</button>
   </form>
   <div class="lr">Need access? <a href="mailto:{{ email }}">Contact admin</a></div>
-</div></body></html>"""
+</div><a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
+</body></html>"""
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  DASHBOARD — tool selection homepage
@@ -348,8 +358,13 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .tool-card{background:var(--white);border:1.5px solid var(--border);
            border-radius:var(--radius);padding:22px 20px;
            text-decoration:none;color:var(--ink);
-           transition:all .2s;position:relative;overflow:hidden;display:block}
-.tool-card:hover{border-color:var(--brand);box-shadow:0 8px 32px rgba(29,78,216,.12);transform:translateY(-2px)}
+           transition:all .25s cubic-bezier(.4,0,.2,1);position:relative;overflow:hidden;display:block;
+           animation:fadeUp .5s ease-out both}
+.tool-card:nth-child(1){animation-delay:.05s}.tool-card:nth-child(2){animation-delay:.1s}
+.tool-card:nth-child(3){animation-delay:.15s}.tool-card:nth-child(4){animation-delay:.2s}
+.tool-card:nth-child(5){animation-delay:.25s}.tool-card:nth-child(6){animation-delay:.3s}
+.tool-card:nth-child(7){animation-delay:.35s}.tool-card:nth-child(8){animation-delay:.4s}
+.tool-card:hover{border-color:var(--brand);box-shadow:0 8px 32px rgba(29,78,216,.12);transform:translateY(-3px)}
 .tool-card.disabled{cursor:default;opacity:.7}
 .tool-card.disabled:hover{border-color:var(--border);box-shadow:none;transform:none}
 
@@ -397,7 +412,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   </div>
 </nav>
 
-<div class="hero">
+<div class="hero" style="animation:fadeUp .5s ease-out both">
   <div class="hero-badge">🇮🇳 Made for Indian CAs &amp; Accountants</div>
   <h1>Your Complete <em>CA Toolkit</em></h1>
   <p>Professional tools built by CA Article — designed to save hours of manual work every year.</p>
@@ -529,6 +544,10 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   </p>
   <p style="margin-top:10px;font-size:11px">© 2026 CA Toolkit · <a href="/privacy" style="color:#6B7280">Privacy Policy</a> · <span style="color:#EF4444">No refund after first upload is used</span></p>
 </footer>
+<a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support">
+  <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+</a>
+<a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
 </body></html>"""
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -561,7 +580,7 @@ h1 em{font-style:normal;color:var(--brand)}
       display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start}
 @media(max-width:768px){.main{grid-template-columns:1fr}}
 .card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
-      box-shadow:var(--shadow);overflow:hidden}
+      box-shadow:var(--shadow);overflow:hidden;animation:fadeUp .4s ease-out both}
 .card-head{padding:16px 20px;border-bottom:1px solid var(--border);
            display:flex;align-items:center;gap:10px}
 .card-head .icon{width:32px;height:32px;border-radius:8px;display:flex;
@@ -970,6 +989,7 @@ async function processFile(){
 function showStatus(t,m){const e=document.getElementById('status');e.className=t;e.innerHTML=m;e.style.display=m?'block':'none';}
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3000);}
 </script>
+<a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
 </body></html>"""
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3360,6 +3380,7 @@ calculateTax = (function(prev) {
 const _origCalculateTaxInner = window.calculateTax;
 
 </script>
+<a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
 </body></html>"""
 
 
@@ -3984,6 +4005,7 @@ function calculate(){
 // Init
 document.getElementById("mainSection").innerHTML = buildTDSOptions();
 </script>
+<a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
 </body></html>"""
 
 
@@ -4259,6 +4281,7 @@ function calcDep(){
   document.getElementById("resultSection").scrollIntoView({behavior:"smooth"});
 }
 </script>
+<a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
 </body></html>"""
 
 
@@ -4629,6 +4652,7 @@ function exportResults(){
   XLSX.writeFile(wb, "MSME_Disallowance_Analysis.xlsx");
 }
 </script>
+<a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
 </body></html>"""
 
 
@@ -5121,6 +5145,7 @@ function calcCG(){
 
 updateAssetUI();
 </script>
+<a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
 </body></html>"""
 
 
@@ -5284,6 +5309,7 @@ tr:hover td{background:#F9FAFB}
   <p class="footer-brand">CA Toolkit — Admin</p>
   <p>Created by CA Article</p>
 </footer>
+<a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
 </body></html>"""
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5883,9 +5909,21 @@ input[type=text]:focus{border-color:var(--brand)}
 function pickFile(inp, sfId){
   const sf=document.getElementById(sfId);
   if(inp.files.length){sf.textContent='✓ '+inp.files[0].name;sf.style.display='block';}
-  // Auto-detect state codes from ZIP
   if(sfId==='sf-gst' && inp.files[0]){detectStateCodes(inp.files[0]);}
 }
+
+// Drag-and-drop for GST upload zones
+document.querySelectorAll('.dropzone').forEach(dz => {
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('drag');
+    const f = e.dataTransfer.files[0]; if(!f) return;
+    const inp = dz.querySelector('input[type=file]');
+    const dt = new DataTransfer(); dt.items.add(f); inp.files = dt.files;
+    inp.dispatchEvent(new Event('change'));
+  });
+});
 
 async function detectStateCodes(file){
   // Read ZIP to find state code folders
@@ -5960,6 +5998,7 @@ async function doProcess(){
   finally{btn.disabled=false;sp.style.display='none';bt.textContent='⚡ Process & Download';}
 }
 </script>
+<a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
 </body></html>"""
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -7048,6 +7087,7 @@ select:focus,input:focus{outline:none;border-color:var(--brand)}
 .map-table th{padding:8px 10px;border-bottom:2px solid var(--border);font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:#F9FAFB;text-align:left}
 .map-table td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
 .map-table tr:hover td{background:#F9FAFB}
+@media(max-width:768px){#twoPanelWrap{grid-template-columns:1fr !important}}
 .acc-name{font-weight:600;color:var(--ink);font-size:12px}
 .acc-grp{font-size:10px;color:var(--muted)}
 .amt{font-weight:700;text-align:right;white-space:nowrap;font-size:12px}
@@ -7102,8 +7142,8 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
 <div class="page">
   <div class="steps">
     <div class="step-item active" id="s1"><span class="step-num">1</span>Upload</div>
-    <div class="step-item" id="s2"><span class="step-num">2</span>Review Mapping</div>
-    <div class="step-item" id="s2b"><span class="step-num">3</span>Capital &amp; FA</div>
+    <div class="step-item" id="s2b"><span class="step-num">2</span>Capital &amp; FA</div>
+    <div class="step-item" id="s2"><span class="step-num">3</span>Review Mapping</div>
     <div class="step-item" id="s3"><span class="step-num">4</span>Download</div>
   </div>
 
@@ -7145,7 +7185,7 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
           </div>
           <div class="field">
             <label>Client / Firm Name</label>
-            <input type="text" id="clientName" placeholder="e.g. Fashion Adda"/>
+            <input type="text" id="clientName" placeholder="XYZ Enterprises..."/>
           </div>
         </div>
         <div style="margin-top:18px">
@@ -7157,59 +7197,25 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
     </div>
   </div>
 
-  <!-- STEP 2 -->
-  <div id="step2" style="display:none">
-    <div class="card">
-      <div class="card-head"><div class="icon" style="background:#FEF3C7">🗂️</div>
-        <div><h2>Review &amp; Confirm Account Mapping</h2>
-          <p id="mapSub">Verify auto-detected heads — change any using the dropdown</p></div></div>
-      <div class="card-body">
-        <div id="tbFormatBox" style="padding:10px 14px;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;font-size:12px;color:#1E40AF;margin-bottom:14px"></div>
-        <div class="sum-grid" id="sumGrid"></div>
-        <div id="preChecks"></div>
-
-        <div style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-          <div style="font-size:12px;color:var(--muted)">
-            🟢 Auto-mapped &nbsp;|&nbsp; 🟡 Needs review &nbsp;|&nbsp; 🔴 Manual map needed &nbsp;|&nbsp; 🔵 You changed
-          </div>
-          <button class="btn-sec" onclick="expandAll()">Expand All Groups</button>
-        </div>
-
-        <div id="mappingArea"></div>
-
-        <div style="margin-top:20px;display:flex;gap:12px">
-          <button class="btn-sec" onclick="goStep(1)">← Back</button>
-          <button class="btn-main" id="generateBtn" onclick="goToCapFA()" style="flex:1">
-            ✅ Confirm Mapping → Next: Capital &amp; Fixed Assets
-          </button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- STEP 2.5: Capital Account & Fixed Assets -->
+  <!-- STEP 2 (now Capital & FA — shown first after upload) -->
   <div id="step2b" style="display:none">
     <div class="card">
       <div class="card-head"><div class="icon" style="background:#FEF3C7">📋</div>
         <div><h2>Capital Account &amp; Fixed Assets</h2>
-        <p>Enter additions, withdrawals (capital) and additions, sales (fixed assets) from ledger. These are NOT taken from Trial Balance.</p></div></div>
+        <p>Enter additions, withdrawals (capital) and additions, sales (fixed assets) from ledger.</p></div></div>
       <div class="card-body">
 
         <div style="background:#FEF3C7;border:1px solid #FDE68A;border-radius:10px;padding:12px 16px;font-size:12px;color:#92400E;margin-bottom:16px;line-height:1.7">
-          <strong>Why this step?</strong> The Trial Balance only has closing balances. Capital A/c needs opening + additions + withdrawals from the ledger. Same for Fixed Assets — additions &amp; sales come from ledger, not TB. Opening balances are read from your BS template.
+          <strong>Why this step?</strong> The Trial Balance only has closing balances. Capital A/c needs opening + additions + withdrawals from the ledger. Same for Fixed Assets — additions &amp; sales come from ledger, not TB.
         </div>
 
-        <!-- Capital Account Section -->
         <div style="margin-bottom:24px">
-          <h3 style="font-size:14px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px">
-            👤 Owner's Capital Account
-          </h3>
+          <h3 style="font-size:14px;font-weight:700;margin-bottom:10px">👤 Owner's Capital Account</h3>
           <div id="capTableWrap" style="overflow-x:auto">
             <p style="color:var(--muted);font-size:12px">Loading from BS template...</p>
           </div>
         </div>
 
-        <!-- Fixed Assets Section -->
         <div style="margin-bottom:20px">
           <h3 style="font-size:14px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px">
             🏭 Fixed Assets Chart
@@ -7221,8 +7227,48 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
         </div>
 
         <div style="display:flex;gap:12px">
-          <button class="btn-sec" onclick="goStep(2)">← Back to Mapping</button>
-          <button class="btn-main" onclick="doGenerate()" style="flex:1">
+          <button class="btn-sec" onclick="goStep(1)">← Back</button>
+          <button class="btn-main" style="flex:1" onclick="goStep(2)">
+            Next → Review Mapping
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 3 (Review Mapping — two-panel BS | P&L) -->
+  <div id="step2" style="display:none">
+    <div class="card">
+      <div class="card-head"><div class="icon" style="background:#EFF6FF">🗂️</div>
+        <div><h2>Review &amp; Confirm Account Mapping</h2>
+          <p id="mapSub">Verify auto-detected heads — change any using the dropdown</p></div></div>
+      <div class="card-body">
+        <div id="tbFormatBox" style="padding:10px 14px;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;font-size:12px;color:#1E40AF;margin-bottom:14px"></div>
+        <div class="sum-grid" id="sumGrid"></div>
+        <div id="preChecks"></div>
+
+        <div style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <div style="font-size:12px;color:var(--muted)">
+            🟢 Auto &nbsp;|&nbsp; 🟡 Review &nbsp;|&nbsp; 🔴 Manual &nbsp;|&nbsp; 🔵 Changed
+          </div>
+          <button class="btn-sec" onclick="expandAll()">Expand All Groups</button>
+        </div>
+
+        <!-- Two-panel layout -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="twoPanelWrap">
+          <div>
+            <div style="font-size:13px;font-weight:800;padding:8px 12px;background:#1E3A5F;color:#fff;border-radius:8px 8px 0 0;text-align:center">📊 Balance Sheet</div>
+            <div id="bsPanel" style="border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;max-height:70vh;overflow-y:auto"></div>
+          </div>
+          <div>
+            <div style="font-size:13px;font-weight:800;padding:8px 12px;background:#1E3A5F;color:#fff;border-radius:8px 8px 0 0;text-align:center">📈 Profit &amp; Loss</div>
+            <div id="plPanel" style="border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;max-height:70vh;overflow-y:auto"></div>
+          </div>
+        </div>
+
+        <div style="margin-top:20px;display:flex;gap:12px">
+          <button class="btn-sec" onclick="goStep('2b')">← Back</button>
+          <button class="btn-main" id="generateBtn" onclick="doGenerate()" style="flex:1">
             ✅ Generate Balance Sheet
           </button>
         </div>
@@ -7247,7 +7293,7 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
       <div class="card-body">
         <div id="resBox"></div>
         <div style="margin-top:18px;display:flex;gap:12px">
-          <button class="btn-sec" onclick="goStep('2b')">← Back</button>
+          <button class="btn-sec" onclick="goStep(2)">← Back to Mapping</button>
           <a id="dlBtn" class="btn-main" style="flex:1;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:8px" href="#">
             📥 Download Balance Sheet
           </a>
@@ -7305,24 +7351,29 @@ const HEAD_LABEL = Object.fromEntries(BS_HEADS.map(h=>[h.v, h.l]));
 // ═══════════════════════════════════════
 function goStep(n) {
   document.getElementById('step1').style.display = n===1?'block':'none';
-  document.getElementById('step2').style.display = n===2?'block':'none';
   document.getElementById('step2b').style.display = n==='2b'?'block':'none';
+  document.getElementById('step2').style.display = n===2?'block':'none';
   document.getElementById('step3').style.display = n===3?'block':'none';
   document.getElementById('loadWrap').style.display = 'none';
-  ['s1','s2','s2b','s3'].forEach(id=>{
+  // Step order: s1=1, s2b=2, s2=3, s3=4
+  const order = {s1:1, s2b:2, s2:3, s3:4};
+  const curVal = n===1?1 : n==='2b'?2 : n===2?3 : n===3?4 : 0;
+  ['s1','s2b','s2','s3'].forEach(id=>{
     const s = document.getElementById(id);
-    const order = {s1:1,s2:2,s2b:2.5,s3:3};
-    const cur = n==='2b'?2.5:n;
-    s.className = 'step-item' + (order[id]===cur?' active':(order[id]<cur?' done':''));
+    s.className = 'step-item' + (order[id]===curVal?' active':(order[id]<curVal?' done':''));
   });
   window.scrollTo({top:0,behavior:'smooth'});
 }
 
 // ═══════════════════════════════════════
-//  FILE UPLOAD
+//  FILE UPLOAD + DRAG & DROP
 // ═══════════════════════════════════════
 function onFile(inp, type) {
   const f = inp.files[0]; if(!f) return;
+  _setFile(f, type);
+}
+
+function _setFile(f, type) {
   if (type==='tb') {
     tbFile = f;
     document.getElementById('tbDone').style.display='block';
@@ -7336,6 +7387,25 @@ function onFile(inp, type) {
   }
   document.getElementById('analyseBtn').disabled = !(tbFile && bsFile);
 }
+
+// Drag-and-drop for both upload zones
+['tbZone','bsZone'].forEach(id => {
+  const zone = document.getElementById(id);
+  if (!zone) return;
+  const type = id === 'tbZone' ? 'tb' : 'bs';
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('drag');
+    const f = e.dataTransfer.files[0];
+    if (f && (f.name.endsWith('.xlsx') || f.name.endsWith('.xls'))) {
+      _setFile(f, type);
+      // Update the hidden input too
+      const dt = new DataTransfer(); dt.items.add(f);
+      zone.querySelector('input[type=file]').files = dt.files;
+    }
+  });
+});
 
 // ═══════════════════════════════════════
 //  ANALYSE
@@ -7363,14 +7433,20 @@ async function doAnalyse() {
     }
 
     analysisData = data;
-    // Initialise userMappings with auto-detected heads
     userMappings = {};
     (data.accounts || []).forEach(a => {
       userMappings[a.key] = a.bs_head || 'ignore';
     });
 
+    // Restore any saved mappings from sessionStorage (survives refresh)
+    try {
+      const saved = JSON.parse(sessionStorage.getItem('tb_mappings') || '{}');
+      Object.keys(saved).forEach(k => { if (saved[k] && userMappings.hasOwnProperty(k)) userMappings[k] = saved[k]; });
+    } catch(e) {}
+
     buildMappingUI(data);
-    goStep(2);
+    // Go to Capital & FA step first, then user proceeds to mapping
+    goToCapFA();
 
   } catch(e) {
     alert('Network error: '+e);
@@ -7395,14 +7471,12 @@ function buildMappingUI(data) {
   else if (netL) { colInfo = `Amount: <strong>${netL}</strong>`; }
   else { colInfo = `Amounts: <strong>auto</strong>`; }
 
-  // Format info
   document.getElementById('tbFormatBox').innerHTML =
     `<strong>📊 Detected:</strong> ${fi.format_type ? 'Format '+fi.format_type : 'Auto'} &nbsp;|&nbsp; ` +
     `Name col: <strong>${colLetter(fi.account_col)||'A'}</strong> &nbsp;|&nbsp; ` +
     colInfo + ` &nbsp;|&nbsp; ` +
     `<strong>${accts.length}</strong> accounts`;
 
-  // Summary
   const hi = accts.filter(a=>a.confidence==='high').length;
   const me = accts.filter(a=>a.confidence==='med').length;
   const lo = accts.filter(a=>a.confidence==='low').length;
@@ -7412,7 +7486,6 @@ function buildMappingUI(data) {
     <div class="sum-card"><div class="sum-val" style="color:#F59E0B">${me}</div><div class="sum-lbl">Review ⚠️</div></div>
     <div class="sum-card"><div class="sum-val" style="color:#EF4444">${lo}</div><div class="sum-lbl">Manual ❌</div></div>`;
 
-  // Pre-checks
   const checks = data.pre_checks || [];
   document.getElementById('preChecks').innerHTML = checks.map(c=>
     `<div style="padding:6px 12px;border-radius:6px;font-size:12px;margin-bottom:6px;
@@ -7420,36 +7493,46 @@ function buildMappingUI(data) {
       border:1px solid ${c.ok?'#BBF7D0':'#FDE68A'}">${c.ok?'✅':'⚠️'} ${c.message}</div>`
   ).join('');
 
-  // Group accounts by bs_head
+  document.getElementById('mapSub').textContent =
+    `${accts.length} accounts · ${hi} auto-mapped · ${me+lo} need review`;
+
+  rebuildPanels();
+}
+
+// BS heads go in left panel, P&L heads in right panel
+const BS_HEAD_KEYS = ['capital','lt_borrowings','st_borrowings','trade_payables','other_cl',
+  'st_provisions','fixed_assets','investments','inventories','trade_rec','cash_bank','stla','other_ca'];
+const PL_HEAD_KEYS = ['revenue','opening_stock','purchases','direct_expenses',
+  'employee_expenses','finance_cost','depreciation','other_expenses','tax_expense'];
+
+function rebuildPanels() {
+  const accts = analysisData?.accounts || [];
+  // Use current userMappings
   const groups = {};
   accts.forEach(a => {
-    const h = a.bs_head || 'ignore';
+    const h = userMappings[a.key] || a.bs_head || 'ignore';
     if (!groups[h]) groups[h] = [];
     groups[h].push(a);
   });
 
-  const lowConf = accts.filter(a => a.confidence === 'low');
-  let html = '';
+  // Low confidence accounts (show at top of BS panel)
+  const lowConf = accts.filter(a => a.confidence === 'low' && !userMappings[a.key]);
 
-  // Show unclassified first
-  if (lowConf.length) {
-    html += buildGroup('❌ Needs Manual Mapping', lowConf, true);
-  }
-
-  // Show each head group
-  const ORDER = ['capital','lt_borrowings','st_borrowings','trade_payables','other_cl',
-    'st_provisions','fixed_assets','investments','inventories','trade_rec','cash_bank',
-    'stla','other_ca','revenue','opening_stock','purchases','direct_expenses',
-    'employee_expenses','finance_cost','depreciation','other_expenses','tax_expense','ignore'];
-
-  ORDER.forEach(h => {
-    const g = (groups[h]||[]).filter(a=>a.confidence!=='low');
-    if (g.length) html += buildGroup(HEAD_LABEL[h]||h, g, false);
+  let bsHtml = '';
+  if (lowConf.length) bsHtml += buildGroup('❌ Needs Manual Mapping', lowConf, true);
+  BS_HEAD_KEYS.forEach(h => {
+    const g = (groups[h]||[]).filter(a=>a.confidence!=='low' || userMappings[a.key]);
+    if (g.length) bsHtml += buildGroup(HEAD_LABEL[h]||h, g, false);
   });
+  if (groups['ignore']?.length) bsHtml += buildGroup('Ignored', groups['ignore'], false);
+  document.getElementById('bsPanel').innerHTML = bsHtml || '<p style="padding:16px;color:var(--muted);font-size:12px">No BS accounts</p>';
 
-  document.getElementById('mappingArea').innerHTML = html;
-  document.getElementById('mapSub').textContent =
-    `${accts.length} accounts · ${hi} auto-mapped · ${me+lo} need review`;
+  let plHtml = '';
+  PL_HEAD_KEYS.forEach(h => {
+    const g = (groups[h]||[]).filter(a=>a.confidence!=='low' || userMappings[a.key]);
+    if (g.length) plHtml += buildGroup(HEAD_LABEL[h]||h, g, false);
+  });
+  document.getElementById('plPanel').innerHTML = plHtml || '<p style="padding:16px;color:var(--muted);font-size:12px">No P&L accounts</p>';
 }
 
 function buildGroup(title, accounts, highlight) {
@@ -7512,9 +7595,11 @@ function expandAll() {
 function onMapChange(sel) {
   const key = sel.dataset.key;
   const val = sel.value;
-  // Always update the mapping store with the latest user selection
   userMappings[key] = val;
   sel.classList.add('changed');
+  // Auto-save to sessionStorage (zero server cost, survives refresh)
+  try { sessionStorage.setItem('tb_mappings', JSON.stringify(userMappings)); } catch(e) {}
+  rebuildPanels();
 }
 
 // ═══════════════════════════════════════
@@ -7523,13 +7608,7 @@ function onMapChange(sel) {
 let capData = null, faData = null;
 
 async function goToCapFA() {
-  // Save all mapping selections first
-  document.querySelectorAll('.map-sel').forEach(sel => {
-    const key = sel.dataset.key;
-    if (key) userMappings[key] = sel.value;
-  });
-
-  document.getElementById('step2').style.display = 'none';
+  document.getElementById('step1').style.display = 'none';
   document.getElementById('loadWrap').style.display = 'block';
   document.getElementById('loadMsg').textContent = 'Reading Capital Account & Fixed Assets from BS template...';
 
@@ -7541,10 +7620,11 @@ async function goToCapFA() {
     document.getElementById('loadWrap').style.display = 'none';
 
     if (data.status !== 'success') {
-      alert('Could not read BS template: ' + (data.message||''));
-      goStep('2b');
+      // If reading fails, still proceed — user can fill manually later
+      capData = null; faData = null;
       buildCapTable(null);
       buildFATable(null);
+      goStep('2b');
       return;
     }
 
@@ -7663,7 +7743,13 @@ function collectFAEntries() {
 //  GENERATE — sends ALL data to server
 // ═══════════════════════════════════════
 async function doGenerate() {
-  document.getElementById('step2b').style.display = 'none';
+  // Collect ALL current dropdown values
+  document.querySelectorAll('.map-sel').forEach(sel => {
+    const key = sel.dataset.key;
+    if (key) userMappings[key] = sel.value;
+  });
+
+  document.getElementById('step2').style.display = 'none';
   document.getElementById('loadWrap').style.display = 'block';
   document.getElementById('loadMsg').textContent = 'Applying mapping and injecting figures into Balance Sheet...';
 
@@ -7683,7 +7769,7 @@ async function doGenerate() {
 
     if (data.status !== 'success') {
       alert('Error: ' + data.message);
-      document.getElementById('step2b').style.display = 'block';
+      document.getElementById('step2').style.display = 'block';
       return;
     }
 
@@ -7692,7 +7778,7 @@ async function doGenerate() {
 
   } catch(e) {
     alert('Error: '+e);
-    document.getElementById('step2b').style.display = 'block';
+    document.getElementById('step2').style.display = 'block';
     document.getElementById('loadWrap').style.display = 'none';
   }
 }
@@ -7742,7 +7828,8 @@ function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&
     document.getElementById('analyseBtn').disabled=!(tbFile&&bsFile);
   });
 });
-</script></body></html>"""
+</script><a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
+</body></html>"""
 
 
 init_db()
