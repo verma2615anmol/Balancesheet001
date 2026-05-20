@@ -3687,10 +3687,9 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
           <div style="margin-bottom:10px;padding:8px 12px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:11px;color:#065F46">
             <strong>IT Act 2025 Reference:</strong> Section 394 (TCS) · Rule 219 (IT Rules 2026) · Challan 281
           </div>
-          <p><strong style="color:var(--ink)">📅 Deposit Due Date — General:</strong></p>
+          <p><strong style="color:var(--ink)">📅 Deposit Due Date:</strong></p>
           <p>Collections <strong>April – February</strong> → <strong>7th of following month</strong></p>
-          <p>Collections in <strong>March</strong> → <strong>30th April</strong> of next FY</p>
-          <p>Govt office <strong>without challan</strong> → Same day · <strong>with challan</strong> → 7th of next month</p>
+          <p>Collections in <strong>March</strong> → <strong>7th April</strong> of next FY</p>
           <div style="margin:10px 0;border-top:1px solid var(--border)"></div>
           <p><strong style="color:var(--ink)">🗓️ Quarterly Return — Form 27EQ:</strong></p>
           <table style="width:100%;border-collapse:collapse;font-size:11px;margin:6px 0">
@@ -3706,16 +3705,6 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
               <tr><td style="padding:5px 8px;border:1px solid var(--border)">Q4</td><td style="padding:5px 8px;border:1px solid var(--border)">Jan – Mar</td><td style="padding:5px 8px;border:1px solid var(--border);font-weight:600;color:var(--ink)">15th May</td></tr>
             </tbody>
           </table>
-          <div style="margin:10px 0;border-top:1px solid var(--border)"></div>
-          <p><strong style="color:var(--ink)">📋 TCS Certificate — Form 27D:</strong></p>
-          <p>Issue within <strong>15 days</strong> from due date of 27EQ · Q1→30 Jul · Q2→30 Oct · Q3→30 Jan · Q4→30 May</p>
-          <div style="margin:10px 0;border-top:1px solid var(--border)"></div>
-          <p><strong style="color:var(--ink)">📍 Key Points (IT Act 2025 · Sec 394):</strong></p>
-          <p>• Buyer claims TCS credit in ITR or against advance tax via <strong>Challan 281</strong></p>
-          <p>• No TCS if valid lower collection certificate u/s 394(4) furnished</p>
-          <p>• TCS not applicable if transaction already subject to TDS</p>
-          <p>• Motor vehicles >₹10L: TCS at <strong>receipt of consideration</strong></p>
-          <p>• LRS/Tour package: TCS at <strong>debit of buyer's account or payment — whichever earlier</strong></p>
           <div style="margin-top:10px;padding:8px 12px;background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;font-size:11px">
             <strong style="color:#991B1B">⚠ Default Consequences:</strong><br>
             <span style="color:#991B1B">Non-collection/deposit: Interest <strong>1%/month</strong> u/s 394(6) · Fractional month = full month<br>
@@ -5853,11 +5842,26 @@ input[type=text]:focus{border-color:var(--brand)}
     <div class="card-body">
 
       <div class="info-box">
-        <strong>How to prepare your files:</strong><br>
-        <strong>📊 Sales Summary — 2 formats supported:</strong><br>
-        &nbsp;&nbsp;① <strong>Consolidated (most common):</strong> Month in col A, one <em>total sales</em> column for all branches. Leave column name blank or same for all states — tool auto-sums all GSTR 3B states and shows difference vs your total books figure.<br>
-        &nbsp;&nbsp;② <strong>Location-wise:</strong> Month in col A, separate column per branch/state. Map each state code to its column header.<br>
-        <strong>📁 GSTR 3B ZIP:</strong> ZIP with sub-folders named by 2-digit state code (e.g. 05/, 06/, 07/, 09/). GSTR 3B PDFs inside. Tool reads Table 3.1 A+B+C+E (excludes D — reverse charge).
+        <strong>📊 Sales Summary:</strong> Month in col A, sales value in col B (or separate column per branch/state).<br>
+        <strong>📁 GSTR 3B ZIP:</strong> ZIP with sub-folders named by 2-digit state code (e.g. 05/, 09/). GSTR 3B PDFs inside. Reads Table 3.1 A+B+C+E only (excludes D — reverse charge).
+      </div>
+
+      <!-- CONSOLIDATED CHECKBOX -->
+      <div class="field" style="margin-bottom:14px">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;font-weight:600;text-transform:none;letter-spacing:0">
+          <input type="checkbox" id="consolidated-chk" onchange="onConsolidatedChange()"
+            style="width:18px;height:18px;accent-color:var(--brand);cursor:pointer;flex-shrink:0"/>
+          <span>
+            <strong>Consolidated Sales Data</strong>
+            <span style="font-weight:400;color:var(--muted);margin-left:6px">— tick if your Excel has ONE total column for all branches combined</span>
+          </span>
+        </label>
+        <div id="consolidated-hint" style="display:none;margin-top:8px;padding:8px 12px;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;font-size:12px;color:#1E40AF">
+          ✅ <strong>Consolidated mode:</strong> Tool will compare your single total sales figure against the <em>sum of all GSTR 3B states</em> combined. No column mapping needed.
+        </div>
+        <div id="split-hint" style="margin-top:8px;padding:8px 12px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:12px;color:#065F46">
+          📍 <strong>Location-wise mode:</strong> Map each state code to its column header in your Excel below.
+        </div>
       </div>
 
       <div class="field">
@@ -5880,14 +5884,19 @@ input[type=text]:focus{border-color:var(--brand)}
         </div>
       </div>
 
-      <div class="field">
+      <div class="field" id="mapping-field">
         <label>State Code → Sales Column Mapping</label>
         <p class="hint" style="margin-bottom:8px">
-          <strong>Consolidated sales?</strong> Leave all column fields blank (or same name for all states). Tool auto-compares total GSTR 3B vs your total sales figure.<br>
-          <strong>Location-wise sales?</strong> Enter exact column header from your Excel for each state (e.g. DRH/LDH, HOSUR, RUDRAPUR).
+          Enter the exact column header from your Excel for each state code (e.g. DRH/LDH, HOSUR, RUDRAPUR).
         </p>
         <div id="mapping-container"></div>
         <button id="add-mapping" onclick="addMapping()">+ Add Mapping</button>
+      </div>
+
+      <div class="field" id="consolidated-col-field" style="display:none">
+        <label>Column Name in your Excel (Sales column header)</label>
+        <input type="text" id="consolidated-col-input" placeholder="e.g. Total Sales, Sales, ALL PLANTS — leave blank to auto-detect first numeric column"/>
+        <p class="hint">Enter the exact header of the column containing total sales. Leave blank to auto-detect.</p>
       </div>
 
       <div class="field">
@@ -6016,6 +6025,14 @@ async function detectStateCodes(file){
   }
 }
 
+function onConsolidatedChange(){
+  const chk = document.getElementById('consolidated-chk').checked;
+  document.getElementById('consolidated-hint').style.display      = chk ? 'block' : 'none';
+  document.getElementById('split-hint').style.display             = chk ? 'none'  : 'block';
+  document.getElementById('mapping-field').style.display          = chk ? 'none'  : 'block';
+  document.getElementById('consolidated-col-field').style.display = chk ? 'block' : 'none';
+}
+
 function addMapping(code,col){
   const container=document.getElementById('mapping-container');
   const div=document.createElement('div');div.className='mapping-row';
@@ -6035,6 +6052,15 @@ async function doProcess(){
   const gstFile=document.getElementById('file-gst').files[0];
   if(!salesFile){showStatus('error','✗ Please upload your Sales Summary Excel file.');return;}
   if(!gstFile){showStatus('error','✗ Please upload your GSTR 3B ZIP file.');return;}
+
+  // If consolidated mode — inject a single mapping with the col name
+  const isConsolidated = document.getElementById('consolidated-chk').checked;
+  if(isConsolidated){
+    const colName = (document.getElementById('consolidated-col-input').value||'consolidated').trim();
+    // Clear normal mappings and add a single consolidated marker
+    fd.append('consolidated_mode', 'true');
+    fd.append('consolidated_col', colName);
+  }
 
   // Collect mappings
   const rows=document.querySelectorAll('.mapping-row');
@@ -6317,13 +6343,21 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
     all_state_codes = sorted(gst_data.keys())
 
     # ── Detect consolidated vs split-by-location mode ───────────────────────
+    # Handle explicit consolidated flag from frontend checkbox
+    forced_consolidated = "__consolidated__" in mappings
+    consolidated_hint   = mappings.pop("__consolidated__", "") if forced_consolidated else ""
+
     non_empty_cols = [v.strip() for v in mappings.values() if v and v.strip()]
-    is_consolidated = (not non_empty_cols or
+    is_consolidated = forced_consolidated or (not non_empty_cols or
                        len(set(c.lower() for c in non_empty_cols)) == 1)
 
     # Resolve consolidated column name
     consolidated_col = None
     if is_consolidated:
+        # Use explicit column name from checkbox field if provided
+        if forced_consolidated and consolidated_hint and consolidated_hint != "__auto__":
+            matched = next((h for h in col_headers if h.lower()==consolidated_hint.lower()), consolidated_hint)
+            non_empty_cols = [matched]
         if non_empty_cols:
             # Case-insensitive match against actual headers
             raw = non_empty_cols[0]
@@ -6549,8 +6583,14 @@ def gst_process():
         except:
             return jsonify({"status": "error", "message": "Invalid mapping data."})
 
+        # Handle consolidated checkbox
+        consolidated_mode = request.form.get("consolidated_mode", "").lower() == "true"
+        consolidated_col  = request.form.get("consolidated_col", "").strip()
+        if consolidated_mode:
+            mappings["__consolidated__"] = consolidated_col or "__auto__"
+
         if not mappings:
-            return jsonify({"status": "error", "message": "Please provide at least one state-column mapping."})
+            return jsonify({"status": "error", "message": "Please provide at least one state-column mapping or tick Consolidated Sales."})
 
         on = request.form.get("output_name", "").strip()
         h = uuid.uuid4().hex
