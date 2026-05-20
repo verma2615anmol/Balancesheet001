@@ -7087,7 +7087,7 @@ select:focus,input:focus{outline:none;border-color:var(--brand)}
 .map-table th{padding:8px 10px;border-bottom:2px solid var(--border);font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:#F9FAFB;text-align:left}
 .map-table td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
 .map-table tr:hover td{background:#F9FAFB}
-@media(max-width:768px){#twoPanelWrap{grid-template-columns:1fr !important}}
+@media(max-width:768px){[id="twoPanelWrap"]{grid-template-columns:1fr !important}}
 .acc-name{font-weight:600;color:var(--ink);font-size:12px}
 .acc-grp{font-size:10px;color:var(--muted)}
 .amt{font-weight:700;text-align:right;white-space:nowrap;font-size:12px}
