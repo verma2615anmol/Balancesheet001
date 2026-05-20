@@ -7087,7 +7087,6 @@ select:focus,input:focus{outline:none;border-color:var(--brand)}
 .map-table th{padding:8px 10px;border-bottom:2px solid var(--border);font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:#F9FAFB;text-align:left}
 .map-table td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
 .map-table tr:hover td{background:#F9FAFB}
-@media(max-width:768px){[id="twoPanelWrap"]{grid-template-columns:1fr !important}}
 .acc-name{font-weight:600;color:var(--ink);font-size:12px}
 .acc-grp{font-size:10px;color:var(--muted)}
 .amt{font-weight:700;text-align:right;white-space:nowrap;font-size:12px}
@@ -7254,17 +7253,13 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
           <button class="btn-sec" onclick="expandAll()">Expand All Groups</button>
         </div>
 
-        <!-- Two-panel layout -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="twoPanelWrap">
-          <div>
-            <div style="font-size:13px;font-weight:800;padding:8px 12px;background:#1E3A5F;color:#fff;border-radius:8px 8px 0 0;text-align:center">📊 Balance Sheet</div>
-            <div id="bsPanel" style="border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;max-height:70vh;overflow-y:auto"></div>
-          </div>
-          <div>
-            <div style="font-size:13px;font-weight:800;padding:8px 12px;background:#1E3A5F;color:#fff;border-radius:8px 8px 0 0;text-align:center">📈 Profit &amp; Loss</div>
-            <div id="plPanel" style="border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;max-height:70vh;overflow-y:auto"></div>
-          </div>
+        <!-- Tab-based BS | P&L layout -->
+        <div style="display:flex;gap:0;margin-bottom:16px">
+          <button id="tabBS" onclick="switchTab('bs')" style="flex:1;padding:12px;font-size:14px;font-weight:700;border:2px solid var(--brand);border-radius:10px 0 0 10px;cursor:pointer;background:var(--brand);color:#fff;transition:all .2s">📊 Balance Sheet</button>
+          <button id="tabPL" onclick="switchTab('pl')" style="flex:1;padding:12px;font-size:14px;font-weight:700;border:2px solid var(--brand);border-left:none;border-radius:0 10px 10px 0;cursor:pointer;background:#fff;color:var(--brand);transition:all .2s">📈 Profit &amp; Loss</button>
         </div>
+        <div id="bsPanel" style="max-height:65vh;overflow-y:auto"></div>
+        <div id="plPanel" style="max-height:65vh;overflow-y:auto;display:none"></div>
 
         <div style="margin-top:20px;display:flex;gap:12px">
           <button class="btn-sec" onclick="goStep('2b')">← Back</button>
@@ -7507,7 +7502,7 @@ const PL_HEAD_KEYS = ['revenue','opening_stock','purchases','direct_expenses',
 
 function rebuildPanels() {
   const accts = analysisData?.accounts || [];
-  // Use current userMappings
+  // Group by CURRENT userMappings value
   const groups = {};
   accts.forEach(a => {
     const h = userMappings[a.key] || a.bs_head || 'ignore';
@@ -7515,29 +7510,28 @@ function rebuildPanels() {
     groups[h].push(a);
   });
 
-  // Low confidence accounts (show at top of BS panel)
-  const lowConf = accts.filter(a => a.confidence === 'low' && !userMappings[a.key]);
+  // Low confidence accounts with no user override
+  const lowConf = accts.filter(a => a.confidence === 'low' && !(userMappings[a.key] && userMappings[a.key] !== 'ignore'));
 
   let bsHtml = '';
-  if (lowConf.length) bsHtml += buildGroup('❌ Needs Manual Mapping', lowConf, true);
+  if (lowConf.length) bsHtml += buildGroup('❌ Needs Manual Mapping', lowConf, true, true);
   BS_HEAD_KEYS.forEach(h => {
-    const g = (groups[h]||[]).filter(a=>a.confidence!=='low' || userMappings[a.key]);
-    if (g.length) bsHtml += buildGroup(HEAD_LABEL[h]||h, g, false);
+    const g = groups[h] || [];
+    if (g.length) bsHtml += buildGroup(HEAD_LABEL[h]||h, g, false, false);
   });
-  if (groups['ignore']?.length) bsHtml += buildGroup('Ignored', groups['ignore'], false);
+  if (groups['ignore']?.length) bsHtml += buildGroup('Ignored', groups['ignore'], false, false);
   document.getElementById('bsPanel').innerHTML = bsHtml || '<p style="padding:16px;color:var(--muted);font-size:12px">No BS accounts</p>';
 
   let plHtml = '';
   PL_HEAD_KEYS.forEach(h => {
-    const g = (groups[h]||[]).filter(a=>a.confidence!=='low' || userMappings[a.key]);
-    if (g.length) plHtml += buildGroup(HEAD_LABEL[h]||h, g, false);
+    const g = groups[h] || [];
+    if (g.length) plHtml += buildGroup(HEAD_LABEL[h]||h, g, false, false);
   });
   document.getElementById('plPanel').innerHTML = plHtml || '<p style="padding:16px;color:var(--muted);font-size:12px">No P&L accounts</p>';
 }
 
-function buildGroup(title, accounts, highlight) {
+function buildGroup(title, accounts, highlight, startExpanded) {
   const total = accounts.reduce((s,a)=>s+Math.abs(a.net||0),0);
-  const opts = BS_HEADS.map(h=>`<option value="${h.v}">${h.l}</option>`).join('');
   const rows = accounts.map(a => {
     const net = a.net || 0;
     const amtCls = net < 0 ? 'cr' : 'dr';
@@ -7548,9 +7542,10 @@ function buildGroup(title, accounts, highlight) {
                : conf==='user' ? '<span class="conf-pill conf-user">🔵 User</span>'
                :                 '<span class="conf-pill conf-low">❌ Manual</span>';
 
-    // Build select with correct option selected
+    // Use CURRENT mapping from userMappings for selected value
+    const currentHead = userMappings[a.key] || a.bs_head || 'ignore';
     const selOpts = BS_HEADS.map(h =>
-      `<option value="${h.v}"${a.bs_head===h.v?' selected':''}>${h.l}</option>`
+      `<option value="${h.v}"${currentHead===h.v?' selected':''}>${h.l}</option>`
     ).join('');
 
     return `<tr>
@@ -7566,13 +7561,15 @@ function buildGroup(title, accounts, highlight) {
   const bg = highlight ? '#FFFBEB' : '#FAFAFA';
   const border = highlight ? '1px solid #FDE68A' : '1px solid var(--border)';
   const id = 'grp_' + title.replace(/[^a-z0-9]/gi,'_');
+  const collapsed = startExpanded ? '' : 'display:none';
+  const arrow = startExpanded ? '▼' : '▶';
 
-  return `<div style="margin-bottom:14px;border-radius:10px;overflow:hidden;border:${border}">
-    <div style="padding:9px 14px;background:${bg};display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleGroup('${id}')">
-      <span style="font-size:12px;font-weight:700">${escHtml(title)}</span>
-      <span style="font-size:11px;color:var(--muted)">${accounts.length} accounts · ₹${Math.round(total).toLocaleString('en-IN')}</span>
+  return `<div style="margin-bottom:8px;border-radius:8px;overflow:hidden;border:${border}">
+    <div style="padding:10px 14px;background:${bg};display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none" onclick="toggleGroup('${id}',this)">
+      <span style="font-size:13px;font-weight:700"><span class="grp-arrow">${arrow}</span> ${escHtml(title)}</span>
+      <span style="font-size:12px;font-weight:600;color:var(--ink)">₹${Math.round(total).toLocaleString('en-IN')} <span style="color:var(--muted);font-weight:400">(${accounts.length})</span></span>
     </div>
-    <div id="${id}">
+    <div id="${id}" style="${collapsed}">
       <table class="map-table">
         <thead><tr><th>Account Name</th><th style="text-align:right">Balance</th><th>Status</th><th>Map To BS Head</th></tr></thead>
         <tbody>${rows}</tbody>
@@ -7581,12 +7578,36 @@ function buildGroup(title, accounts, highlight) {
   </div>`;
 }
 
-function toggleGroup(id) {
+function toggleGroup(id, headerEl) {
   const el = document.getElementById(id);
-  if (el) el.style.display = el.style.display==='none' ? '' : 'none';
+  if (!el) return;
+  const showing = el.style.display === 'none';
+  el.style.display = showing ? '' : 'none';
+  // Update arrow
+  if (headerEl) {
+    const arrow = headerEl.querySelector('.grp-arrow');
+    if (arrow) arrow.textContent = showing ? '▼' : '▶';
+  }
 }
 function expandAll() {
-  document.querySelectorAll('[id^="grp_"]').forEach(el=>el.style.display='');
+  document.querySelectorAll('[id^="grp_"]').forEach(el => { el.style.display = ''; });
+  document.querySelectorAll('.grp-arrow').forEach(el => { el.textContent = '▼'; });
+}
+
+function switchTab(tab) {
+  const bsP = document.getElementById('bsPanel');
+  const plP = document.getElementById('plPanel');
+  const bsB = document.getElementById('tabBS');
+  const plB = document.getElementById('tabPL');
+  if (tab === 'bs') {
+    bsP.style.display = ''; plP.style.display = 'none';
+    bsB.style.background = 'var(--brand)'; bsB.style.color = '#fff';
+    plB.style.background = '#fff'; plB.style.color = 'var(--brand)';
+  } else {
+    bsP.style.display = 'none'; plP.style.display = '';
+    plB.style.background = 'var(--brand)'; plB.style.color = '#fff';
+    bsB.style.background = '#fff'; bsB.style.color = 'var(--brand)';
+  }
 }
 
 // ═══════════════════════════════════════
