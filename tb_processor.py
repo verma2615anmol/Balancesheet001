@@ -523,6 +523,7 @@ def _detect_columns(rows, sheet_name):
 
         accounts.append({
             "row": ri,
+            "key": f"{acct_name}_{ri}",   # unique key for JS mapping
             "name": acct_name,
             "group": current_group,  # parent group for classification hint
             "debit": dr_amt,
