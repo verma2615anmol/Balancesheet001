@@ -3683,11 +3683,44 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
           <p><strong style="color:var(--ink)">Sec 194IA/194IB/194M/194S:</strong> 30 days from end of deduction month</p>
           <p style="margin-top:8px;color:var(--red)"><strong>Late interest:</strong> 1.5% per month · Fractional month = full month</p>
         </div>
-        <div id="tcsduedates" style="display:none;font-size:12px;line-height:2;color:var(--muted)">
-          <p><strong style="color:var(--ink)">April – February:</strong> 7th of the following month</p>
-          <p><strong style="color:var(--ink)">March collections:</strong> 30th April</p>
-          <p><strong style="color:var(--ink)">Collected by Govt office:</strong> Same day (no challan) or 7th next month (with challan)</p>
-          <p style="margin-top:8px;color:var(--red)"><strong>Late interest:</strong> 1% per month · Fractional month = full month</p>
+        <div id="tcsduedates" style="display:none;font-size:12px;line-height:1.9;color:var(--muted)">
+          <div style="margin-bottom:10px;padding:8px 12px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:11px;color:#065F46">
+            <strong>IT Act 2025 Reference:</strong> Section 394 (TCS) · Rule 219 (IT Rules 2026) · Challan 281
+          </div>
+          <p><strong style="color:var(--ink)">📅 Deposit Due Date — General:</strong></p>
+          <p>Collections <strong>April – February</strong> → <strong>7th of following month</strong></p>
+          <p>Collections in <strong>March</strong> → <strong>30th April</strong> of next FY</p>
+          <p>Govt office <strong>without challan</strong> → Same day · <strong>with challan</strong> → 7th of next month</p>
+          <div style="margin:10px 0;border-top:1px solid var(--border)"></div>
+          <p><strong style="color:var(--ink)">🗓️ Quarterly Return — Form 27EQ:</strong></p>
+          <table style="width:100%;border-collapse:collapse;font-size:11px;margin:6px 0">
+            <thead><tr style="background:#F9FAFB">
+              <th style="padding:5px 8px;border:1px solid var(--border);text-align:left">Quarter</th>
+              <th style="padding:5px 8px;border:1px solid var(--border);text-align:left">Period</th>
+              <th style="padding:5px 8px;border:1px solid var(--border);text-align:left">Due Date</th>
+            </tr></thead>
+            <tbody>
+              <tr><td style="padding:5px 8px;border:1px solid var(--border)">Q1</td><td style="padding:5px 8px;border:1px solid var(--border)">Apr – Jun</td><td style="padding:5px 8px;border:1px solid var(--border);font-weight:600;color:var(--ink)">15th July</td></tr>
+              <tr><td style="padding:5px 8px;border:1px solid var(--border)">Q2</td><td style="padding:5px 8px;border:1px solid var(--border)">Jul – Sep</td><td style="padding:5px 8px;border:1px solid var(--border);font-weight:600;color:var(--ink)">15th October</td></tr>
+              <tr><td style="padding:5px 8px;border:1px solid var(--border)">Q3</td><td style="padding:5px 8px;border:1px solid var(--border)">Oct – Dec</td><td style="padding:5px 8px;border:1px solid var(--border);font-weight:600;color:var(--ink)">15th January</td></tr>
+              <tr><td style="padding:5px 8px;border:1px solid var(--border)">Q4</td><td style="padding:5px 8px;border:1px solid var(--border)">Jan – Mar</td><td style="padding:5px 8px;border:1px solid var(--border);font-weight:600;color:var(--ink)">15th May</td></tr>
+            </tbody>
+          </table>
+          <div style="margin:10px 0;border-top:1px solid var(--border)"></div>
+          <p><strong style="color:var(--ink)">📋 TCS Certificate — Form 27D:</strong></p>
+          <p>Issue within <strong>15 days</strong> from due date of 27EQ · Q1→30 Jul · Q2→30 Oct · Q3→30 Jan · Q4→30 May</p>
+          <div style="margin:10px 0;border-top:1px solid var(--border)"></div>
+          <p><strong style="color:var(--ink)">📍 Key Points (IT Act 2025 · Sec 394):</strong></p>
+          <p>• Buyer claims TCS credit in ITR or against advance tax via <strong>Challan 281</strong></p>
+          <p>• No TCS if valid lower collection certificate u/s 394(4) furnished</p>
+          <p>• TCS not applicable if transaction already subject to TDS</p>
+          <p>• Motor vehicles >₹10L: TCS at <strong>receipt of consideration</strong></p>
+          <p>• LRS/Tour package: TCS at <strong>debit of buyer's account or payment — whichever earlier</strong></p>
+          <div style="margin-top:10px;padding:8px 12px;background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;font-size:11px">
+            <strong style="color:#991B1B">⚠ Default Consequences:</strong><br>
+            <span style="color:#991B1B">Non-collection/deposit: Interest <strong>1%/month</strong> u/s 394(6) · Fractional month = full month<br>
+            Late 27EQ filing: <strong>₹200/day</strong> u/s 267 (max = TCS amount)</span>
+          </div>
         </div>
       </div>
     </div>
@@ -4842,13 +4875,25 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
           <p class="hint">Amount claimed under selected exemption</p>
         </div>
 
-        <div class="field">
-          <label>Assessee Type</label>
-          <select id="assesseeType">
-            <option value="individual">Individual / HUF</option>
-            <option value="firm">Firm / LLP</option>
-            <option value="company">Company</option>
-          </select>
+        <div class="row2">
+          <div class="field">
+            <label>Tax Year (Previous Year)</label>
+            <select id="taxYear" onchange="updateCIITable()">
+              <option value="2025-26" selected>PY 2025-26 (AY 2026-27)</option>
+              <option value="2026-27">PY 2026-27 (AY 2027-28) · Future</option>
+              <option value="2024-25">PY 2024-25 (AY 2025-26)</option>
+              <option value="2023-24">PY 2023-24 (AY 2024-25)</option>
+            </select>
+            <p class="hint">FY in which asset is sold / will be sold</p>
+          </div>
+          <div class="field">
+            <label>Assessee Type</label>
+            <select id="assesseeType">
+              <option value="individual">Individual / HUF</option>
+              <option value="firm">Firm / LLP</option>
+              <option value="company">Company</option>
+            </select>
+          </div>
         </div>
 
         <button class="btn" onclick="calcCG()">Calculate Capital Gains →</button>
@@ -4956,7 +5001,26 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
 // CII table
 const CII = {2001:100,2002:105,2003:109,2004:113,2005:117,2006:122,2007:129,2008:137,
              2009:148,2010:167,2011:184,2012:200,2013:220,2014:240,2015:254,2016:264,
-             2017:272,2018:280,2019:289,2020:301,2021:317,2022:331,2023:348,2024:363,2025:380,2026:380};
+             2017:272,2018:280,2019:289,2020:301,2021:317,2022:331,2023:348,2024:363,
+             2025:380, 2026:400}; // CII 2026 = estimated, not yet notified by CBDT
+
+const TAX_YEAR_FY = {"2023-24":2023,"2024-25":2024,"2025-26":2025,"2026-27":2026};
+const TAX_YEAR_AY = {"2023-24":"AY 2024-25","2024-25":"AY 2025-26","2025-26":"AY 2026-27","2026-27":"AY 2027-28"};
+
+function getSelectedSaleFY(){
+  const el = document.getElementById("taxYear");
+  return TAX_YEAR_FY[(el||{value:"2025-26"}).value] || 2025;
+}
+
+function updateCIITable(){
+  const saleFY = getSelectedSaleFY();
+  document.querySelectorAll(".cii-table tr").forEach(tr=>{
+    const c = tr.cells[0]; if(!c) return;
+    const yr = parseInt((c.textContent||"").replace("FY ","").split("-")[0]);
+    tr.classList.toggle("highlight", yr === saleFY);
+  });
+  if(document.getElementById("cgResults").style.display !== "none") calcCG();
+}
 
 const fmt   = n => "₹"+Math.round(n).toLocaleString("en-IN");
 const fmtPct= n => n.toFixed(2)+"%";
@@ -5001,7 +5065,10 @@ function calcCG(){
 
   const months = holdingMonths(pd,sd);
   const pyFY   = getFY(pd);
-  const syFY   = getFY(sd);
+  const selectedTY  = (document.getElementById("taxYear")||{value:"2025-26"}).value||"2025-26";
+  const syFY        = getSelectedSaleFY();
+  const ayLabel     = TAX_YEAR_AY[selectedTY]||"AY 2026-27";
+  const isFutureTY  = selectedTY === "2026-27";
 
   // Determine LTCG/STCG threshold
   let ltcgMonths = 24;
@@ -5057,7 +5124,10 @@ function calcCG(){
   // ── Render results ─────────────────────────────────────────────────────────
   document.getElementById("cgTypeLabel").innerHTML =
     `<span style="background:${isLTCG?"#EFF6FF":"#FFFBEB"};color:${isLTCG?"var(--brand)":"#92400E"};
-     padding:4px 12px;border-radius:99px;font-size:12px">${cgType} · ${months} months holding</span>`;
+     padding:4px 12px;border-radius:99px;font-size:12px">${cgType} · ${months} months holding</span>
+     <span style="margin-left:8px;background:#F0FDF4;color:#065F46;padding:4px 12px;border-radius:99px;font-size:12px;font-weight:600">
+       ${selectedTY} (${ayLabel})${isFutureTY?" · Projected":""}
+     </span>`;
 
   // Compare grid
   let compareHTML = "";
@@ -5784,8 +5854,10 @@ input[type=text]:focus{border-color:var(--brand)}
 
       <div class="info-box">
         <strong>How to prepare your files:</strong><br>
-        <strong>Sales Summary:</strong> Excel with Month in col A, then one column per plant/location. First data row should have month names (e.g. Apr-25, Dec-25).<br>
-        <strong>GSTR 3B ZIP:</strong> Create a ZIP with folders named by 2-digit state code (e.g. 03/, 09/, 33/). Put the GSTR 3B PDFs inside each folder. The tool reads Table 3.1 points A, B, C, E (excludes D — reverse charge).
+        <strong>📊 Sales Summary — 2 formats supported:</strong><br>
+        &nbsp;&nbsp;① <strong>Consolidated (most common):</strong> Month in col A, one <em>total sales</em> column for all branches. Leave column name blank or same for all states — tool auto-sums all GSTR 3B states and shows difference vs your total books figure.<br>
+        &nbsp;&nbsp;② <strong>Location-wise:</strong> Month in col A, separate column per branch/state. Map each state code to its column header.<br>
+        <strong>📁 GSTR 3B ZIP:</strong> ZIP with sub-folders named by 2-digit state code (e.g. 05/, 06/, 07/, 09/). GSTR 3B PDFs inside. Tool reads Table 3.1 A+B+C+E (excludes D — reverse charge).
       </div>
 
       <div class="field">
@@ -5810,7 +5882,10 @@ input[type=text]:focus{border-color:var(--brand)}
 
       <div class="field">
         <label>State Code → Sales Column Mapping</label>
-        <p class="hint" style="margin-bottom:8px">Map each GST state code to the corresponding column header in your sales file. The tool will auto-detect from the ZIP folder names.</p>
+        <p class="hint" style="margin-bottom:8px">
+          <strong>Consolidated sales?</strong> Leave all column fields blank (or same name for all states). Tool auto-compares total GSTR 3B vs your total sales figure.<br>
+          <strong>Location-wise sales?</strong> Enter exact column header from your Excel for each state (e.g. DRH/LDH, HOSUR, RUDRAPUR).
+        </p>
         <div id="mapping-container"></div>
         <button id="add-mapping" onclick="addMapping()">+ Add Mapping</button>
       </div>
@@ -6241,77 +6316,140 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
     all_months = sorted(sales_data.keys(), key=lambda x: _month_sort_key(x))
     all_state_codes = sorted(gst_data.keys())
 
-    # Validate mappings
-    valid_mappings = {}
-    for sc, col_name in mappings.items():
-        if not col_name:
-            log.append(f"⚠ State {sc}: no column name provided — skipped")
-            continue
-        if col_name in col_headers:
-            valid_mappings[sc] = col_name
+    # ── Detect consolidated vs split-by-location mode ───────────────────────
+    non_empty_cols = [v.strip() for v in mappings.values() if v and v.strip()]
+    is_consolidated = (not non_empty_cols or
+                       len(set(c.lower() for c in non_empty_cols)) == 1)
+
+    # Resolve consolidated column name
+    consolidated_col = None
+    if is_consolidated:
+        if non_empty_cols:
+            # Case-insensitive match against actual headers
+            raw = non_empty_cols[0]
+            consolidated_col = next((h for h in col_headers if h.lower()==raw.lower()), raw)
         else:
-            # Try case-insensitive match
-            for h in col_headers:
-                if h.lower() == col_name.lower():
-                    valid_mappings[sc] = h
+            # Auto-detect: first non-month column that has any data
+            for hdr in col_headers:
+                if hdr.lower() in ('month','months','period'):
+                    continue
+                if any(mdata.get(hdr,0) for mdata in sales_data.values()):
+                    consolidated_col = hdr
                     break
-            if sc not in valid_mappings:
-                log.append(f"⚠ Warning: Column '{col_name}' not found for state {sc}")
+        if consolidated_col:
+            log.append(f"✅ Consolidated mode — books column: '{consolidated_col}'")
+        else:
+            return {'status':'error','message':'Could not find sales data column. Please enter the column header name in at least one mapping row.'}
 
-    if not valid_mappings:
-        return {'status': 'error',
-                'message': 'No valid state-column mappings. Please enter the exact column header names from your sales file (e.g. DRH/LDH, LUCKNOW, RUDRAPUR, HOSUR).'}
+    # Build valid_mappings
+    valid_mappings = {}
+    if is_consolidated:
+        for sc in all_state_codes:
+            valid_mappings[sc] = consolidated_col
+    else:
+        for sc, col_name in mappings.items():
+            if not col_name or not col_name.strip():
+                continue
+            matched = next((h for h in col_headers if h.lower()==col_name.lower().strip()), None)
+            if matched:
+                valid_mappings[sc] = matched
+            else:
+                log.append(f"⚠ Column '{col_name}' not found for state {sc} — skipped")
+        if not valid_mappings:
+            return {'status':'error','message':'No valid mappings found. Check column header names match your Excel exactly.'}
 
-    log.append(f"Valid mappings: {', '.join(f'{k}→{v}' for k,v in valid_mappings.items())}")
+    log.append(f"Mode: {'Consolidated' if is_consolidated else 'Split'} · "
+               f"States: {', '.join(sorted(valid_mappings.keys()))}")
 
-    month_totals = {}  # {month: {books, gstr, tax}}
+    month_totals = {}
 
     for month in all_months:
         first_in_month = True
+
+        if is_consolidated:
+            # ── Consolidated: compare total books vs sum of all GSTR3B states ──
+            books_total = sales_data.get(month, {}).get(consolidated_col, 0.0)
+            gstr_t = tax_t = igst_t = cgst_t = sgst_t = 0.0
+            state_rows = []
+            for sc in all_state_codes:
+                ge = gst_data.get(sc, {}).get(month)
+                if not ge:
+                    continue
+                gstr_t += ge['taxable_value']; tax_t  += ge['total_tax']
+                igst_t += ge['igst'];          cgst_t += ge['cgst']; sgst_t += ge['sgst']
+                state_rows.append((sc, ge))
+
+            if not state_rows and books_total == 0:
+                continue
+
+            # Write individual GSTR3B state rows (no books column per state)
+            for sc, ge in state_rows:
+                vals = [month if first_in_month else '', sc,
+                        '', ge['taxable_value'], ge['total_tax'],
+                        '', '', ge['igst'], ge['cgst'], ge['sgst']]
+                for c, v in enumerate(vals, 1):
+                    cell = ws_out.cell(row=row_num, column=c, value=v)
+                    cell.font = data_font; cell.border = border
+                    if c >= 3 and v != '':
+                        cell.number_format = num_fmt
+                        cell.alignment = Alignment(horizontal='right')
+                    if c <= 2: cell.alignment = center
+                first_in_month = False; row_num += 1
+
+            # Consolidated totals row with difference
+            d1 = books_total - gstr_t
+            d2 = books_total - (gstr_t + tax_t)
+            sub_vals = [f'{month} Total (Books vs All GSTR3B)', '',
+                        books_total, gstr_t, tax_t, d1, d2, igst_t, cgst_t, sgst_t]
+            for c, v in enumerate(sub_vals, 1):
+                cell = ws_out.cell(row=row_num, column=c, value=v)
+                cell.font = Font(name='Arial', bold=True, size=10)
+                cell.fill = sub_fill; cell.border = border
+                if c >= 3:
+                    cell.number_format = num_fmt
+                    cell.alignment = Alignment(horizontal='right')
+                if c in (6, 7) and isinstance(v, (int, float)):
+                    col_c = 'CC0000' if v < -0.5 else ('006600' if v > 0.5 else '000000')
+                    cell.font = Font(name='Arial', bold=True, size=10, color=col_c)
+                    cell.fill = sub_fill
+            month_totals[month] = {'books':books_total,'gstr':gstr_t,'tax':tax_t,
+                                    'igst':igst_t,'cgst':cgst_t,'sgst':sgst_t}
+            row_num += 2
+            continue
+
+        # ── Split mode: per-state ─────────────────────────────────────────────
         for sc in all_state_codes:
             if sc not in valid_mappings:
                 continue
-            col_name = valid_mappings[sc]
+            col_name  = valid_mappings[sc]
             books_val = sales_data.get(month, {}).get(col_name, 0.0)
-            gst_entry = gst_data.get(sc, {}).get(month)
-
-            if gst_entry is None and books_val == 0:
+            ge        = gst_data.get(sc, {}).get(month)
+            if ge is None and books_val == 0:
                 continue
-
-            gstr_val = gst_entry['taxable_value'] if gst_entry else 0.0
-            tax_val = gst_entry['total_tax'] if gst_entry else 0.0
-            igst = gst_entry['igst'] if gst_entry else 0.0
-            cgst = gst_entry['cgst'] if gst_entry else 0.0
-            sgst = gst_entry['sgst'] if gst_entry else 0.0
-
+            gstr_val = ge['taxable_value'] if ge else 0.0
+            tax_val  = ge['total_tax']      if ge else 0.0
+            igst     = ge['igst']            if ge else 0.0
+            cgst     = ge['cgst']            if ge else 0.0
+            sgst     = ge['sgst']            if ge else 0.0
             diff1 = books_val - gstr_val
             diff2 = books_val - (gstr_val + tax_val)
-
-            # Track totals
             if month not in month_totals:
-                month_totals[month] = {'books': 0, 'gstr': 0, 'tax': 0, 'igst': 0, 'cgst': 0, 'sgst': 0}
-            month_totals[month]['books'] += books_val
-            month_totals[month]['gstr'] += gstr_val
-            month_totals[month]['tax'] += tax_val
-            month_totals[month]['igst'] += igst
-            month_totals[month]['cgst'] += cgst
-            month_totals[month]['sgst'] += sgst
-
-            vals = [month if first_in_month else '', sc, books_val, gstr_val, tax_val, diff1, diff2, igst, cgst, sgst]
+                month_totals[month] = {'books':0,'gstr':0,'tax':0,'igst':0,'cgst':0,'sgst':0}
+            month_totals[month]['books'] += books_val; month_totals[month]['gstr'] += gstr_val
+            month_totals[month]['tax']   += tax_val;   month_totals[month]['igst'] += igst
+            month_totals[month]['cgst']  += cgst;      month_totals[month]['sgst'] += sgst
+            vals = [month if first_in_month else '', sc, books_val,
+                    gstr_val, tax_val, diff1, diff2, igst, cgst, sgst]
             for c, v in enumerate(vals, 1):
                 cell = ws_out.cell(row=row_num, column=c, value=v)
-                cell.font = data_font
-                cell.border = border
+                cell.font = data_font; cell.border = border
                 if c >= 3:
                     cell.number_format = num_fmt
                     cell.alignment = Alignment(horizontal='right')
                 if c in (6, 7) and isinstance(v, (int, float)):
                     cell.font = diff_neg_font if v < -0.5 else (diff_pos_font if v > 0.5 else data_font)
-                if c <= 2:
-                    cell.alignment = center
-
-            first_in_month = False
-            row_num += 1
+                if c <= 2: cell.alignment = center
+            first_in_month = False; row_num += 1
 
         # Month subtotal
         if month in month_totals:
