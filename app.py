@@ -7184,19 +7184,56 @@ def tb_process():
 
         # Build tally summary for UI
         agg = result.get("aggregated", {})
-        total_assets = sum(agg.get(h, 0) for h in
-                           ["fixed_assets", "investments", "inventories",
-                            "trade_rec", "cash_bank", "stla", "other_ca"])
-        total_liab   = sum(agg.get(h, 0) for h in
-                           ["capital", "lt_borrowings", "st_borrowings",
-                            "trade_payables", "other_cl", "st_provisions"])
+
+        # Read actual totals from the generated BS output file
+        actual_assets = 0
+        actual_liab = 0
+        try:
+            from openpyxl import load_workbook as _lb
+            _wb = _lb(dest, read_only=True, data_only=True)
+            _ws = _wb[_wb.sheetnames[0]]  # BS sheet is usually first
+            for row in _ws.iter_rows(min_row=1, max_row=80, max_col=10, values_only=False):
+                for cell in row:
+                    val_str = str(cell.value or "").lower()
+                    if "total" in val_str:
+                        # Check next cells for numeric value
+                        r, c = cell.row, cell.column
+                        for cc in range(c+1, min(c+5, 10)):
+                            nv = _ws.cell(r, cc).value
+                            if isinstance(nv, (int, float)) and nv > 0:
+                                if actual_liab == 0:  # first total = liabilities (top of BS)
+                                    actual_liab = nv
+                                else:
+                                    actual_assets = nv
+                                break
+            _wb.close()
+        except:
+            pass
+
+        # If couldn't read from file, fall back to TB aggregation
+        if actual_assets == 0:
+            actual_assets = abs(sum(agg.get(h, 0) for h in
+                               ["fixed_assets", "investments", "inventories",
+                                "trade_rec", "cash_bank", "stla", "other_ca"]))
+        if actual_liab == 0:
+            actual_liab = abs(sum(agg.get(h, 0) for h in
+                              ["capital", "lt_borrowings", "st_borrowings",
+                               "trade_payables", "other_cl", "st_provisions"]))
+
+        # Compute profit from P&L heads in aggregated values
+        revenue = abs(agg.get("revenue", 0))
+        total_expenses = abs(sum(agg.get(h, 0) for h in
+                                 ["purchases", "direct_expenses", "employee_expenses",
+                                  "finance_cost", "depreciation", "other_expenses",
+                                  "tax_expense", "opening_stock"]))
+        profit = revenue - total_expenses
 
         tally = {
-            "total_assets":           round(total_assets, 2),
-            "total_liabilities":      round(total_liab, 2),
-            "difference":             round(abs(total_assets - total_liab), 2),
-            "balanced":               abs(total_assets - total_liab) < 100,
-            "profit":                 round(agg.get("profit", 0), 2),
+            "total_assets":           round(actual_assets, 2),
+            "total_liabilities":      round(actual_liab, 2),
+            "difference":             round(abs(actual_assets - actual_liab), 2),
+            "balanced":               abs(actual_assets - actual_liab) < 100,
+            "profit":                 round(profit, 2),
             "user_mappings_applied":  len(user_mapping),
         }
 
