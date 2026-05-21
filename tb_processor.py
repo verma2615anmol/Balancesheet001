@@ -64,6 +64,21 @@ BS_HEADS = {
         ],
         "negative_keywords": [],
     },
+    "advance_from_customer": {
+        # Credit-balance debtor → advance received from customer (liability)
+        # Shown under Sundry Creditors group as "Advance from Customer".
+        "label": "Advance from Customer",
+        "side": "liability",
+        "keywords": [
+            "advance from customer", "customer advance",
+            "advance received", "advance from buyer",
+            "advance from m/s", "advance from mr", "advance from ms",
+            "advance from ",  # generic fallback — catches "Advance from XYZ Ltd"
+        ],
+        "negative_keywords": [
+            "advance from supplier", "advance from vendor",
+        ],
+    },
     "other_cl": {
         "label": "Other Current Liabilities",
         "side": "liability",
@@ -160,7 +175,7 @@ BS_HEADS = {
         "side": "asset",
         "keywords": [
             "loan given", "advance to", "loan to",
-            "advance to supplier", "advance to staff", "staff advance",
+            "advance to staff", "staff advance",
             "prepaid", "deposit", "security deposit paid",
             "tds receivable", "tcs receivable", "input tax",
             "input cgst", "input sgst", "input igst", "gst input",
@@ -168,6 +183,19 @@ BS_HEADS = {
             "cenvat", "vat input", "excise input",
             "income tax refund", "refund receivable",
             "advance recoverable",
+        ],
+        "negative_keywords": ["advance from customer", "customer advance",
+                              "advance to supplier", "advance to customer",
+                              "supplier advance"],
+    },
+    "advance_to_supplier": {
+        # Debit-balance creditor → advance paid to supplier (asset)
+        # Listed under Sundry Debtors group as "Advance to Supplier / Customer".
+        "label": "Advance to Supplier",
+        "side": "asset",
+        "keywords": [
+            "advance to supplier", "advance to customer", "supplier advance",
+            "advance paid to supplier", "advance to vendor", "vendor advance",
         ],
         "negative_keywords": ["advance from customer", "customer advance"],
     },
@@ -260,6 +288,10 @@ BS_HEADS = {
 # Priority order for classification (most specific first)
 CLASSIFICATION_PRIORITY = [
     "depreciation",
+    # Sign-aware advance heads must be tried BEFORE generic creditor/debtor
+    # keywords so explicit "advance to supplier" names don't get pulled into
+    # trade_payables/stla generic buckets.
+    "advance_from_customer", "advance_to_supplier",
     "trade_payables", "trade_rec",
     "cash_bank", "inventories",
     "st_provisions",
@@ -710,17 +742,20 @@ def get_aggregated_values(classified_accounts):
         if head == "unclassified":
             continue
 
-        # ── Sign-aware reclassification ──────────────────────────────
-        # Creditor with debit balance = advance paid to supplier (asset)
+        # ── Sign-aware auto-reclassification ──────────────────────────
+        # Creditor with debit balance = advance paid to supplier (asset).
+        # Aggregate into stla, but flag with explicit UI head
+        # "advance_to_supplier" so the Review-Mapping page can show it.
         if head == "trade_payables" and net > 0:
             head = "stla"
-            acct["bs_head"]    = "stla"
+            acct["bs_head"]    = "advance_to_supplier"
             acct["reclassified_from"] = "trade_payables"
 
         # Debtor with credit balance = advance received from customer (liability)
+        # Aggregate into other_cl, flag as "advance_from_customer".
         elif head == "trade_rec" and net < 0:
             head = "other_cl"
-            acct["bs_head"]    = "other_cl"
+            acct["bs_head"]    = "advance_from_customer"
             acct["reclassified_from"] = "trade_rec"
 
         # Provision with DEBIT balance = receivable/advance (asset not liability)
@@ -730,6 +765,18 @@ def get_aggregated_values(classified_accounts):
             acct["bs_head"]      = "stla"
             acct["reclassified_from"] = "st_provisions"
             acct["stla_subtype"]  = "revenue_authority"  # flag for D127 row
+
+        # ── Explicit user-mapped advance heads ─────────────────────────
+        # When the user picks "Advance from Customer" / "Advance to Supplier"
+        # from the dropdown, the amount must feed the parent BS bucket while
+        # the injector still knows the origin via `reclassified_from`.
+        elif head == "advance_from_customer":
+            head = "other_cl"
+            acct["reclassified_from"] = acct.get("reclassified_from") or "trade_rec"
+
+        elif head == "advance_to_supplier":
+            head = "stla"
+            acct["reclassified_from"] = acct.get("reclassified_from") or "trade_payables"
 
         amt = abs(net)
         if head not in totals:
@@ -760,13 +807,68 @@ def get_aggregated_values(classified_accounts):
 def _is_formula(val):
     return isinstance(val, str) and val.strip().startswith("=")
 
-def _safe_set(ws, row, col, value):
-    """Write a plain numeric value only if the target cell is not a formula."""
+
+def _get_writable_cell(ws, row, col):
+    """
+    Return the writable cell at (row, col).
+    If the target is a MergedCell, return the top-left anchor of the merged range
+    (which is the only writable cell in that range). If no merged range is found,
+    returns None to indicate the cell cannot be written.
+    """
     cell = ws.cell(row=row, column=col)
-    if not _is_formula(cell.value):
+    if not isinstance(cell, MergedCell):
+        return cell
+    # Cell is part of a merged range — find the top-left anchor
+    for merged_range in ws.merged_cells.ranges:
+        if (merged_range.min_row <= row <= merged_range.max_row and
+            merged_range.min_col <= col <= merged_range.max_col):
+            anchor = ws.cell(row=merged_range.min_row, column=merged_range.min_col)
+            if not isinstance(anchor, MergedCell):
+                return anchor
+            return None
+    return None
+
+
+def _safe_set(ws, row, col, value):
+    """
+    Write a plain numeric value only if the target cell is not a formula.
+    MergedCell-aware: if the target is a MergedCell, write to the top-left anchor
+    of its merged range instead (provided the anchor isn't a formula).
+    Returns True on success, False otherwise.
+    """
+    try:
+        cell = _get_writable_cell(ws, row, col)
+        if cell is None:
+            return False
+        if _is_formula(cell.value):
+            return False
         cell.value = round(float(value), 2)
         return True
-    return False
+    except (AttributeError, TypeError, ValueError):
+        # Defensive: never let a single write blow up the entire pipeline
+        return False
+
+
+def _safe_write(ws, row, col, value):
+    """
+    Write any value (number, string, etc.) to the target cell safely.
+    MergedCell-aware (writes to the merged range's anchor cell).
+    Skips formula cells. Returns True on success, False otherwise.
+    Use this in place of direct `ws.cell(r, c).value = ...` assignments.
+    """
+    try:
+        cell = _get_writable_cell(ws, row, col)
+        if cell is None:
+            return False
+        if _is_formula(cell.value):
+            return False
+        if isinstance(value, (int, float)):
+            cell.value = round(float(value), 2)
+        else:
+            cell.value = value
+        return True
+    except (AttributeError, TypeError, ValueError):
+        return False
 
 
 def _detect_notes_structure(wb):
@@ -1195,9 +1297,11 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 if row not in written_rows and _fuzzy_match_name(acct["name"], tmpl_name):
                     best_row = row; break
             if best_row:
-                ws_det.cell(best_row, 4).value = round(abs(acct["net"]), 2)
-                injected.append(f"Details!D{best_row} ({acct['name']}) = {abs(acct['net']):,.2f}")
-                written_rows.add(best_row)
+                if _safe_write(ws_det, best_row, 4, abs(acct["net"])):
+                    injected.append(f"Details!D{best_row} ({acct['name']}) = {abs(acct['net']):,.2f}")
+                    written_rows.add(best_row)
+                else:
+                    skipped.append(f"Details!D{best_row} ({acct['name']}): cell is merged/formula")
             else:
                 unmatched_creditors.append(acct)
 
@@ -1209,9 +1313,12 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         for i, acct in enumerate(unmatched_creditors):
             if i < len(blank_rows):
                 r = blank_rows[i]
-                ws_det.cell(r, 2).value = acct["name"]
-                ws_det.cell(r, 4).value = round(abs(acct["net"]), 2)
-                injected.append(f"Details!D{r} (new: {acct['name']}) = {abs(acct['net']):,.2f}")
+                wrote_name = _safe_write(ws_det, r, 2, acct["name"])
+                wrote_amt  = _safe_write(ws_det, r, 4, abs(acct["net"]))
+                if wrote_amt:
+                    injected.append(f"Details!D{r} (new: {acct['name']}) = {abs(acct['net']):,.2f}")
+                else:
+                    skipped.append(f"Trade payable '{acct['name']}': row {r} is merged/formula")
             else:
                 skipped.append(f"Trade payable '{acct['name']}': no row in Details")
 
@@ -1225,16 +1332,18 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             for r in range(74, 90):
                 b = det_cache.get((r, 2))
                 if b and _fuzzy_match_name(acct["name"], str(b)) and r not in recv_written:
-                    ws_det.cell(r, 4).value = round(abs(acct["net"]), 2)
-                    injected.append(f"Details!D{r} ({acct['name']}) = {abs(acct['net']):,.2f}")
-                    recv_written.add(r); placed = True; break
+                    if _safe_write(ws_det, r, 4, abs(acct["net"])):
+                        injected.append(f"Details!D{r} ({acct['name']}) = {abs(acct['net']):,.2f}")
+                        recv_written.add(r); placed = True
+                    break
             if not placed:
                 for r in range(74, 90):
                     if det_cache.get((r, 4)) is None and det_cache.get((r, 2)) is None and r not in recv_written:
-                        ws_det.cell(r, 2).value = acct["name"]
-                        ws_det.cell(r, 4).value = round(abs(acct["net"]), 2)
-                        injected.append(f"Details!D{r} (recv: {acct['name']}) = {abs(acct['net']):,.2f}")
-                        recv_written.add(r); break
+                        _safe_write(ws_det, r, 2, acct["name"])
+                        if _safe_write(ws_det, r, 4, abs(acct["net"])):
+                            injected.append(f"Details!D{r} (recv: {acct['name']}) = {abs(acct['net']):,.2f}")
+                            recv_written.add(r)
+                        break
 
         # NOTE: LT borrowings are written to notes to bs!D8 directly (Section 2 above).
         # Do NOT also write to Details D7-D12 — that would double-count because
@@ -1248,16 +1357,18 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             for r in range(74, 90):
                 b = det_cache.get((r, 2))
                 if b and _fuzzy_match_name(acct["name"], str(b)) and r not in recv_written:
-                    ws_det.cell(r, 4).value = round(abs(acct["net"]), 2)
-                    injected.append(f"Details!D{r} (adv-to-supplier: {acct['name']}) = {abs(acct['net']):,.2f}")
-                    recv_written.add(r); placed = True; break
+                    if _safe_write(ws_det, r, 4, abs(acct["net"])):
+                        injected.append(f"Details!D{r} (adv-to-supplier: {acct['name']}) = {abs(acct['net']):,.2f}")
+                        recv_written.add(r); placed = True
+                    break
             if not placed:
                 for r in range(74, 90):
                     if det_cache.get((r, 4)) is None and det_cache.get((r, 2)) is None and r not in recv_written:
-                        ws_det.cell(r, 2).value = acct["name"]
-                        ws_det.cell(r, 4).value = round(abs(acct["net"]), 2)
-                        injected.append(f"Details!D{r} (adv-to-supplier new: {acct['name']}) = {abs(acct['net']):,.2f}")
-                        recv_written.add(r); break
+                        _safe_write(ws_det, r, 2, acct["name"])
+                        if _safe_write(ws_det, r, 4, abs(acct["net"])):
+                            injected.append(f"Details!D{r} (adv-to-supplier new: {acct['name']}) = {abs(acct['net']):,.2f}")
+                            recv_written.add(r)
+                        break
 
         # ── Advance from Customers (credit-balance debtors) → OCL in notes to bs ──
         # These debtors had a credit balance → reclassified to other_cl
@@ -1383,12 +1494,12 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 if amt > 0:
                     e_val = ws_gp.cell(row, 5).value
                     if not _is_formula(str(e_val or "")):
-                        ws_gp.cell(row, 5).value = round(amt, 2)
-                        injected.append(f"GROSS PROFIT!E{row} (Sale) = {amt:,.2f}")
+                        if _safe_write(ws_gp, row, 5, amt):
+                            injected.append(f"GROSS PROFIT!E{row} (Sale) = {amt:,.2f}")
                     else:
-                        # Formula cell — override it
-                        ws_gp.cell(row, 5).value = round(amt, 2)
-                        injected.append(f"GROSS PROFIT!E{row} (Sale override) = {amt:,.2f}")
+                        # Formula cell — try to override it (MergedCell-safe)
+                        if _safe_write(ws_gp, row, 5, amt):
+                            injected.append(f"GROSS PROFIT!E{row} (Sale override) = {amt:,.2f}")
 
         # ── B. Purchases → GROSS PROFIT!B14:B18 ─────────────────────
         # Row 14=Purchase GST 12% Interstate, 15=12% WS, 16=18% WS
@@ -1420,12 +1531,8 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
             for row, amt in purch_row_totals.items():
                 if amt > 0:
-                    b_val = ws_gp.cell(row, 2).value
-                    if not _is_formula(str(b_val or "")):
-                        ws_gp.cell(row, 2).value = round(amt, 2)
-                    else:
-                        ws_gp.cell(row, 2).value = round(amt, 2)
-                    injected.append(f"GROSS PROFIT!B{row} (Purchase) = {amt:,.2f}")
+                    if _safe_write(ws_gp, row, 2, amt):
+                        injected.append(f"GROSS PROFIT!B{row} (Purchase) = {amt:,.2f}")
 
         # ── C. Opening Stock → GROSS PROFIT!B9 ──────────────────────
         # B9 = "='notes to p&l'!D17" which = "=E24" (prev yr closing)
@@ -1436,8 +1543,8 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         if opening_stock_accounts and "GROSS PROFIT" in wb.sheetnames:
             total_opening = sum(abs(a["net"]) for a in opening_stock_accounts)
             # notes to p&l!D17 is "=E24" — override it directly
-            ws_npl.cell(17, 4).value = round(total_opening, 2)
-            injected.append(f"notes to p&l!D17 (Opening stock) = {total_opening:,.2f}")
+            if _safe_write(ws_npl, 17, 4, total_opening):
+                injected.append(f"notes to p&l!D17 (Opening stock) = {total_opening:,.2f}")
 
         # ── D. Employee Expenses → notes to p&l!D31 ─────────────────
         # D34 = SUM(D31:D33), p&l!E13 ← notes to p&l!D34
@@ -1450,8 +1557,8 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                            and abs(a.get("net", 0)) > 0]
         if salary_accounts:
             total_salary = sum(abs(a["net"]) for a in salary_accounts)
-            ws_npl.cell(31, 4).value = round(total_salary, 2)
-            injected.append(f"notes to p&l!D31 (Salaries) = {total_salary:,.2f}")
+            if _safe_write(ws_npl, 31, 4, total_salary):
+                injected.append(f"notes to p&l!D31 (Salaries) = {total_salary:,.2f}")
 
         # ── E. Finance Cost → notes to p&l!D38 (Bank Interest) & D39 (Unsecured Loan) ──
         # ONLY genuine bank/loan interest goes here.
@@ -1472,15 +1579,15 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
         if bank_int_accounts:
             total_bank_int = sum(abs(a["net"]) for a in bank_int_accounts)
-            ws_npl.cell(38, 4).value = round(total_bank_int, 2)
-            names = ", ".join(a["name"] for a in bank_int_accounts)
-            injected.append(f"notes to p&l!D38 (Bank Interest) = {total_bank_int:,.2f} [{names}]")
+            if _safe_write(ws_npl, 38, 4, total_bank_int):
+                names = ", ".join(a["name"] for a in bank_int_accounts)
+                injected.append(f"notes to p&l!D38 (Bank Interest) = {total_bank_int:,.2f} [{names}]")
 
         if loan_int_accounts:
             total_loan_int = sum(abs(a["net"]) for a in loan_int_accounts)
-            ws_npl.cell(39, 4).value = round(total_loan_int, 2)
-            names = ", ".join(a["name"] for a in loan_int_accounts)
-            injected.append(f"notes to p&l!D39 (Loan Interest) = {total_loan_int:,.2f} [{names}]")
+            if _safe_write(ws_npl, 39, 4, total_loan_int):
+                names = ", ".join(a["name"] for a in loan_int_accounts)
+                injected.append(f"notes to p&l!D39 (Loan Interest) = {total_loan_int:,.2f} [{names}]")
 
         # Combined finance accounts list (for exclusion from Other Expenses)
         finance_accounts = bank_int_accounts + loan_int_accounts
@@ -1576,8 +1683,8 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             if row:
                 d_val = ws_npl.cell(row, 4).value
                 if not _is_formula(str(d_val or "")):
-                    ws_npl.cell(row, 4).value = round(amt, 2)
-                    injected.append(f"notes to p&l!D{row} ({acct['name']}) = {amt:,.2f}")
+                    if _safe_write(ws_npl, row, 4, amt):
+                        injected.append(f"notes to p&l!D{row} ({acct['name']}) = {amt:,.2f}")
             else:
                 # No template match — find first empty D row in 57:78
                 # FIX (Issue 2): also write the account name to column B so the
@@ -1589,13 +1696,13 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         d_val = _cache.get("notes to p&l", {}).get((r, 4))
                         b_val = _cache.get("notes to p&l", {}).get((r, 2))
                         if d_val is None or d_val == 0:
-                            ws_npl.cell(r, 4).value = round(amt, 2)
-                            # Write the account name to col B if the row is unlabelled
-                            if b_val is None or str(b_val).strip() == "":
-                                ws_npl.cell(r, 2).value = acct["name"]
-                            written_exp_rows.add(r)
-                            injected.append(f"notes to p&l!D{r} (unmatched: {acct['name']}) = {amt:,.2f}")
-                            placed = True
+                            if _safe_write(ws_npl, r, 4, amt):
+                                # Write the account name to col B if the row is unlabelled
+                                if b_val is None or str(b_val).strip() == "":
+                                    _safe_write(ws_npl, r, 2, acct["name"])
+                                written_exp_rows.add(r)
+                                injected.append(f"notes to p&l!D{r} (unmatched: {acct['name']}) = {amt:,.2f}")
+                                placed = True
                             break
                 if not placed:
                     skipped.append(f"Other expense '{acct['name']}' = {amt:,.2f}: no row in notes to p&l")
@@ -1774,12 +1881,32 @@ def analyze_trial_balance(tb_path):
     """
     Step 1: Read and analyze the trial balance.
     Returns structure info + classified accounts.
+
+    Also applies SIGN-AWARE pre-classification so that:
+      • Sundry Creditors with a DEBIT balance show up under the explicit
+        "Advance to Supplier" group on the Review-Mapping page.
+      • Sundry Debtors with a CREDIT balance show up under the explicit
+        "Advance from Customer" group on the Review-Mapping page.
+    The auto-mapping is non-destructive — the user can still override either
+    group from the dropdown.
     """
     detection = detect_tb_structure(tb_path)
     if "error" in detection:
         return detection
 
     classified = classify_accounts(detection["accounts"])
+
+    # Pre-flag debit-creditor / credit-debtor as the explicit advance heads
+    # so the Review-Mapping UI groups them correctly.
+    for acct in classified:
+        head = acct.get("bs_head")
+        net  = acct.get("net", 0)
+        if head == "trade_payables" and net > 0:
+            acct["bs_head"] = "advance_to_supplier"
+            acct["reclassified_from"] = "trade_payables"
+        elif head == "trade_rec" and net < 0:
+            acct["bs_head"] = "advance_from_customer"
+            acct["reclassified_from"] = "trade_rec"
 
     # Separate by confidence
     high_conf = [a for a in classified if a["confidence"] == "high"]
