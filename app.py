@@ -7502,12 +7502,14 @@ const BS_HEADS = [
   {v:"lt_borrowings", l:"Long Term Borrowings"},
   {v:"st_borrowings", l:"Short Term Borrowings"},
   {v:"trade_payables",l:"Trade Payables (Creditors)"},
+  {v:"advance_from_customer", l:"Advance from Customer (under Sundry Creditors)"},
   {v:"other_cl",      l:"Other Current Liabilities"},
   {v:"st_provisions", l:"Short Term Provisions"},
   {v:"fixed_assets",  l:"Fixed Assets / PPE"},
   {v:"investments",   l:"Non-Current Investments"},
   {v:"inventories",   l:"Closing Stock / Inventories"},
   {v:"trade_rec",     l:"Trade Receivables (Debtors)"},
+  {v:"advance_to_supplier", l:"Advance to Supplier / Customer (under Sundry Debtors)"},
   {v:"cash_bank",     l:"Cash and Bank Balances"},
   {v:"stla",          l:"Short Term Loans & Advances"},
   {v:"other_ca",      l:"Other Current Assets"},
@@ -7680,8 +7682,10 @@ function buildMappingUI(data) {
 }
 
 // BS heads go in left panel, P&L heads in right panel
-const BS_HEAD_KEYS = ['capital','lt_borrowings','st_borrowings','trade_payables','other_cl',
-  'st_provisions','fixed_assets','investments','inventories','trade_rec','cash_bank','stla','other_ca'];
+const BS_HEAD_KEYS = ['capital','lt_borrowings','st_borrowings',
+  'trade_payables','advance_from_customer','other_cl',
+  'st_provisions','fixed_assets','investments','inventories',
+  'trade_rec','advance_to_supplier','cash_bank','stla','other_ca'];
 const PL_HEAD_KEYS = ['revenue','other_income','opening_stock','purchases','direct_expenses',
   'employee_expenses','finance_cost','depreciation','other_expenses','tax_expense'];
 
