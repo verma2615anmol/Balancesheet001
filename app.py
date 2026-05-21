@@ -6824,9 +6824,31 @@ def tb_read_bs():
                     partners.append({"name": nm, "opening": opening, "row": i + 1})
 
             if partners:
+                # Detect column layout from header row
+                cap_columns = []
+                col_map = {}  # {field_key: column_index (1-based)}
+                if header_row_idx is not None:
+                    hrow = rows_data[header_row_idx]
+                    for ci, hv in enumerate(hrow):
+                        hs = str(hv or "").lower().strip()
+                        if "introduced" in hs or "capital intro" in hs:
+                            cap_columns.append({"key": "introduced", "label": "Capital Introduced", "col": ci+1})
+                            col_map["introduced"] = ci + 1
+                        elif "interest" in hs and "capital" in hs:
+                            cap_columns.append({"key": "interest_on_capital", "label": "Interest on Capital", "col": ci+1})
+                            col_map["interest_on_capital"] = ci + 1
+                        elif "salary" in hs:
+                            cap_columns.append({"key": "salary", "label": "Salary", "col": ci+1})
+                            col_map["salary"] = ci + 1
+                        elif "withdraw" in hs:
+                            cap_columns.append({"key": "withdrawals", "label": "Withdrawals", "col": ci+1})
+                            col_map["withdrawals"] = ci + 1
+
                 result["capital"] = {
                     "sheet": cap_sheet,
                     "partners": partners,
+                    "columns": cap_columns,
+                    "col_map": col_map,
                 }
 
         # ── Read Fixed Assets sheet ─────────────────────────────────────
@@ -7033,14 +7055,27 @@ def tb_read_bs():
 def _inject_cap_fa(output_path, cap_entries, fa_entries, log):
     """Inject user-entered Capital A/c and Fixed Assets values into the output BS."""
     from openpyxl import load_workbook
+    from openpyxl.cell import MergedCell
     wb = load_workbook(output_path)
 
     def _is_formula(v):
         return isinstance(v, str) and v.startswith("=")
 
+    def _safe_write(ws, row, col, value):
+        """Write to cell only if it's not merged and not a formula."""
+        try:
+            cell = ws.cell(row, col)
+            if isinstance(cell, MergedCell):
+                return False
+            if _is_formula(str(cell.value or "")):
+                return False
+            cell.value = round(float(value), 2)
+            return True
+        except Exception:
+            return False
+
     # ── Capital Account injection ──────────────────────────────────────
     if cap_entries:
-        # Find capital sheet
         cap_sheet = None
         for sn in wb.sheetnames:
             if "capital" in sn.lower():
@@ -7052,20 +7087,19 @@ def _inject_cap_fa(output_path, cap_entries, fa_entries, log):
                 row = entry.get("row")
                 if not row:
                     continue
-                # Columns: C=opening(skip), D=introduced, E=withdrawals
-                # The opening and closing formulas are preserved from template
-                introduced = entry.get("introduced", 0)
-                withdrawals = entry.get("withdrawals", 0)
-                if introduced:
-                    cell = ws.cell(row, 4)  # Col D
-                    if not _is_formula(str(cell.value or "")):
-                        cell.value = round(float(introduced), 2)
-                        log.append(f"✓ {cap_sheet}!D{row} (Capital Introduced) = {float(introduced):,.2f}")
-                if withdrawals:
-                    cell = ws.cell(row, 5)  # Col E
-                    if not _is_formula(str(cell.value or "")):
-                        cell.value = round(float(withdrawals), 2)
-                        log.append(f"✓ {cap_sheet}!E{row} (Withdrawals) = {float(withdrawals):,.2f}")
+                # Write each field to its column using column index from entry
+                fields = [
+                    ("introduced", "Capital Introduced"),
+                    ("interest_on_capital", "Interest on Capital"),
+                    ("salary", "Salary"),
+                    ("withdrawals", "Withdrawals"),
+                ]
+                for field_key, field_label in fields:
+                    val = entry.get(field_key, 0)
+                    col_idx = entry.get(f"{field_key}_col")
+                    if val and col_idx:
+                        if _safe_write(ws, row, col_idx, val):
+                            log.append(f"✓ {cap_sheet}!{chr(64+col_idx)}{row} ({field_label}) = {float(val):,.2f}")
 
     # ── Fixed Assets injection ─────────────────────────────────────────
     if fa_entries:
@@ -7081,26 +7115,17 @@ def _inject_cap_fa(output_path, cap_entries, fa_entries, log):
                 row = entry.get("row")
                 if not row:
                     continue
-                # Columns vary but typically:
-                # B=opening WDV, C=additions>180d, D=additions<180d, E=sale
-                add_gt180 = entry.get("additions_gt180", 0)
-                add_lt180 = entry.get("additions_lt180", 0)
-                sale = entry.get("sale", 0)
-                if add_gt180:
-                    cell = ws.cell(row, 3)  # Col C
-                    if not _is_formula(str(cell.value or "")):
-                        cell.value = round(float(add_gt180), 2)
-                        log.append(f"✓ {fa_sheet}!C{row} (Addition >180d) = {float(add_gt180):,.2f}")
-                if add_lt180:
-                    cell = ws.cell(row, 4)  # Col D
-                    if not _is_formula(str(cell.value or "")):
-                        cell.value = round(float(add_lt180), 2)
-                        log.append(f"✓ {fa_sheet}!D{row} (Addition <180d) = {float(add_lt180):,.2f}")
-                if sale:
-                    cell = ws.cell(row, 5)  # Col E
-                    if not _is_formula(str(cell.value or "")):
-                        cell.value = round(float(sale), 2)
-                        log.append(f"✓ {fa_sheet}!E{row} (Sale) = {float(sale):,.2f}")
+                fields = [
+                    ("additions_gt180", 3, "Addition >180d"),
+                    ("additions_lt180", 4, "Addition <180d"),
+                    ("sale", 5, "Sale"),
+                ]
+                for field_key, default_col, label in fields:
+                    val = entry.get(field_key, 0)
+                    col_idx = entry.get(f"{field_key}_col", default_col)
+                    if val:
+                        if _safe_write(ws, row, col_idx, val):
+                            log.append(f"✓ {fa_sheet}!{chr(64+col_idx)}{row} ({label}) = {float(val):,.2f}")
 
     wb.save(output_path)
     wb.close()
@@ -7182,25 +7207,9 @@ def tb_process():
         fname = f"{safe_name}_BS_{cy_year}.xlsx"
         log_usage(user["id"], fname)
 
-        # Build tally summary from processor's actual computed values
-        proc_assets = result.get("total_assets", 0)
-        proc_liab   = result.get("total_liabilities", 0)
-        proc_profit = result.get("net_profit", 0)
-        proc_diff   = abs(proc_assets - proc_liab)
-
-        tally = {
-            "total_assets":           round(abs(proc_assets), 2),
-            "total_liabilities":      round(abs(proc_liab), 2),
-            "difference":             round(proc_diff, 2),
-            "balanced":               proc_diff < 100,
-            "profit":                 round(proc_profit, 2),
-            "user_mappings_applied":  len(user_mapping),
-        }
-
         return jsonify({
             "status":   "success",
             "log":      result.get("log", []),
-            "tally":    tally,
             "file_id":  h,
             "filename": fname,
         })
@@ -7489,7 +7498,7 @@ let analysisData = null;
 let userMappings = {};
 
 const BS_HEADS = [
-  {v:"capital",       l:"Owner's Capital Account"},
+  {v:"capital",       l:"Owner's Capital / Partners Capital"},
   {v:"lt_borrowings", l:"Long Term Borrowings"},
   {v:"st_borrowings", l:"Short Term Borrowings"},
   {v:"trade_payables",l:"Trade Payables (Creditors)"},
@@ -7503,6 +7512,7 @@ const BS_HEADS = [
   {v:"stla",          l:"Short Term Loans & Advances"},
   {v:"other_ca",      l:"Other Current Assets"},
   {v:"revenue",       l:"Revenue from Operations"},
+  {v:"other_income",  l:"Other Income"},
   {v:"opening_stock", l:"Opening Stock"},
   {v:"purchases",     l:"Purchases"},
   {v:"direct_expenses",l:"Direct Expenses"},
@@ -7672,7 +7682,7 @@ function buildMappingUI(data) {
 // BS heads go in left panel, P&L heads in right panel
 const BS_HEAD_KEYS = ['capital','lt_borrowings','st_borrowings','trade_payables','other_cl',
   'st_provisions','fixed_assets','investments','inventories','trade_rec','cash_bank','stla','other_ca'];
-const PL_HEAD_KEYS = ['revenue','opening_stock','purchases','direct_expenses',
+const PL_HEAD_KEYS = ['revenue','other_income','opening_stock','purchases','direct_expenses',
   'employee_expenses','finance_cost','depreciation','other_expenses','tax_expense'];
 
 function rebuildPanels() {
@@ -7845,17 +7855,30 @@ function buildCapTable(cap) {
     wrap.innerHTML = '<p style="color:var(--muted);font-size:12px">No capital account sheet found in BS template. You can fill it manually in Excel after download.</p>';
     return;
   }
+  // Detect columns from the template data
+  const cols = cap.columns || [];
+  const hasInterest = cols.some(c => c.key === 'interest_on_capital');
+  const hasSalary = cols.some(c => c.key === 'salary');
+
   let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
   html += '<tr style="background:#F1F5F9"><th style="padding:8px;text-align:left;border:1px solid var(--border)">Name</th>';
-  html += '<th style="padding:8px;text-align:right;border:1px solid var(--border)">Opening Balance</th>';
+  html += '<th style="padding:8px;text-align:right;border:1px solid var(--border)">Opening</th>';
   html += '<th style="padding:8px;text-align:center;border:1px solid var(--border)">Capital Introduced</th>';
+  if (hasInterest) html += '<th style="padding:8px;text-align:center;border:1px solid var(--border)">Interest on Capital</th>';
+  if (hasSalary) html += '<th style="padding:8px;text-align:center;border:1px solid var(--border)">Salary</th>';
   html += '<th style="padding:8px;text-align:center;border:1px solid var(--border)">Withdrawals</th></tr>';
+
   cap.partners.forEach((p, i) => {
     html += `<tr>
-      <td style="padding:8px;border:1px solid var(--border);font-weight:600">${escHtml(p.name)}<input type="hidden" class="cap-row" value="${p.row}"></td>
+      <td style="padding:8px;border:1px solid var(--border);font-weight:600">${escHtml(p.name)}
+        <input type="hidden" class="cap-row" value="${p.row}">
+        <input type="hidden" class="cap-cols" value='${JSON.stringify(cap.col_map||{})}'>
+      </td>
       <td style="padding:8px;border:1px solid var(--border);text-align:right;color:var(--muted)">₹${(p.opening||0).toLocaleString('en-IN',{maximumFractionDigits:2})}</td>
-      <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="cap-intro" data-idx="${i}" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
-      <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="cap-wd" data-idx="${i}" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
+      <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="cap-intro" data-idx="${i}" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>`;
+    if (hasInterest) html += `<td style="padding:4px;border:1px solid var(--border)"><input type="number" class="cap-interest" data-idx="${i}" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>`;
+    if (hasSalary) html += `<td style="padding:4px;border:1px solid var(--border)"><input type="number" class="cap-salary" data-idx="${i}" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>`;
+    html += `<td style="padding:4px;border:1px solid var(--border)"><input type="number" class="cap-wd" data-idx="${i}" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
     </tr>`;
   });
   html += '</table>';
@@ -7916,9 +7939,21 @@ function collectCapEntries() {
   const entries = [];
   document.querySelectorAll('.cap-row').forEach((el, i) => {
     const row = parseInt(el.value);
+    let colMap = {};
+    try { colMap = JSON.parse(document.querySelectorAll('.cap-cols')[i]?.value || '{}'); } catch(e) {}
     const intro = parseFloat(document.querySelectorAll('.cap-intro')[i]?.value) || 0;
+    const interest = parseFloat(document.querySelectorAll('.cap-interest')[i]?.value) || 0;
+    const salary = parseFloat(document.querySelectorAll('.cap-salary')[i]?.value) || 0;
     const wd = parseFloat(document.querySelectorAll('.cap-wd')[i]?.value) || 0;
-    if (row && (intro || wd)) entries.push({row, introduced: intro, withdrawals: wd});
+    if (row && (intro || interest || salary || wd)) {
+      entries.push({
+        row,
+        introduced: intro, introduced_col: colMap.introduced || 4,
+        interest_on_capital: interest, interest_on_capital_col: colMap.interest_on_capital || 5,
+        salary: salary, salary_col: colMap.salary || 6,
+        withdrawals: wd, withdrawals_col: colMap.withdrawals || 7,
+      });
+    }
   });
   return entries;
 }
@@ -7969,7 +8004,25 @@ async function doGenerate() {
       return;
     }
 
-    buildResult(data);
+    // Skip tally page — download directly
+    const fn = data.filename || 'Balance_Sheet.xlsx';
+    const dlUrl = '/download/' + data.file_id + '?fn=' + encodeURIComponent(fn);
+    
+    // Trigger download
+    const a = document.createElement('a');
+    a.href = dlUrl; a.download = fn; a.click();
+
+    // Show simple success message on step 3
+    document.getElementById('resBox').innerHTML = `
+      <div style="text-align:center;padding:40px 20px">
+        <div style="font-size:48px;margin-bottom:16px">✅</div>
+        <h2 style="font-size:20px;font-weight:800;margin-bottom:8px">Balance Sheet Downloaded!</h2>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:20px">${escHtml(fn)}</p>
+        <a href="${dlUrl}" class="btn-main" style="display:inline-flex;padding:12px 32px;text-decoration:none">
+          ⬇ Download Again
+        </a>
+      </div>`;
+    document.getElementById('resSub').textContent = fn;
     goStep(3);
 
   } catch(e) {
