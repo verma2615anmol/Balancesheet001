@@ -630,11 +630,32 @@ def _classify_single(name, net_amount, group=None):
     name_lower = name.lower().strip()
     group_lower = (group or "").lower().strip()
 
+    # ── Smart rules based on name + balance sign ──────────────────────
+    # Rule: "loan" in name + CREDIT balance = borrowing (not fixed asset)
+    if "loan" in name_lower and net_amount < 0:
+        if any(kw in name_lower for kw in ["secured", "hypothec", "mortgage"]):
+            return "lt_borrowings", "high"
+        if any(kw in name_lower for kw in ["unsecure", "unsecured"]):
+            return "lt_borrowings", "high"
+        # Generic loan with credit balance = borrowing
+        return "lt_borrowings", "high"
+
+    # Rule: "bank" in name + CREDIT balance = secured loan/OD/CC
+    if ("bank" in name_lower or "a/c" in name_lower) and net_amount < 0:
+        if any(kw in name_lower for kw in ["loan", "od", "cc", "overdraft",
+               "cash credit", "machinery", "vehicle", "term loan"]):
+            return "lt_borrowings", "high"
+        # Bank account with negative balance = bank overdraft = short term borrowing
+        if any(kw in group_lower for kw in ["bank", "cash"]):
+            return "st_borrowings", "high"
+
+    # Rule: "round off" / "roundoff" = other_expenses (even if credit)
+    if "round off" in name_lower or "roundoff" in name_lower:
+        return "other_expenses", "high"
+
     # Step 1: Check if group header directly maps to a head
     if group_lower and group_lower in GROUP_HEAD_MAP:
         group_head = GROUP_HEAD_MAP[group_lower]
-        # For items under a known group, trust the group mapping
-        # but still verify it makes sense with the amount sign
         return group_head, "high"
 
     # Step 2: Try each head in priority order by name
