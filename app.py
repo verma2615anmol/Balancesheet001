@@ -6668,7 +6668,10 @@ def tb_analyse():
 
         import tempfile, os
         tmp = tempfile.mkdtemp()
-        tb_path = os.path.join(tmp, "tb.xlsx")
+        # Preserve original extension for PDF detection
+        orig_name = tb_file.filename or "tb.xlsx"
+        ext = ".pdf" if orig_name.lower().endswith(".pdf") else ".xlsx"
+        tb_path = os.path.join(tmp, "tb" + ext)
         tb_file.save(tb_path)
 
         result = analyze_trial_balance(tb_path)
@@ -7175,7 +7178,10 @@ def tb_process():
         cy_year = request.form.get("cy_year", "2025").strip()
 
         tmp = tempfile.mkdtemp()
-        tb_path  = os.path.join(tmp, "tb.xlsx")
+        # Preserve extension for PDF detection
+        tb_orig = tb_file.filename or "tb.xlsx"
+        tb_ext = ".pdf" if tb_orig.lower().endswith(".pdf") else ".xlsx"
+        tb_path  = os.path.join(tmp, "tb" + tb_ext)
         bs_path  = os.path.join(tmp, "bs_template.xlsx")
         out_path = os.path.join(tmp, "bs_output.xlsx")
 
@@ -7334,16 +7340,16 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
   <div id="step1">
     <div class="card">
       <div class="card-head"><div class="icon" style="background:#EFF6FF">📤</div>
-        <div><h2>Upload Files</h2><p>Trial Balance (.xlsx) and Balance Sheet template (.xlsx)</p></div></div>
+        <div><h2>Upload Files</h2><p>Trial Balance (.xlsx or .pdf) and Balance Sheet template (.xlsx)</p></div></div>
       <div class="card-body">
         <div class="row2">
           <div class="field">
             <label>Trial Balance</label>
             <div class="upload-zone" id="tbZone">
-              <input type="file" id="tbFile" accept=".xlsx" onchange="onFile(this,'tb')"/>
+              <input type="file" id="tbFile" accept=".xlsx,.xls,.pdf" onchange="onFile(this,'tb')"/>
               <div class="uzicon">📊</div>
               <div class="uztitle">Click or drag Trial Balance</div>
-              <div class="uzsub">Tally / Busy / Manual — any format</div>
+              <div class="uzsub">Tally / Busy / Manual — .xlsx or .pdf</div>
             </div>
             <div class="uz-done" id="tbDone"></div>
           </div>
@@ -7580,7 +7586,7 @@ function _setFile(f, type) {
   zone.addEventListener('drop', e => {
     e.preventDefault(); zone.classList.remove('drag');
     const f = e.dataTransfer.files[0];
-    if (f && (f.name.endsWith('.xlsx') || f.name.endsWith('.xls'))) {
+    if (f && (f.name.endsWith('.xlsx') || f.name.endsWith('.xls') || (type==='tb' && f.name.endsWith('.pdf')))) {
       _setFile(f, type);
       // Update the hidden input too
       const dt = new DataTransfer(); dt.items.add(f);
