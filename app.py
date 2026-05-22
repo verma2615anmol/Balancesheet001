@@ -6654,12 +6654,12 @@ def tb_to_bs_page():
 @app.route("/tb-analyse", methods=["POST"])
 def tb_analyse():
     if "uid" not in session:
-        return jsonify({"status": "error", "message": "Not logged in"}), 401
+        return jsonify({"status": "error", "message": "Session expired — please refresh the page and log in again"}), 401
     user = get_user_by_id(session["uid"])
     if not user:
-        return jsonify({"status": "error", "message": "Not logged in"}), 401
+        return jsonify({"status": "error", "message": "Session expired — please refresh the page and log in again"}), 401
     if not TB_PROCESSOR_AVAILABLE:
-        return jsonify({"status": "error", "message": "TB processor not available"}), 500
+        return jsonify({"status": "error", "message": "TB processor not available on this server"}), 500
 
     try:
         tb_file = request.files.get("tb_file")
@@ -7609,14 +7609,21 @@ async function doAnalyse() {
   fd.append('tb_file', tbFile);
 
   try {
-    const res = await fetch('/tb-analyse', {method:'POST', body:fd});
+    const res = await fetch('/tb-analyse', {method:'POST', body:fd, credentials:'include'});
     const data = await res.json();
 
     if (data.status !== 'success') {
-      alert('Error: ' + data.message);
-      document.getElementById('step1').style.display='block';
       document.getElementById('loadWrap').style.display='none';
+      document.getElementById('step1').style.display='block';
       btn.disabled=false; btn.textContent='🔍 Analyse Trial Balance';
+      if (res.status === 401) {
+        // Session expired — redirect to login
+        if (confirm('Session expired. Click OK to go to login page.')) {
+          window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+        }
+      } else {
+        alert('Error: ' + data.message);
+      }
       return;
     }
 
@@ -7844,7 +7851,7 @@ async function goToCapFA() {
   try {
     const fd = new FormData();
     fd.append('bs_file', bsFile);
-    const res = await fetch('/tb-read-bs', {method:'POST', body:fd});
+    const res = await fetch('/tb-read-bs', {method:'POST', body:fd, credentials:'include'});
     const data = await res.json();
     document.getElementById('loadWrap').style.display = 'none';
 
@@ -8017,7 +8024,7 @@ async function doGenerate() {
   fd.append('fa_entries', JSON.stringify(collectFAEntries()));
 
   try {
-    const res = await fetch('/tb-process', {method:'POST', body:fd});
+    const res = await fetch('/tb-process', {method:'POST', body:fd, credentials:'include'});
     const data = await res.json();
     document.getElementById('loadWrap').style.display = 'none';
 
