@@ -223,6 +223,20 @@ BS_HEADS = {
         ],
         "negative_keywords": ["sale return", "sales return", "sale of asset", "sale of investment"],
     },
+    "other_income": {
+        "label": "Other Income",
+        "side": "pl",
+        "keywords": [
+            "other income", "interest received", "interest income",
+            "dividend received", "dividend income", "rental income",
+            "rent received", "miscellaneous income", "misc income",
+            "profit on sale", "gain on sale", "exchange gain",
+            "discount received", "discount earned", "commission earned",
+            "bad debt recovered", "insurance claim received",
+            "interest on fd", "interest on deposit", "bank interest received",
+        ],
+        "negative_keywords": [],
+    },
     "purchases": {
         "label": "Purchases / Cost of Material",
         "side": "pl",
@@ -296,13 +310,211 @@ CLASSIFICATION_PRIORITY = [
     "cash_bank", "inventories",
     "st_provisions",
     "st_borrowings", "lt_borrowings",
-    "employee_expenses", "purchases", "revenue",
+    "employee_expenses", "purchases", "revenue", "other_income",
     "fixed_assets", "non_current_investments",
     "stla",
     "capital",
     "other_cl", "other_current_assets",
     "other_expenses",
 ]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# PDF TRIAL BALANCE PARSER
+# ═══════════════════════════════════════════════════════════════════════
+
+def parse_tb_pdf(pdf_path):
+    """Parse a Trial Balance PDF (Tally/Busy/Excel-exported) into account rows.
+    
+    Returns same format as detect_tb_structure for seamless integration.
+    Handles:
+    - Tally ERP format (group headers, account names, Dr/Cr columns)
+    - Busy format (similar structure)
+    - Excel-exported PDFs with tabular layout
+    """
+    import pdfplumber, re
+
+    all_lines = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            # Try table extraction first (works for structured PDFs)
+            tables = page.extract_tables()
+            if tables:
+                for table in tables:
+                    for row in table:
+                        if row and any(cell for cell in row if cell):
+                            all_lines.append([str(c or "").strip() for c in row])
+            else:
+                # Fallback: text extraction with layout
+                text = page.extract_text() or ""
+                for line in text.split("\n"):
+                    if line.strip():
+                        all_lines.append([line.strip()])
+
+    if not all_lines:
+        return None
+
+    # ── Detect columns ─────────────────────────────────────────────────
+    # Look for header row with "Debit" / "Credit" or "Dr" / "Cr"
+    acct_col = 0
+    dr_col = None
+    cr_col = None
+    header_row_idx = None
+
+    for i, row in enumerate(all_lines[:15]):
+        row_lower = [c.lower() for c in row]
+        for j, cell in enumerate(row_lower):
+            if "debit" in cell or cell.strip() == "dr":
+                dr_col = j
+                header_row_idx = i
+            if "credit" in cell or cell.strip() == "cr":
+                cr_col = j
+                header_row_idx = i
+            if "particular" in cell or "account" in cell or "ledger" in cell:
+                acct_col = j
+
+    # If no explicit header found, try heuristic:
+    # First column = name, numbers in other columns
+    if dr_col is None or cr_col is None:
+        # Find columns that have the most numbers
+        num_pattern = re.compile(r'^[\d,]+\.?\d*$')
+        col_num_counts = {}
+        for row in all_lines[2:min(30, len(all_lines))]:
+            for j, cell in enumerate(row):
+                clean = cell.replace(",", "").replace(" ", "").strip()
+                if num_pattern.match(clean) and float(clean) > 0:
+                    col_num_counts[j] = col_num_counts.get(j, 0) + 1
+        # Top 2 numeric columns = Dr and Cr
+        sorted_cols = sorted(col_num_counts.items(), key=lambda x: -x[1])
+        if len(sorted_cols) >= 2:
+            dr_col = min(sorted_cols[0][0], sorted_cols[1][0])
+            cr_col = max(sorted_cols[0][0], sorted_cols[1][0])
+        elif len(sorted_cols) == 1:
+            # Single amount column (net format)
+            dr_col = sorted_cols[0][0]
+            cr_col = None
+
+    # ── Parse accounts ─────────────────────────────────────────────────
+    def _parse_amount(s):
+        """Parse Indian number format: 1,23,456.78 or (1,234) for negative."""
+        if not s:
+            return 0.0
+        s = s.strip()
+        negative = False
+        if s.startswith("(") and s.endswith(")"):
+            negative = True
+            s = s[1:-1]
+        if s.endswith(" Dr"):
+            s = s[:-3]
+        elif s.endswith(" Cr"):
+            negative = True
+            s = s[:-3]
+        s = s.replace(",", "").replace(" ", "").strip()
+        try:
+            val = float(s)
+            return -val if negative else val
+        except ValueError:
+            return 0.0
+
+    accounts = []
+    current_group = ""
+    data_start = (header_row_idx or 0) + 1
+    skip_words = {"total", "grand total", "opening balance", "closing balance",
+                  "difference in", "profit & loss", "profit and loss",
+                  "trial balance", "as on", "from", "to "}
+
+    for ri, row in enumerate(all_lines[data_start:], start=data_start):
+        if len(row) <= acct_col:
+            continue
+
+        name = row[acct_col].strip()
+        if not name or len(name) < 2:
+            continue
+        name_lower = name.lower()
+
+        # Skip headers and totals
+        if any(sw in name_lower for sw in skip_words):
+            continue
+
+        # Parse amounts
+        dr_amt = 0.0
+        cr_amt = 0.0
+        if dr_col is not None and dr_col < len(row):
+            dr_amt = _parse_amount(row[dr_col])
+        if cr_col is not None and cr_col < len(row):
+            cr_amt = _parse_amount(row[cr_col])
+
+        # If both are 0, this might be a group header
+        if dr_amt == 0 and cr_amt == 0:
+            # Check if the name is all-caps or looks like a group
+            if name.isupper() or name.endswith(":"):
+                current_group = name.rstrip(":")
+                continue
+            # Could still be a zero-balance account; include it
+            continue
+
+        net_amt = dr_amt - cr_amt
+
+        accounts.append({
+            "row": ri,
+            "key": f"{name}_{ri}",
+            "name": name,
+            "group": current_group,
+            "debit": dr_amt,
+            "credit": cr_amt,
+            "net": net_amt,
+        })
+
+    if not accounts:
+        return None
+
+    return {
+        "format_type": "PDF",
+        "sheet_name": "PDF",
+        "header_row": header_row_idx or 0,
+        "data_start_row": data_start,
+        "account_col": acct_col,
+        "debit_col": dr_col,
+        "credit_col": cr_col,
+        "net_col": None,
+        "accounts": accounts,
+    }
+
+
+def convert_pdf_tb_to_xlsx(pdf_path, xlsx_path):
+    """Convert a PDF trial balance to an xlsx file for processing."""
+    result = parse_tb_pdf(pdf_path)
+    if not result or not result["accounts"]:
+        return False
+
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Trial Balance"
+
+    # Header row
+    ws.cell(1, 1, "Particulars")
+    ws.cell(1, 2, "Debit")
+    ws.cell(1, 3, "Credit")
+
+    current_group = ""
+    r = 2
+    for acct in result["accounts"]:
+        if acct["group"] != current_group:
+            current_group = acct["group"]
+            if current_group:
+                ws.cell(r, 1, current_group)
+                r += 1
+
+        ws.cell(r, 1, acct["name"])
+        if acct["debit"]:
+            ws.cell(r, 2, acct["debit"])
+        if acct["credit"]:
+            ws.cell(r, 3, acct["credit"])
+        r += 1
+
+    wb.save(xlsx_path)
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -625,14 +837,21 @@ GROUP_HEAD_MAP = {
     "purchase account": "purchases",
     "purchases": "purchases",
     "sales account": "revenue",
+    "sales accounts": "revenue",
     "stock-in-hand": "inventories",
     "stock in hand": "inventories",
     "indirect expenses": "other_expenses",
     "direct expenses": "purchases",
+    "indirect income": "other_income",
+    "indirect incomes": "other_income",
+    "direct income": "revenue",
+    "direct incomes": "revenue",
     "sundry payables": "other_cl",
     "provisions": "st_provisions",
     "unsecure loans": "lt_borrowings",
     "unsecured loans": "lt_borrowings",
+    "secured loans": "lt_borrowings",
+    "loans (liability)": "lt_borrowings",
     "deposits (asset)": "stla",
     "duties & taxes": "stla",
     "duties and taxes": "stla",
@@ -1306,7 +1525,8 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 unmatched_creditors.append(acct)
 
         # Blank rows for unmatched (from cache)
-        blank_rows = [r for r in range(21, 63)
+        cred_end_row = 63
+        blank_rows = [r for r in range(21, cred_end_row)
                       if r not in written_rows
                       and det_cache.get((r, 4)) is None
                       and det_cache.get((r, 2)) is None]
@@ -1320,16 +1540,30 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 else:
                     skipped.append(f"Trade payable '{acct['name']}': row {r} is merged/formula")
             else:
-                skipped.append(f"Trade payable '{acct['name']}': no row in Details")
+                # Section full — insert new row
+                try:
+                    cred_end_row += 1
+                    ws_det.insert_rows(cred_end_row)
+                    ws_det.cell(cred_end_row, 2).value = acct["name"]
+                    ws_det.cell(cred_end_row, 4).value = abs(acct["net"])
+                    written_rows.add(cred_end_row)
+                    injected.append(f"Details!D{cred_end_row} (cred NEW ROW: {acct['name']}) = {abs(acct['net']):,.2f}")
+                    det_cache[(cred_end_row, 2)] = acct["name"]
+                    det_cache[(cred_end_row, 4)] = abs(acct["net"])
+                except Exception as e:
+                    skipped.append(f"Trade payable '{acct['name']}': insert failed: {e}")
 
-        # Trade Receivables D74:D90
+        # Trade Receivables D74:D90 (auto-extending if section is full)
         receivable_accounts = [a for a in individual_accounts
                                if a.get("bs_head") == "trade_rec"
                                and abs(a.get("net", 0)) > 0]
         recv_written = set()
+        recv_end_row = 90  # max row for debtors section
+
         for acct in receivable_accounts:
             placed = False
-            for r in range(74, 90):
+            # First try to match by name
+            for r in range(74, recv_end_row + 1):
                 b = det_cache.get((r, 2))
                 if b and _fuzzy_match_name(acct["name"], str(b)) and r not in recv_written:
                     if _safe_write(ws_det, r, 4, abs(acct["net"])):
@@ -1337,13 +1571,28 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         recv_written.add(r); placed = True
                     break
             if not placed:
-                for r in range(74, 90):
+                # Try first empty row
+                for r in range(74, recv_end_row + 1):
                     if det_cache.get((r, 4)) is None and det_cache.get((r, 2)) is None and r not in recv_written:
                         _safe_write(ws_det, r, 2, acct["name"])
                         if _safe_write(ws_det, r, 4, abs(acct["net"])):
                             injected.append(f"Details!D{r} (recv: {acct['name']}) = {abs(acct['net']):,.2f}")
-                            recv_written.add(r)
+                            recv_written.add(r); placed = True
                         break
+            if not placed:
+                # Section full — insert new row before total
+                try:
+                    recv_end_row += 1
+                    ws_det.insert_rows(recv_end_row)
+                    ws_det.cell(recv_end_row, 2).value = acct["name"]
+                    ws_det.cell(recv_end_row, 4).value = abs(acct["net"])
+                    recv_written.add(recv_end_row)
+                    injected.append(f"Details!D{recv_end_row} (recv NEW ROW: {acct['name']}) = {abs(acct['net']):,.2f}")
+                    # Update det_cache for new row
+                    det_cache[(recv_end_row, 2)] = acct["name"]
+                    det_cache[(recv_end_row, 4)] = abs(acct["net"])
+                except Exception as e:
+                    skipped.append(f"recv '{acct['name']}': insert failed: {e}")
 
         # NOTE: LT borrowings are written to notes to bs!D8 directly (Section 2 above).
         # Do NOT also write to Details D7-D12 — that would double-count because
@@ -1881,18 +2130,17 @@ def analyze_trial_balance(tb_path):
     """
     Step 1: Read and analyze the trial balance.
     Returns structure info + classified accounts.
-
-    Also applies SIGN-AWARE pre-classification so that:
-      • Sundry Creditors with a DEBIT balance show up under the explicit
-        "Advance to Supplier" group on the Review-Mapping page.
-      • Sundry Debtors with a CREDIT balance show up under the explicit
-        "Advance from Customer" group on the Review-Mapping page.
-    The auto-mapping is non-destructive — the user can still override either
-    group from the dropdown.
+    Supports both .xlsx and .pdf input files.
     """
-    detection = detect_tb_structure(tb_path)
-    if "error" in detection:
-        return detection
+    # Handle PDF input — parse and use directly
+    if tb_path.lower().endswith('.pdf'):
+        detection = parse_tb_pdf(tb_path)
+        if not detection or not detection.get("accounts"):
+            return {"error": "Could not parse trial balance PDF. Ensure it's a text-based PDF (not scanned image)."}
+    else:
+        detection = detect_tb_structure(tb_path)
+        if "error" in detection:
+            return detection
 
     classified = classify_accounts(detection["accounts"])
 
@@ -1946,9 +2194,21 @@ def process_tb_to_bs(tb_path, bs_template_path, output_path, user_mapping=None):
     This is the SINGLE SOURCE OF TRUTH for user overrides.
     The Flask /tb-process route must pass user_mapping here.
     """
-    # Step 1: Analyze TB
-    analysis = analyze_trial_balance(tb_path)
+    # Step 1: Analyze TB (handles both xlsx and pdf)
+    # If PDF, convert to temporary xlsx for the injection step
+    import os, tempfile
+    actual_tb_path = tb_path
+    tmp_xlsx = None
+    if tb_path.lower().endswith('.pdf'):
+        tmp_xlsx = tempfile.mktemp(suffix='.xlsx')
+        if not convert_pdf_tb_to_xlsx(tb_path, tmp_xlsx):
+            return {"error": "Could not convert PDF trial balance to Excel."}
+        actual_tb_path = tmp_xlsx
+
+    analysis = analyze_trial_balance(tb_path)  # Use original path for detection
     if "error" in analysis:
+        if tmp_xlsx and os.path.exists(tmp_xlsx):
+            os.remove(tmp_xlsx)
         return analysis
 
     accounts = analysis["accounts"]
