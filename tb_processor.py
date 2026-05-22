@@ -260,7 +260,7 @@ BS_HEADS = {
             "partner salary", "partner remuneration",
             "stipend", "incentive", "overtime",
         ],
-        "negative_keywords": ["salary payable", "wages payable"],
+        "negative_keywords": ["salary payable", "wages payable", "bonus payable", "leave with wages payable"],
     },
     "other_expenses": {
         "label": "Other Expenses / Indirect Expenses",
@@ -274,6 +274,9 @@ BS_HEADS = {
             "advertisement", "marketing", "donation",
             "interest paid", "interest on loan", "bank charge",
             "bank interest", "discount allowed", "bad debt",
+            "loan interest", "loan 1 interest", "loan 2 interest",
+            "car loan interest", "machine loan", "machinery loan interest",
+            "processing fee", "cersai charge", "top up loan interest",
             "miscellaneous", "office expense", "general expense",
             "entertainment", "subscription", "membership",
             "rate", "tax", "municipal", "water charge",
@@ -326,138 +329,100 @@ CLASSIFICATION_PRIORITY = [
 def parse_tb_pdf(pdf_path):
     """Parse a Trial Balance PDF (Tally/Busy/Excel-exported) into account rows.
     
+    Uses text extraction (not table extraction) because Tally PDFs have
+    multiple tables per page with group headers between them. Text mode
+    preserves the complete structure.
+    
     Returns same format as detect_tb_structure for seamless integration.
-    Handles:
-    - Tally ERP format (group headers, account names, Dr/Cr columns)
-    - Busy format (similar structure)
-    - Excel-exported PDFs with tabular layout
     """
     import pdfplumber, re
 
+    # ── Extract all text lines across all pages ────────────────────────
     all_lines = []
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            # Try table extraction first (works for structured PDFs)
-            tables = page.extract_tables()
-            if tables:
-                for table in tables:
-                    for row in table:
-                        if row and any(cell for cell in row if cell):
-                            all_lines.append([str(c or "").strip() for c in row])
-            else:
-                # Fallback: text extraction with layout
-                text = page.extract_text() or ""
-                for line in text.split("\n"):
-                    if line.strip():
-                        all_lines.append([line.strip()])
+            text = page.extract_text() or ""
+            for line in text.split("\n"):
+                l = line.strip()
+                if l:
+                    all_lines.append(l)
 
     if not all_lines:
         return None
 
-    # ── Detect columns ─────────────────────────────────────────────────
-    # Look for header row with "Debit" / "Credit" or "Dr" / "Cr"
-    acct_col = 0
-    dr_col = None
-    cr_col = None
-    header_row_idx = None
+    num_re = re.compile(r'([\d,]+\.\d{2})')
 
-    for i, row in enumerate(all_lines[:15]):
-        row_lower = [c.lower() for c in row]
-        for j, cell in enumerate(row_lower):
-            if "debit" in cell or cell.strip() == "dr":
-                dr_col = j
-                header_row_idx = i
-            if "credit" in cell or cell.strip() == "cr":
-                cr_col = j
-                header_row_idx = i
-            if "particular" in cell or "account" in cell or "ledger" in cell:
-                acct_col = j
+    # Skip metadata lines
+    skip_patterns = {"trial balance", "as on ", "page no", "continued",
+                     "focal point", "punjab", "phase-", "e-254"}
 
-    # If no explicit header found, try heuristic:
-    # First column = name, numbers in other columns
-    if dr_col is None or cr_col is None:
-        # Find columns that have the most numbers
-        num_pattern = re.compile(r'^[\d,]+\.?\d*$')
-        col_num_counts = {}
-        for row in all_lines[2:min(30, len(all_lines))]:
-            for j, cell in enumerate(row):
-                clean = cell.replace(",", "").replace(" ", "").strip()
-                if num_pattern.match(clean) and float(clean) > 0:
-                    col_num_counts[j] = col_num_counts.get(j, 0) + 1
-        # Top 2 numeric columns = Dr and Cr
-        sorted_cols = sorted(col_num_counts.items(), key=lambda x: -x[1])
-        if len(sorted_cols) >= 2:
-            dr_col = min(sorted_cols[0][0], sorted_cols[1][0])
-            cr_col = max(sorted_cols[0][0], sorted_cols[1][0])
-        elif len(sorted_cols) == 1:
-            # Single amount column (net format)
-            dr_col = sorted_cols[0][0]
-            cr_col = None
+    # Credit-side groups (amounts go to credit column)
+    credit_groups = {"capital account", "secured loans", "unsecured loans",
+                     "sundry creditors", "sundry payables", "sales account",
+                     "indirect incomes", "profit & loss account",
+                     "current liabilities", "duties & taxes"}
 
     # ── Parse accounts ─────────────────────────────────────────────────
-    def _parse_amount(s):
-        """Parse Indian number format: 1,23,456.78 or (1,234) for negative."""
-        if not s:
-            return 0.0
-        s = s.strip()
-        negative = False
-        if s.startswith("(") and s.endswith(")"):
-            negative = True
-            s = s[1:-1]
-        if s.endswith(" Dr"):
-            s = s[:-3]
-        elif s.endswith(" Cr"):
-            negative = True
-            s = s[:-3]
-        s = s.replace(",", "").replace(" ", "").strip()
-        try:
-            val = float(s)
-            return -val if negative else val
-        except ValueError:
-            return 0.0
-
-    accounts = []
     current_group = ""
-    data_start = (header_row_idx or 0) + 1
-    skip_words = {"total", "grand total", "opening balance", "closing balance",
-                  "difference in", "profit & loss", "profit and loss",
-                  "trial balance", "as on", "from", "to "}
+    accounts = []
+    company_name = ""
 
-    for ri, row in enumerate(all_lines[data_start:], start=data_start):
-        if len(row) <= acct_col:
+    for line in all_lines:
+        ll = line.lower().strip()
+
+        # Skip metadata
+        if any(s in ll for s in skip_patterns):
+            continue
+        if ll == "particulars debit amount credit amount":
             continue
 
-        name = row[acct_col].strip()
-        if not name or len(name) < 2:
+        # Company name (first non-skip line, usually all caps with no numbers)
+        if not company_name and line.isupper() and len(line) > 3 and not num_re.search(line):
+            company_name = line
             continue
-        name_lower = name.lower()
-
-        # Skip headers and totals
-        if any(sw in name_lower for sw in skip_words):
+        # Skip repeated company name on subsequent pages
+        if company_name and line.strip() == company_name:
             continue
 
-        # Parse amounts
+        # Find numbers in line
+        nums = num_re.findall(line)
+        name = num_re.sub('', line).strip()
+
+        # No numbers and has text = group header
+        if not nums:
+            if name and len(name) > 1 and name not in ("0.01", ""):
+                # Skip address-like lines that aren't groups
+                nl = name.lower()
+                if not any(s in nl for s in ["phase-", "focal", "punjab",
+                           "ludhiana-", "delhi-", "mumbai-", "address"]):
+                    current_group = name
+            continue
+
+        # Has numbers but no name = subtotal line → skip
+        if not name:
+            continue
+
+        # ── Parse Dr / Cr amounts ──────────────────────────────────────
         dr_amt = 0.0
         cr_amt = 0.0
-        if dr_col is not None and dr_col < len(row):
-            dr_amt = _parse_amount(row[dr_col])
-        if cr_col is not None and cr_col < len(row):
-            cr_amt = _parse_amount(row[cr_col])
 
-        # If both are 0, this might be a group header
-        if dr_amt == 0 and cr_amt == 0:
-            # Check if the name is all-caps or looks like a group
-            if name.isupper() or name.endswith(":"):
-                current_group = name.rstrip(":")
-                continue
-            # Could still be a zero-balance account; include it
-            continue
+        if len(nums) == 1:
+            val = float(nums[0].replace(',', ''))
+            # Use group to determine debit vs credit side
+            if current_group.lower() in credit_groups:
+                cr_amt = val
+            else:
+                dr_amt = val
+        elif len(nums) >= 2:
+            # Two numbers: first = debit, second = credit
+            dr_amt = float(nums[0].replace(',', ''))
+            cr_amt = float(nums[1].replace(',', ''))
 
         net_amt = dr_amt - cr_amt
 
         accounts.append({
-            "row": ri,
-            "key": f"{name}_{ri}",
+            "row": len(accounts),
+            "key": f"{name}_{len(accounts)}",
             "name": name,
             "group": current_group,
             "debit": dr_amt,
@@ -471,11 +436,11 @@ def parse_tb_pdf(pdf_path):
     return {
         "format_type": "PDF",
         "sheet_name": "PDF",
-        "header_row": header_row_idx or 0,
-        "data_start_row": data_start,
-        "account_col": acct_col,
-        "debit_col": dr_col,
-        "credit_col": cr_col,
+        "header_row": 0,
+        "data_start_row": 0,
+        "account_col": 0,
+        "debit_col": 1,
+        "credit_col": 2,
         "net_col": None,
         "accounts": accounts,
     }
@@ -1721,10 +1686,12 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             SALE_ROW_MAP = {
                 "12% interstate": 11, "12% intertate": 11,
                 "12% within": 12,
-                "5% interstate": 13, "5% intertate": 13,
-                "5% within": 14,
+                "18% interstate": 13, "18% intertate": 13,
+                "18% within": 14,
+                "5% interstate": 15, "5% intertate": 15,
+                "5% within": 16,
             }
-            sale_row_totals = {11: 0, 12: 0, 13: 0, 14: 0}
+            sale_row_totals = {11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0}
             unmatched_sale = 0
 
             for acct in sale_accounts:
@@ -1749,6 +1716,27 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         # Formula cell — try to override it (MergedCell-safe)
                         if _safe_write(ws_gp, row, 5, amt):
                             injected.append(f"GROSS PROFIT!E{row} (Sale override) = {amt:,.2f}")
+
+            # Also inject individual sales into notes to p&l (rows 7-14)
+            if ws_npl:
+                npl_sale_row = 7
+                for acct in sale_accounts:
+                    amt = abs(acct["net"])
+                    if amt > 0 and npl_sale_row <= 9:
+                        # Try to match or write to first empty row
+                        wrote = False
+                        for r in range(7, 10):
+                            cell_name = ws_npl.cell(r, 2).value
+                            if cell_name and _fuzzy_match_name(acct["name"], str(cell_name)):
+                                if _safe_write(ws_npl, r, 4, amt):
+                                    injected.append(f"notes to p&l!D{r} (Sale: {acct['name']}) = {amt:,.2f}")
+                                    wrote = True
+                                break
+                        if not wrote:
+                            if _safe_write(ws_npl, npl_sale_row, 4, amt):
+                                _safe_write(ws_npl, npl_sale_row, 2, acct["name"])
+                                injected.append(f"notes to p&l!D{npl_sale_row} (Sale: {acct['name']}) = {amt:,.2f}")
+                            npl_sale_row += 1
 
         # ── B. Purchases → GROSS PROFIT!B14:B18 ─────────────────────
         # Row 14=Purchase GST 12% Interstate, 15=12% WS, 16=18% WS
@@ -1867,11 +1855,28 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         # (No-op block kept for clarity — see unmatched-placement logic below where
         #  the account name is now written to column B as well.)
 
-        # Build template label → row map for D57:D78
-        # Key = normalized label from col B, value = row number
-        exp_row_map = {}
+        # Build template label → row map for Other Expenses section
+        # Different templates place Other Expenses at different rows.
+        # Detect the actual section start by searching for "Other Expenses" header
+        exp_section_start = 72  # default
+        exp_section_end = 98    # default
         npl_cache = _cache.get("notes to p&l", {})
-        for r in range(57, 79):
+        
+        for r in range(50, 100):
+            b_val = npl_cache.get((r, 2))
+            if b_val and "other expense" in str(b_val).lower():
+                exp_section_start = r + 1
+                break
+        
+        # Find section end (next "Total" or blank section)
+        for r in range(exp_section_start, min(exp_section_start + 30, 120)):
+            b_val = npl_cache.get((r, 2))
+            if b_val and "total" in str(b_val).lower() and "other" in str(b_val).lower():
+                exp_section_end = r
+                break
+        
+        exp_row_map = {}
+        for r in range(exp_section_start, exp_section_end):
             b_val = npl_cache.get((r, 2))
             if b_val:
                 exp_row_map[r] = str(b_val).strip().lower()
@@ -1940,7 +1945,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 # label is visible alongside the amount (otherwise interest on
                 # late payment of TDS would appear as an unlabelled amount).
                 placed = False
-                for r in range(57, 79):
+                for r in range(exp_section_start, exp_section_end):
                     if r not in written_exp_rows:
                         d_val = _cache.get("notes to p&l", {}).get((r, 4))
                         b_val = _cache.get("notes to p&l", {}).get((r, 2))
