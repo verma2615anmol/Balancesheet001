@@ -7813,9 +7813,22 @@ function onMapChange(sel) {
   const val = sel.value;
   userMappings[key] = val;
   sel.classList.add('changed');
-  // Auto-save to sessionStorage (zero server cost, survives refresh)
   try { sessionStorage.setItem('tb_mappings', JSON.stringify(userMappings)); } catch(e) {}
+  // Track expanded groups before rebuild
+  const expanded = new Set();
+  document.querySelectorAll('[id^="grp_"]').forEach(el => {
+    if (el.style.display !== 'none') expanded.add(el.id);
+  });
   rebuildPanels();
+  // Restore expanded state
+  expanded.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.style.display = '';
+      const hdr = el.previousElementSibling;
+      if (hdr) { const a = hdr.querySelector('.grp-arrow'); if (a) a.textContent = '▼'; }
+    }
+  });
 }
 
 // ═══════════════════════════════════════
