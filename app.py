@@ -6191,13 +6191,18 @@ def _parse_gstr3b_pdf(pdf_path):
 
 
 def _month_key(period_name, fy_str):
-    """Convert GSTR3B period 'December' + year '2025-26' to 'Dec-25' format."""
+    """Convert GSTR3B period 'December' + year '2025-26' to 'Dec-25' format.
+    Handles both full names ('January') and abbreviations ('Jan')."""
     month_abbr = {
         'january': 'Jan', 'february': 'Feb', 'march': 'Mar', 'april': 'Apr',
         'may': 'May', 'june': 'Jun', 'july': 'Jul', 'august': 'Aug',
-        'september': 'Sep', 'october': 'Oct', 'november': 'Nov', 'december': 'Dec'
+        'september': 'Sep', 'october': 'Oct', 'november': 'Nov', 'december': 'Dec',
+        # Also accept 3-letter abbreviations directly
+        'jan': 'Jan', 'feb': 'Feb', 'mar': 'Mar', 'apr': 'Apr',
+        'jun': 'Jun', 'jul': 'Jul', 'aug': 'Aug', 'sep': 'Sep',
+        'oct': 'Oct', 'nov': 'Nov', 'dec': 'Dec',
     }
-    abbr = month_abbr.get(period_name.lower())
+    abbr = month_abbr.get(period_name.lower().strip())
     if not abbr:
         return None
     # FY "2025-26" means Apr 2025 - Mar 2026
@@ -6292,11 +6297,50 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
                 result = _parse_gstr3b_pdf(pdf_path)
                 if result and result['state_code'] and result['period']:
                     sc = result['state_code']
-                    mk = _month_key(result['period'], result['year'] or '')
+
+                    # ── CRITICAL FIX: derive month from FILENAME not PDF period ──
+                    # Quarterly filers: file "032026.pdf" but PDF says period "Jan"
+                    # (Jan = quarter start for Q4 Jan-Feb-Mar).
+                    # Filename MMYYYY is authoritative for the filing month.
+                    # e.g. GSTR3B_06AACCL_032026.pdf → month=March 2026 → "mar-26"
+                    mk = None
+                    fn_base = os.path.splitext(fname)[0]   # "GSTR3B_07AACCL9465D1ZE_032026"
+                    fn_parts = fn_base.split('_')
+                    fn_mmyyyy = fn_parts[-1] if fn_parts else ''  # "032026"
+                    if len(fn_mmyyyy) == 6 and fn_mmyyyy.isdigit():
+                        mm   = int(fn_mmyyyy[:2])   # 03
+                        yyyy = int(fn_mmyyyy[2:])   # 2026
+                        _MNAMES = {1:'January',2:'February',3:'March',4:'April',
+                                   5:'May',6:'June',7:'July',8:'August',
+                                   9:'September',10:'October',11:'November',12:'December'}
+                        fn_period = _MNAMES.get(mm, result['period'])
+                        # Reconstruct FY from YYYY: March 2026 → FY 2025-26
+                        fn_fy_start = yyyy - 1 if mm <= 3 else yyyy
+                        fn_fy = f"{fn_fy_start}-{str(fn_fy_start+1)[2:]}"
+                        mk = _month_key(fn_period, fn_fy)
+                        if mk and mk != _month_key(result['period'], result['year'] or ''):
+                            log.append(f"  ℹ Quarterly filer: PDF says '{result['period']}' "
+                                       f"but filename says {fn_period} → using '{mk}'")
+
+                    # Fallback to PDF period if filename parse failed
+                    if not mk:
+                        mk = _month_key(result['period'], result['year'] or '')
+
                     if mk:
                         if sc not in gst_data:
                             gst_data[sc] = {}
-                        gst_data[sc][mk] = result
+                        # Accumulate: quarterly filer may cover multiple months in one PDF
+                        # so we add to existing entry if already present
+                        if mk in gst_data[sc]:
+                            existing = gst_data[sc][mk]
+                            existing['taxable_value'] += result['taxable_value']
+                            existing['igst']          += result['igst']
+                            existing['cgst']          += result['cgst']
+                            existing['sgst']          += result['sgst']
+                            existing['cess']          += result['cess']
+                            existing['total_tax']     += result['total_tax']
+                        else:
+                            gst_data[sc][mk] = result
                         if result.get('trade_name'):
                             trade_names[sc] = result['trade_name']
                         log.append(f"Parsed: State {sc} / {mk} — taxable ₹{result['taxable_value']:,.2f}")
