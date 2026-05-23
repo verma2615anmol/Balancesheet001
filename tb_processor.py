@@ -2452,6 +2452,12 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         # ── F. Other Expenses → notes to p&l!D57:D78 ─────────────────
         # Finance-cost keywords to exclude from other_expenses
         # Only EXACT bank/loan interest excluded — NOT "intt paid on late payment of tds"
+        BANK_INT_KEYWORDS = ["bank interest", "bank cc intt", "cc interest",
+                             "bank od interest", "overdraft interest", "bank charges"]
+        LOAN_INT_KEYWORDS = ["loan interest", "car loan interest", "machine loan",
+                             "top up", "interest on loan", "interest on term",
+                             "interest on unsecured", "interest paid to",
+                             "interest to partner"]
         FINANCE_KEYWORDS = set(BANK_INT_KEYWORDS + LOAN_INT_KEYWORDS)
         finance_acct_names = {a["name"].lower() for a in finance_accounts}
 
