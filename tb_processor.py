@@ -328,16 +328,201 @@ CLASSIFICATION_PRIORITY = [
 
 def parse_tb_pdf(pdf_path):
     """Parse a Trial Balance PDF (Tally/Busy/Excel-exported) into account rows.
-    
-    Uses text extraction (not table extraction) because Tally PDFs have
-    multiple tables per page with group headers between them. Text mode
-    preserves the complete structure.
-    
-    Returns same format as detect_tb_structure for seamless integration.
+
+    HYBRID approach (fixes Dr/Cr column-attribution bug):
+      • `extract_tables()` is authoritative for the Debit vs Credit column —
+        each table row arrives as ``[name, debit_str, credit_str]`` so a
+        credit-balance row on the debtor side (e.g. MEERA FORGING with only
+        a credit amount) is preserved exactly as it appears in the PDF.
+      • `extract_text()` lines are walked in parallel ONLY to capture the
+        group/section headers ("SUNDRY DEBTORS", "SECURED LOANS", …) which
+        appear BETWEEN tables and are NOT inside the extracted tables.
+
+    The previous text-only parser inferred Dr/Cr from `current_group` alone,
+    which silently mis-classified accounts whose balance was on the OPPOSITE
+    side of their group's normal side (e.g. a debtor with a credit balance
+    was reported as Dr, breaking the "advance from customer" reclassification
+    downstream). The hybrid path keeps the natural sign and lets the existing
+    sign-aware reclassification logic move it to the right BS head.
+
+    Returns the same shape as detect_tb_structure for seamless integration.
     """
     import pdfplumber, re
 
-    # ── Extract all text lines across all pages ────────────────────────
+    num_re = re.compile(r'([\d,]+\.\d{2})')
+
+    # Section/group keywords found in Indian TB PDFs. Used to reset
+    # `current_group` when walking the text lines.
+    GROUP_KEYWORDS = {
+        "bank accounts", "bank account",
+        "capital account", "capital accounts",
+        "cash-in-hand", "cash in hand",
+        "fixed assets",
+        "direct expenses", "indirect expenses",
+        "indirect incomes", "indirect income",
+        "direct incomes", "direct income",
+        "purchase account", "purchase accounts", "purchases",
+        "sales account", "sales accounts", "sales",
+        "sundry creditors", "sundry debtors",
+        "sundry payables", "sundry payable",
+        "sundry receivables", "sundry receivable",
+        "loans & advances (asset)", "loans & advances",
+        "loans and advances", "loans (liability)", "loans liability",
+        "current liabilities", "current assets",
+        "deposits (asset)", "deposits",
+        "duties & taxes", "duties and taxes",
+        "secured loans", "unsecured loans", "unsecure loans",
+        "stock-in-hand", "stock in hand",
+        "investments",
+        "profit & loss account", "profit and loss account",
+        "profit & loss a/c",
+        "provisions", "reserves & surplus", "reserves and surplus",
+        "misc. expenses (asset)", "miscellaneous expenses",
+        "branch/divisions", "suspense a/c",
+    }
+
+    def _norm_header(line):
+        return re.sub(r"[\s\-:]+$", "", line.strip().lower())
+
+    def _is_group_header(line):
+        return _norm_header(line) in GROUP_KEYWORDS
+
+    def _to_float(v):
+        if v is None: return 0.0
+        s = str(v).strip()
+        if not s: return 0.0
+        s = (s.replace(",", "").replace("₹", "")
+               .replace("Rs.", "").replace("Rs", "")
+               .replace("(", "-").replace(")", ""))
+        try:
+            return float(s)
+        except ValueError:
+            return 0.0
+
+    SKIP_NAMES = {"particulars", "trial balance",
+                  "debit amount", "credit amount",
+                  "total", "grand total", "opening balance",
+                  "closing balance", "balance c/d", "balance b/d",
+                  "sub total", "net total"}
+
+    accounts = []
+    running_group = ""
+
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                # Text lines on this page (used only for group-header tracking)
+                text_lines = [ln.strip() for ln in
+                              (page.extract_text() or "").splitlines()
+                              if ln.strip()]
+
+                # Tables on this page (authoritative for Dr / Cr columns)
+                tables = page.extract_tables() or []
+                table_rows = []
+                for tbl in tables:
+                    for row in tbl:
+                        if not row:
+                            continue
+                        if all((c is None or str(c).strip() == "")
+                               for c in row):
+                            continue
+                        table_rows.append(row)
+
+                # Set of names appearing as first-cell of a data row — used
+                # to know which text lines are data (vs group headers).
+                tr_first_cells = {str(row[0]).strip()
+                                  for row in table_rows
+                                  if row and row[0]}
+
+                # Walk text lines IN ORDER to attach the most recently seen
+                # group header to each data-row name on this page.
+                page_group = running_group
+                line_to_group = {}
+                for ln in text_lines:
+                    if _is_group_header(ln):
+                        page_group = _norm_header(ln)
+                        continue
+                    name_part = re.sub(
+                        r"\s+-?[\d,]+\.\d{1,2}(\s+-?[\d,]+\.\d{1,2})?\s*$",
+                        "", ln).strip()
+                    if name_part and name_part in tr_first_cells:
+                        line_to_group.setdefault(name_part, page_group)
+
+                # Emit account rows from the tables
+                for row in table_rows:
+                    cells = [str(c).strip() if c is not None else ""
+                             for c in row]
+                    while len(cells) < 3:
+                        cells.append("")
+                    name, dr_str, cr_str = cells[0], cells[1], cells[2]
+
+                    if not name:
+                        # Subtotal row — ignore.
+                        continue
+                    nl = name.lower().strip()
+                    if nl in SKIP_NAMES:
+                        continue
+                    if re.search(r"continued on page", name, re.I):
+                        continue
+                    if re.match(
+                            r"^(total|grand total|sub total|opening|closing|balance)\b",
+                            name, re.I):
+                        continue
+
+                    dr = _to_float(dr_str)
+                    cr = _to_float(cr_str)
+                    if dr == 0 and cr == 0:
+                        continue
+
+                    grp = line_to_group.get(name, page_group)
+                    accounts.append({
+                        "row":    len(accounts),
+                        "key":    f"{name}_{len(accounts)}",
+                        "name":   name,
+                        "group":  grp,
+                        "debit":  dr,
+                        "credit": cr,
+                        "net":    dr - cr,
+                    })
+
+                running_group = page_group
+    except Exception:
+        # Fall back to text-only parser if pdfplumber table extraction fails
+        try:
+            return _parse_tb_pdf_text_fallback(pdf_path)
+        except Exception:
+            return None
+
+    # If table extraction found no rows (PDFs without ruled lines), fall back
+    if not accounts:
+        try:
+            return _parse_tb_pdf_text_fallback(pdf_path)
+        except Exception:
+            return None
+
+    return {
+        "format_type":   "PDF",
+        "sheet_name":    "PDF",
+        "header_row":    0,
+        "data_start_row":0,
+        "account_col":   0,
+        "debit_col":     1,
+        "credit_col":    2,
+        "net_col":       None,
+        "accounts":      accounts,
+    }
+
+
+def _parse_tb_pdf_text_fallback(pdf_path):
+    """Legacy text-only PDF parser kept as a fallback for PDFs whose tables
+    are not extractable by pdfplumber (e.g. no ruled lines).
+
+    NOTE: this path infers Dr/Cr from `current_group` alone, so a debtor with
+    a CREDIT balance will appear in the debit column. The primary
+    `parse_tb_pdf` should be used wherever possible.
+    """
+    import pdfplumber, re
+
     all_lines = []
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
@@ -346,105 +531,76 @@ def parse_tb_pdf(pdf_path):
                 l = line.strip()
                 if l:
                     all_lines.append(l)
-
     if not all_lines:
         return None
 
     num_re = re.compile(r'([\d,]+\.\d{2})')
-
-    # Skip metadata lines
     skip_patterns = {"trial balance", "as on ", "page no", "continued",
                      "focal point", "punjab", "phase-", "e-254"}
-
-    # Credit-side groups (amounts go to credit column)
     credit_groups = {"capital account", "secured loans", "unsecured loans",
                      "sundry creditors", "sundry payables", "sales account",
                      "indirect incomes", "profit & loss account",
                      "current liabilities", "duties & taxes"}
 
-    # ── Parse accounts ─────────────────────────────────────────────────
     current_group = ""
     accounts = []
     company_name = ""
 
     for line in all_lines:
         ll = line.lower().strip()
-
-        # Skip metadata
         if any(s in ll for s in skip_patterns):
             continue
         if ll == "particulars debit amount credit amount":
             continue
-
-        # Company name (first non-skip line, usually all caps with no numbers)
         if not company_name and line.isupper() and len(line) > 3 and not num_re.search(line):
             company_name = line
             continue
-        # Skip repeated company name on subsequent pages
         if company_name and line.strip() == company_name:
             continue
-
-        # Find numbers in line
         nums = num_re.findall(line)
         name = num_re.sub('', line).strip()
-
-        # No numbers and has text = group header
         if not nums:
             if name and len(name) > 1 and name not in ("0.01", ""):
-                # Skip address-like lines that aren't groups
                 nl = name.lower()
                 if not any(s in nl for s in ["phase-", "focal", "punjab",
                            "ludhiana-", "delhi-", "mumbai-", "address"]):
                     current_group = name
             continue
-
-        # Has numbers but no name = subtotal line → skip
         if not name:
             continue
-
-        # ── Parse Dr / Cr amounts ──────────────────────────────────────
         dr_amt = 0.0
         cr_amt = 0.0
-
         if len(nums) == 1:
             val = float(nums[0].replace(',', ''))
-            # Use group to determine debit vs credit side
             if current_group.lower() in credit_groups:
                 cr_amt = val
             else:
                 dr_amt = val
         elif len(nums) >= 2:
-            # Two numbers: first = debit, second = credit
             dr_amt = float(nums[0].replace(',', ''))
             cr_amt = float(nums[1].replace(',', ''))
-
-        net_amt = dr_amt - cr_amt
-
         accounts.append({
-            "row": len(accounts),
-            "key": f"{name}_{len(accounts)}",
-            "name": name,
-            "group": current_group,
-            "debit": dr_amt,
+            "row":    len(accounts),
+            "key":    f"{name}_{len(accounts)}",
+            "name":   name,
+            "group":  current_group,
+            "debit":  dr_amt,
             "credit": cr_amt,
-            "net": net_amt,
+            "net":    dr_amt - cr_amt,
         })
-
     if not accounts:
         return None
-
     return {
-        "format_type": "PDF",
-        "sheet_name": "PDF",
-        "header_row": 0,
-        "data_start_row": 0,
-        "account_col": 0,
-        "debit_col": 1,
-        "credit_col": 2,
-        "net_col": None,
-        "accounts": accounts,
+        "format_type":   "PDF",
+        "sheet_name":    "PDF",
+        "header_row":    0,
+        "data_start_row":0,
+        "account_col":   0,
+        "debit_col":     1,
+        "credit_col":    2,
+        "net_col":       None,
+        "accounts":      accounts,
     }
-
 
 def convert_pdf_tb_to_xlsx(pdf_path, xlsx_path):
     """Convert a PDF trial balance to an xlsx file for processing."""
@@ -790,36 +946,62 @@ def _to_float(val):
 
 # Group header → BS head mapping for hierarchical TBs
 GROUP_HEAD_MAP = {
-    "capital account": "capital",
-    "bank accounts": "cash_bank",
-    "bank account": "cash_bank",
-    "cash-in-hand": "cash_bank",
-    "cash in hand": "cash_bank",
-    "fixed assets": "fixed_assets",
-    "sundry creditors": "trade_payables",
-    "sundry debtors": "trade_rec",
-    "sundry debtor": "trade_rec",
-    "purchase account": "purchases",
-    "purchases": "purchases",
-    "sales account": "revenue",
-    "sales accounts": "revenue",
-    "stock-in-hand": "inventories",
-    "stock in hand": "inventories",
-    "indirect expenses": "other_expenses",
-    "direct expenses": "purchases",
-    "indirect income": "other_income",
-    "indirect incomes": "other_income",
-    "direct income": "revenue",
-    "direct incomes": "revenue",
-    "sundry payables": "other_cl",
-    "provisions": "st_provisions",
-    "unsecure loans": "lt_borrowings",
-    "unsecured loans": "lt_borrowings",
-    "secured loans": "lt_borrowings",
-    "loans (liability)": "lt_borrowings",
-    "deposits (asset)": "stla",
-    "duties & taxes": "stla",
-    "duties and taxes": "stla",
+    "capital account":           "capital",
+    "capital accounts":          "capital",
+    "reserves & surplus":        "capital",
+    "reserves and surplus":      "capital",
+    "bank accounts":             "cash_bank",
+    "bank account":              "cash_bank",
+    "cash-in-hand":              "cash_bank",
+    "cash in hand":              "cash_bank",
+    "fixed assets":              "fixed_assets",
+    "investments":               "non_current_investments",
+    "sundry creditors":          "trade_payables",
+    "sundry debtors":            "trade_rec",
+    "sundry debtor":             "trade_rec",
+    "sundry receivables":        "trade_rec",
+    "sundry receivable":         "trade_rec",
+    "purchase account":          "purchases",
+    "purchase accounts":         "purchases",
+    "purchases":                 "purchases",
+    "sales account":             "revenue",
+    "sales accounts":            "revenue",
+    "sales":                     "revenue",
+    "stock-in-hand":             "inventories",
+    "stock in hand":             "inventories",
+    "indirect expenses":         "other_expenses",
+    "direct expenses":           "purchases",
+    "indirect income":           "other_income",
+    "indirect incomes":          "other_income",
+    "direct income":             "revenue",
+    "direct incomes":            "revenue",
+    "sundry payables":           "other_cl",
+    "sundry payable":            "other_cl",
+    "current liabilities":       "other_cl",
+    "current assets":            "other_current_assets",
+    "provisions":                "st_provisions",
+    "unsecure loans":            "lt_borrowings",
+    "unsecured loans":           "lt_borrowings",
+    "secured loans":             "lt_borrowings",
+    "loans (liability)":         "lt_borrowings",
+    "loans liability":           "lt_borrowings",
+    # FIX (Bug 2): the LOANS & ADVANCES (ASSET) group in Tally/Busy TBs
+    # represents short-term advances (GST credit, TDS/TCS receivable, loans
+    # given out, deposits). Map to `stla` so those items are classified with
+    # HIGH confidence under "Short-term loans & advances" rather than falling
+    # through to the generic low-confidence other_current_assets bucket.
+    "loans & advances (asset)":  "stla",
+    "loans & advances":          "stla",
+    "loans and advances":        "stla",
+    "deposits (asset)":          "stla",
+    "deposits":                  "stla",
+    "duties & taxes":            "stla",
+    "duties and taxes":          "stla",
+    "misc. expenses (asset)":    "misc_expenditure",
+    "miscellaneous expenses":    "misc_expenditure",
+    "profit & loss account":     "capital",
+    "profit and loss account":   "capital",
+    "profit & loss a/c":         "capital",
 }
 
 
