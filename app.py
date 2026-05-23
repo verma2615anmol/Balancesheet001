@@ -7213,11 +7213,55 @@ def tb_process():
         fname = f"{safe_name}_BS_{cy_year}.xlsx"
         log_usage(user["id"], fname)
 
+        # ── FIX (Issue 2 & 3): Surface aggregated P&L figures + tally to UI ────
+        # The frontend now shows Revenue / Other Income / Direct Expenses cards
+        # next to the standard tally rows. These values come straight from
+        # tb_processor.process_tb_to_bs result (`aggregated` + injection-level
+        # totals). Frontend reads: data.tally, data.other_income, data.direct_expenses.
+        aggregated_vals = result.get("aggregated", {}) or {}
+        revenue_val        = result.get("revenue",         aggregated_vals.get("revenue", 0))
+        other_income_val   = result.get("other_income",    aggregated_vals.get("other_income", 0))
+        direct_expenses_val= aggregated_vals.get("direct_expenses", 0)
+        opening_stock_val  = result.get("opening_stock",   aggregated_vals.get("opening_stock", 0))
+        closing_stock_val  = result.get("closing_stock",   aggregated_vals.get("inventories", 0))
+        purchases_val      = aggregated_vals.get("purchases", 0)
+        employee_exp_val   = aggregated_vals.get("employee_expenses", 0)
+        other_exp_val      = aggregated_vals.get("other_expenses", 0)
+        depreciation_val   = aggregated_vals.get("depreciation", 0)
+        finance_cost_val   = aggregated_vals.get("finance_cost", 0)
+        tax_expense_val    = aggregated_vals.get("tax_expense", 0)
+
+        total_assets_val   = result.get("total_assets", 0)
+        total_liab_val     = result.get("total_liabilities", 0)
+        net_profit_val     = result.get("net_profit", 0)
+        diff_val           = abs(float(total_assets_val) - float(total_liab_val))
+
         return jsonify({
             "status":   "success",
             "log":      result.get("log", []),
             "file_id":  h,
             "filename": fname,
+            # ── NEW: aggregated values for the success-page summary ─────
+            "aggregated":      aggregated_vals,
+            "revenue":         revenue_val,
+            "other_income":    other_income_val,        # Issue 2
+            "direct_expenses": direct_expenses_val,     # Issue 3
+            "opening_stock":   opening_stock_val,
+            "closing_stock":   closing_stock_val,
+            "purchases":       purchases_val,
+            "employee_expenses": employee_exp_val,
+            "other_expenses":  other_exp_val,
+            "depreciation":    depreciation_val,
+            "finance_cost":    finance_cost_val,
+            "tax_expense":     tax_expense_val,
+            "tally": {
+                "balanced":       bool(result.get("tally_ok", False)),
+                "total_assets":   total_assets_val,
+                "total_liabilities": total_liab_val,
+                "difference":     diff_val,
+                "profit":         net_profit_val,
+                "user_mappings_applied": len(user_mapping or {}),
+            },
         })
 
     except Exception as e:
@@ -7715,6 +7759,16 @@ function rebuildPanels() {
   // Low confidence accounts with no user override
   const lowConf = accts.filter(a => a.confidence === 'low' && !(userMappings[a.key] && userMappings[a.key] !== 'ignore'));
 
+  // ── FIX (Issue 1): Use the server-provided manual_review list (full
+  // account objects from tb_processor) and split them by suggested_side
+  // so the user sees them at the BOTTOM of the BS / P&L panels with a
+  // dropdown populated from bs_head_options. Submission still happens
+  // through userMappings (keyed by `name_row`).
+  const manualReview   = analysisData?.manual_review || [];
+  const bsHeadOptions  = analysisData?.bs_head_options || [];
+  const manualBS = manualReview.filter(m => (m.suggested_side || 'asset') === 'asset');
+  const manualPL = manualReview.filter(m => (m.suggested_side || 'asset') === 'liability');
+
   let bsHtml = '';
   if (lowConf.length) bsHtml += buildGroup('❌ Needs Manual Mapping', lowConf, true, true);
   BS_HEAD_KEYS.forEach(h => {
@@ -7722,6 +7776,8 @@ function rebuildPanels() {
     if (g.length) bsHtml += buildGroup(HEAD_LABEL[h]||h, g, false, false);
   });
   if (groups['ignore']?.length) bsHtml += buildGroup('Ignored', groups['ignore'], false, false);
+  // Append server-provided Manual rows at the BOTTOM of BS panel
+  if (manualBS.length) bsHtml += buildManualGroup('🔍 Manual Review — Dr Balances (Asset side)', manualBS, bsHeadOptions);
   document.getElementById('bsPanel').innerHTML = bsHtml || '<p style="padding:16px;color:var(--muted);font-size:12px">No BS accounts</p>';
 
   let plHtml = '';
@@ -7729,7 +7785,72 @@ function rebuildPanels() {
     const g = groups[h] || [];
     if (g.length) plHtml += buildGroup(HEAD_LABEL[h]||h, g, false, false);
   });
+  // Append server-provided Manual rows at the BOTTOM of P&L panel
+  if (manualPL.length) plHtml += buildManualGroup('🔍 Manual Review — Cr Balances (Income / Liability side)', manualPL, bsHeadOptions);
   document.getElementById('plPanel').innerHTML = plHtml || '<p style="padding:16px;color:var(--muted);font-size:12px">No P&L accounts</p>';
+}
+
+// ── NEW: Build a group panel for server-provided manual_review items.
+// These items only carry {name,row,group,net,dr_cr,bs_head,suggested_side}
+// (no `key`), so we look up the matching account in analysisData.accounts
+// (which DOES have `key`) to wire the dropdown back into userMappings.
+function _findAcctKeyForManual(m) {
+  const accts = analysisData?.accounts || [];
+  // Primary match: by row number
+  if (m.row != null) {
+    const byRow = accts.find(a => a.row === m.row && a.name === m.name);
+    if (byRow) return byRow.key;
+    const byRowOnly = accts.find(a => a.row === m.row);
+    if (byRowOnly) return byRowOnly.key;
+  }
+  // Fallback: by name only
+  const byName = accts.find(a => (a.name || '').toUpperCase() === (m.name || '').toUpperCase());
+  if (byName) return byName.key;
+  // Last resort: synthesize a key in the same format tb_processor uses
+  return `${m.name}_${m.row || 0}`;
+}
+
+function buildManualGroup(title, manualItems, headOptions) {
+  if (!manualItems || !manualItems.length) return '';
+  const total = manualItems.reduce((s,m) => s + Math.abs(m.net || 0), 0);
+  const opts = (headOptions && headOptions.length)
+    ? headOptions
+    : BS_HEADS.map(h => ({key: h.v, label: h.l}));
+
+  const rows = manualItems.map(m => {
+    const net = m.net || 0;
+    const drcr = m.dr_cr || (net < 0 ? 'Cr' : 'Dr');
+    const amtCls = drcr === 'Cr' ? 'cr' : 'dr';
+    const amtStr = drcr + ' ₹' + Math.abs(net).toLocaleString('en-IN', {maximumFractionDigits:2});
+    const key = _findAcctKeyForManual(m);
+    const currentHead = userMappings[key] || m.bs_head || 'ignore';
+    const selOpts = opts.map(o =>
+      `<option value="${escHtml(o.key)}"${currentHead === o.key ? ' selected' : ''}>${escHtml(o.label)}</option>`
+    ).join('') + `<option value="ignore"${currentHead === 'ignore' ? ' selected' : ''}>⊘ Ignore / Skip</option>`;
+
+    return `<tr>
+      <td><div class="acc-name">${escHtml(m.name)}</div><div class="acc-grp">${escHtml(m.group||'')}</div></td>
+      <td class="amt ${amtCls}">${amtStr}</td>
+      <td><span class="conf-pill conf-low">❌ Manual</span></td>
+      <td><select class="map-sel" data-key="${escHtml(key)}" onchange="onMapChange(this)">
+        ${selOpts}
+      </select></td>
+    </tr>`;
+  }).join('');
+
+  const id = 'grp_manual_' + title.replace(/[^a-z0-9]/gi,'_');
+  return `<div style="margin-bottom:8px;border-radius:8px;overflow:hidden;border:1px solid #FDE68A">
+    <div style="padding:10px 14px;background:#FFFBEB;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none" onclick="toggleGroup('${id}',this)">
+      <span style="font-size:13px;font-weight:700;color:#92400E"><span class="grp-arrow">▼</span> ${escHtml(title)}</span>
+      <span style="font-size:12px;font-weight:600;color:var(--ink)">₹${Math.round(total).toLocaleString('en-IN')} <span style="color:var(--muted);font-weight:400">(${manualItems.length})</span></span>
+    </div>
+    <div id="${id}">
+      <table class="map-table">
+        <thead><tr><th>Account Name</th><th style="text-align:right">Balance</th><th>Status</th><th>Map To BS Head</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>`;
 }
 
 function buildGroup(title, accounts, highlight, startExpanded) {
@@ -8042,16 +8163,62 @@ async function doGenerate() {
     const a = document.createElement('a');
     a.href = dlUrl; a.download = fn; a.click();
 
-    // Show simple success message on step 3
+    // ── FIX (Issue 2 & 3): Show P&L summary cards (Revenue, Other Income,
+    // Direct Expenses, etc.) on the success page. Server now returns these
+    // values from result["aggregated"] via /tb-process JSON.
+    const t = data.tally || {};
+    const ok = !!t.balanced;
+    const fmtMoney = (n) => '₹' + (Math.round(n||0)).toLocaleString('en-IN');
+    const plRows = [
+      ['Revenue from Operations', data.revenue],
+      ['Other Income',            data.other_income],          // NEW Issue 2
+      ['Opening Stock',           data.opening_stock],
+      ['Purchases',               data.purchases],
+      ['Direct Expenses',         data.direct_expenses],       // NEW Issue 3
+      ['Employee / Salary Exp.',  data.employee_expenses],
+      ['Finance Cost',            data.finance_cost],
+      ['Depreciation',            data.depreciation],
+      ['Other Expenses',          data.other_expenses],
+      ['Tax Expense',             data.tax_expense],
+      ['Closing Stock',           data.closing_stock],
+    ].filter(r => r[1] != null && Math.abs(r[1]) > 0.005);
+
+    const plCardsHtml = plRows.map(r => `
+      <div class="sum-card" style="padding:10px 12px;text-align:left">
+        <div class="sum-lbl" style="margin:0 0 4px">${escHtml(r[0])}</div>
+        <div class="sum-val" style="font-size:15px">${fmtMoney(r[1])}</div>
+      </div>`).join('');
+
     document.getElementById('resBox').innerHTML = `
-      <div style="text-align:center;padding:40px 20px">
-        <div style="font-size:48px;margin-bottom:16px">✅</div>
-        <h2 style="font-size:20px;font-weight:800;margin-bottom:8px">Balance Sheet Downloaded!</h2>
-        <p style="color:var(--muted);font-size:13px;margin-bottom:20px">${escHtml(fn)}</p>
+      <div style="text-align:center;padding:24px 20px 16px">
+        <div style="font-size:48px;margin-bottom:8px">✅</div>
+        <h2 style="font-size:20px;font-weight:800;margin-bottom:6px">Balance Sheet Downloaded!</h2>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:18px">${escHtml(fn)}</p>
         <a href="${dlUrl}" class="btn-main" style="display:inline-flex;padding:12px 32px;text-decoration:none">
           ⬇ Download Again
         </a>
-      </div>`;
+      </div>
+
+      <div class="${ok?'result-ok':'result-err'}" style="margin-top:6px">
+        <div style="font-size:16px;font-weight:800;color:${ok?'#065F46':'#B91C1C'}">
+          ${ok?'Balance Sheet Tallied ✅':'Tally Mismatch — Review Needed ⚠️'}
+        </div>
+      </div>
+
+      <div style="margin-top:14px">
+        <div class="trow"><span class="tlbl">Total Assets</span><span class="tval">${fmtMoney(t.total_assets)}</span></div>
+        <div class="trow"><span class="tlbl">Total Liabilities + Capital</span><span class="tval">${fmtMoney(t.total_liabilities)}</span></div>
+        <div class="trow"><span class="tlbl">Difference</span><span class="tval" style="color:${(t.difference||0)<1?'var(--green)':'#EF4444'}">${fmtMoney(t.difference)}</span></div>
+        <div class="trow"><span class="tlbl">Profit / (Loss)</span><span class="tval">${fmtMoney(t.profit)}</span></div>
+        <div class="trow"><span class="tlbl">User Mapping Overrides Applied</span><span class="tval" style="color:var(--brand)">${t.user_mappings_applied||0}</span></div>
+      </div>
+
+      ${plCardsHtml ? `
+      <h3 style="margin:20px 0 8px;font-size:13px;font-weight:700;color:var(--ink);text-transform:uppercase;letter-spacing:.04em">P&amp;L Summary</h3>
+      <div class="sum-grid">${plCardsHtml}</div>` : ''}
+
+      ${data.log ? '<div style="margin-top:10px;padding:10px;background:#F9FAFB;border-radius:8px;font-size:10px;color:var(--muted);max-height:120px;overflow-y:auto">'+data.log.slice(-12).map(l=>'<div>'+escHtml(l)+'</div>').join('')+'</div>' : ''}
+    `;
     document.getElementById('resSub').textContent = fn;
     goStep(3);
 
