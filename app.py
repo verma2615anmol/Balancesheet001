@@ -6339,6 +6339,48 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
         sample_sc = next(iter(gst_data))
         log.append(f"  GSTR3B[{sample_sc}]={sorted(gst_data[sample_sc].keys())}")
 
+    # ── KEY FIX: Align month keys when sales has no year suffix ──────────────
+    # Sales: {"apr": {...}, "may": {...}, ...}   (bare 3-letter, no year)
+    # GSTR3B: {"apr-25": {...}, "may-25": {...}, ...}  (with 2-digit year)
+    # If ALL sales keys are bare (no "-") but GSTR3B keys all have "-",
+    # remap sales keys by prepending the matching year from GSTR3B.
+    sales_bare   = all('-' not in k for k in sales_data.keys())
+    gstr_with_yr = any('-' in mk for sc_d in gst_data.values() for mk in sc_d.keys())
+
+    if sales_bare and gstr_with_yr:
+        # Build a bare→with-year map from GSTR3B keys
+        # e.g. "apr" → "apr-25", "jan" → "jan-26"
+        bare_to_full = {}
+        for sc_d in gst_data.values():
+            for mk in sc_d.keys():
+                if '-' in mk:
+                    bare = mk.split('-')[0]  # "apr-25" → "apr"
+                    bare_to_full[bare] = mk   # last one wins (same across states)
+        if bare_to_full:
+            remapped = {}
+            for bare_k, v in sales_data.items():
+                full_k = bare_to_full.get(bare_k, bare_k)  # fallback: keep original
+                remapped[full_k] = v
+            sales_data = remapped
+            log.append(f"Month key alignment: Sales remapped to year-suffixed keys: {sorted(sales_data.keys())}")
+
+    # Also handle reverse: GSTR3B bare, Sales with year
+    gstr_bare   = all('-' not in mk for sc_d in gst_data.values() for mk in sc_d.keys())
+    sales_with_yr = any('-' in k for k in sales_data.keys())
+    if gstr_bare and sales_with_yr:
+        sales_bare_to_full = {}
+        for k in sales_data.keys():
+            if '-' in k:
+                bare = k.split('-')[0]
+                sales_bare_to_full[bare] = k
+        for sc in list(gst_data.keys()):
+            remapped = {}
+            for mk, d in gst_data[sc].items():
+                full_k = sales_bare_to_full.get(mk, mk)
+                remapped[full_k] = d
+            gst_data[sc] = remapped
+        log.append(f"Month key alignment: GSTR3B remapped to year-suffixed keys")
+
     # --- 3. Build output Excel ---
     wb = Workbook()
     ws_out = wb.active
@@ -6381,7 +6423,10 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
 
     # Data rows
     row_num = 5
-    all_months = sorted(sales_data.keys(), key=lambda x: _month_sort_key(x))
+    # Union of sales months AND GSTR3B months — so months with only GSTR3B data show too
+    gstr_months = {mk for sc_d in gst_data.values() for mk in sc_d.keys()}
+    all_months_set = set(sales_data.keys()) | gstr_months
+    all_months = sorted(all_months_set, key=lambda x: _month_sort_key(x))
     all_state_codes = sorted(gst_data.keys())
 
     # ── Detect consolidated vs split-by-location mode ───────────────────────
