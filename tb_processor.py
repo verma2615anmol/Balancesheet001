@@ -168,7 +168,9 @@ BS_HEADS = {
             "bank account", "bank balance", "cheque in hand",
             "imprest",
         ],
-        "negative_keywords": ["cash credit", "cc account", "overdraft", "od account", "bank od"],
+        "negative_keywords": ["cash credit", "cc account", "overdraft", "od account", "bank od",
+                              "interest", "loan interest", "loan a/c", "loan account",
+                              "bank charge", "processing fee"],
     },
     "stla": {
         "label": "Short Term Loans & Advances",
@@ -257,10 +259,31 @@ BS_HEADS = {
             "salary", "wage", "bonus", "gratuity", "leave",
             "staff welfare", "epf", "esi", "pf contribution",
             "employee benefit", "director remuneration",
-            "partner salary", "partner remuneration",
+            "partner salary", "partner remuneration", "salary to partner",
             "stipend", "incentive", "overtime",
+            "labour refreshment", "labor refreshment",
+            "e.s.i", "leave with wages",
         ],
-        "negative_keywords": ["salary payable", "wages payable", "bonus payable", "leave with wages payable"],
+        "negative_keywords": ["salary payable", "wages payable", "bonus payable", "leave with wages payable",
+                              "e.s.i payable", "esi payable"],
+    },
+    "finance_cost": {
+        "label": "Finance Cost",
+        "side": "pl",
+        "keywords": [
+            "interest paid", "interest on loan", "bank charge",
+            "bank interest", "bank cc intt", "cc interest",
+            "bank od interest", "overdraft interest",
+            "loan interest", "loan 1 interest", "loan 2 interest",
+            "loan 3 interest", "loan 4 interest",
+            "car loan interest", "machine loan interest", "machinery loan interest",
+            "top up loan interest", "top up car loan interest",
+            "interest to partner", "interest on unsecured",
+            "interest on term loan", "interest on secured",
+            "processing fee", "cersai charge",
+            "life insurance machinery loan",
+        ],
+        "negative_keywords": ["interest received", "interest income", "intt paid on late payment"],
     },
     "other_expenses": {
         "label": "Other Expenses / Indirect Expenses",
@@ -272,11 +295,7 @@ BS_HEADS = {
             "insurance", "audit fee", "professional fee", "legal fee",
             "printing", "stationery", "postage", "courier",
             "advertisement", "marketing", "donation",
-            "interest paid", "interest on loan", "bank charge",
-            "bank interest", "discount allowed", "bad debt",
-            "loan interest", "loan 1 interest", "loan 2 interest",
-            "car loan interest", "machine loan", "machinery loan interest",
-            "processing fee", "cersai charge", "top up loan interest",
+            "discount allowed", "bad debt",
             "miscellaneous", "office expense", "general expense",
             "entertainment", "subscription", "membership",
             "rate", "tax", "municipal", "water charge",
@@ -319,15 +338,14 @@ BS_HEADS = {
 # Priority order for classification (most specific first)
 CLASSIFICATION_PRIORITY = [
     "depreciation",
-    # Sign-aware advance heads must be tried BEFORE generic creditor/debtor
-    # keywords so explicit "advance to supplier" names don't get pulled into
-    # trade_payables/stla generic buckets.
     "advance_from_customer", "advance_to_supplier",
     "trade_payables", "trade_rec",
+    "finance_cost",   # Must be before cash_bank so "LOAN INTEREST" doesn't match "bank"
+    "employee_expenses",
     "cash_bank", "inventories",
     "st_provisions",
     "st_borrowings", "lt_borrowings",
-    "employee_expenses", "direct_expenses", "purchases", "revenue", "other_income",
+    "direct_expenses", "purchases", "revenue", "other_income",
     "fixed_assets", "non_current_investments",
     "stla",
     "capital",
@@ -983,7 +1001,7 @@ GROUP_HEAD_MAP = {
     "sales":                     "revenue",
     "stock-in-hand":             "inventories",
     "stock in hand":             "inventories",
-    "indirect expenses":         "other_expenses",
+    # "indirect expenses" removed — let keyword classifier handle individual accounts
     # FIX (Issue 2/4): Direct expenses (Electricity, Wages, Power & Fuel)
     # need their OWN injection target on the Trading A/c. They were
     # previously collapsed into `purchases`, which made them overwrite the
@@ -1466,18 +1484,60 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 skipped.append(f"notes to bs R{row}C{col} ({label}) is formula")
                 return False
 
-        # Long-term borrowings → D8 (ICICI Bank or first bank row)
+        # Long-term borrowings → match individual loan accounts to template rows
         ltb_amt = aggregated_values.get("lt_borrowings", 0)
-        if ltb_amt:
-            # Find writable bank row in notes to bs rows 7-10
-            placed = False
-            for r in range(7, 11):
-                d = ws_n.cell(r, 4).value
-                if d is None or (not _is_formula(str(d))):
-                    placed = inject_notes_row(r, 4, ltb_amt, "Long-term borrowings")
-                    break
-            if not placed:
-                skipped.append(f"long_term_borrowings {ltb_amt:,.2f}: no writable row found in notes to bs")
+        if ltb_amt and individual_accounts:
+            ltb_accounts = [a for a in individual_accounts
+                            if a.get("bs_head") == "lt_borrowings"
+                            and abs(a.get("net", 0)) > 0]
+            
+            # Build template label → row map for LT borrowing section
+            ltb_template = {}
+            for r in range(7, 24):
+                b_val = ws_n.cell(r, 2).value
+                if b_val and isinstance(b_val, str) and len(b_val.strip()) > 2:
+                    lbl = b_val.strip().lower()
+                    if 'total' in lbl or 'secured' in lbl or 'unsecured' in lbl or 'from' in lbl:
+                        continue
+                    ltb_template[r] = lbl
+            
+            written_rows = set()
+            for acct in ltb_accounts:
+                amt = abs(acct["net"])
+                name = acct["name"]
+                # Try fuzzy match to template row
+                matched_row = None
+                for r, lbl in ltb_template.items():
+                    if r in written_rows:
+                        continue
+                    if _fuzzy_match_name(name, lbl):
+                        matched_row = r
+                        break
+                
+                if matched_row:
+                    if _safe_set(ws_n, matched_row, 4, amt):
+                        written_rows.add(matched_row)
+                        injected.append(f"notes to bs!D{matched_row} ({name}) = {amt:,.2f}")
+                else:
+                    # No match — find empty row in LT section
+                    for r in range(7, 14):
+                        if r not in written_rows:
+                            d_val = ws_n.cell(r, 4).value
+                            b_val = ws_n.cell(r, 2).value
+                            if (d_val is None or d_val == 0) and (b_val is None or str(b_val).strip() == ""):
+                                _safe_set(ws_n, r, 2, name)
+                                if _safe_set(ws_n, r, 4, amt):
+                                    written_rows.add(r)
+                                    injected.append(f"notes to bs!D{r} (new: {name}) = {amt:,.2f}")
+                                break
+            
+            if not written_rows and ltb_amt:
+                # Fallback: write total to "from banks" row
+                for r in range(7, 11):
+                    d = ws_n.cell(r, 4).value
+                    if d is None or not _is_formula(str(d)):
+                        inject_notes_row(r, 4, abs(ltb_amt), "Long-term borrowings total")
+                        break
 
         # Short-term borrowings → D26 (bank CC row)
         stb_amt = aggregated_values.get("st_borrowings", 0)
@@ -1502,40 +1562,80 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 if _safe_set(ws_n, 68, 4, total_cheques):
                     injected.append(f"notes to bs!D68 (Cheques issued) = {total_cheques:,.2f}")
 
-        # Other current liabilities → D64:D68 (Audit, Legal, Salary, TDS, Cheque)
+        # Other current liabilities → match by name to template rows
         ocl_amt = aggregated_values.get("other_cl", 0)
         if ocl_amt:
-            # Collect all writable OCL rows (plain-value or empty, in OCL section)
-            ocl_rows = []
-            for r in range(60, 82):
-                d = ws_n.cell(r, 4).value
+            # Detect OCL section boundaries
+            ocl_start = None
+            ocl_end = None
+            for r in range(50, 100):
                 b = ws_n.cell(r, 2).value
-                if b is None:
-                    continue
-                b_str = str(b).strip().lower()
-                if any(kw in b_str for kw in ['total', 'particular', 'amount', 'header',
-                                               'short-term', 'short term', 'borrowing',
-                                               'payable\n', 'current liabilit']):
-                    continue
-                if len(b_str) < 2:
-                    continue
-                if d is None or (not _is_formula(str(d))):
-                    ocl_rows.append((r, b_str, d))
+                if b and 'other current liabilit' in str(b).lower():
+                    ocl_start = r + 1
+                if ocl_start and b and 'total' in str(b).lower() and 'other' in str(b).lower():
+                    ocl_end = r
+                    break
+            if not ocl_start:
+                ocl_start = 59
+            if not ocl_end:
+                ocl_end = 67
+
+            # Build template label → row map for OCL section
+            ocl_template = {}
+            for r in range(ocl_start, ocl_end):
+                b = ws_n.cell(r, 2).value
+                if b and isinstance(b, str) and len(b.strip()) > 2:
+                    lbl = b.strip().lower()
+                    if 'total' not in lbl:
+                        ocl_template[r] = lbl
 
             if individual_accounts:
                 ocl_accounts = [a for a in individual_accounts
                                 if a.get("bs_head") == "other_cl"
                                 and abs(a.get("net", 0)) > 0]
-                row_idx = 0  # sequential pointer into ocl_rows
+                written_ocl = set()
+                
+                # Phase 1: fuzzy match to template
                 for acct in ocl_accounts:
-                    if row_idx >= len(ocl_rows):
-                        skipped.append(f"OCL '{acct['name']}' = {abs(acct['net']):,.2f}: no more rows")
+                    for r, lbl in ocl_template.items():
+                        if r in written_ocl:
+                            continue
+                        if _fuzzy_match_name(acct["name"], lbl):
+                            if _safe_set(ws_n, r, 4, abs(acct["net"])):
+                                written_ocl.add(r)
+                                injected.append(f"notes to bs!D{r} (OCL: {acct['name']}) = {abs(acct['net']):,.2f}")
+                            break
+                
+                # Phase 2: unmatched → empty rows in section
+                for acct in ocl_accounts:
+                    if any(_fuzzy_match_name(acct["name"], ocl_template.get(r, "")) for r in written_ocl):
                         continue
-                    r, label, _ = ocl_rows[row_idx]
-                    inject_notes_row(r, 4, abs(acct["net"]), f"OCL: {acct['name']}")
-                    row_idx += 1
-            elif ocl_rows:
-                inject_notes_row(ocl_rows[0][0], 4, ocl_amt, "Other current liabilities")
+                    amt = abs(acct["net"])
+                    placed = False
+                    for r in range(ocl_start, ocl_end):
+                        if r in written_ocl:
+                            continue
+                        d = ws_n.cell(r, 4).value
+                        b = ws_n.cell(r, 2).value
+                        if (d is None or d == 0) and r not in written_ocl:
+                            if b is None or str(b).strip() == "":
+                                _safe_set(ws_n, r, 2, acct["name"])
+                            if _safe_set(ws_n, r, 4, amt):
+                                written_ocl.add(r)
+                                injected.append(f"notes to bs!D{r} (OCL new: {acct['name']}) = {amt:,.2f}")
+                                placed = True
+                            break
+                    if not placed:
+                        # Insert row before total
+                        try:
+                            ws_n.insert_rows(ocl_end)
+                            _safe_set(ws_n, ocl_end, 2, acct["name"])
+                            _safe_set(ws_n, ocl_end, 4, amt)
+                            written_ocl.add(ocl_end)
+                            injected.append(f"notes to bs!D{ocl_end} (OCL inserted: {acct['name']}) = {amt:,.2f}")
+                            ocl_end += 1
+                        except:
+                            skipped.append(f"OCL '{acct['name']}' = {amt:,.2f}: section full")
 
         # Cash → D109 (Cash in hand), HDFC → D113, ICICI → D114
         cash_bank_amt = aggregated_values.get("cash_bank", 0)
@@ -2223,51 +2323,131 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     + ", ".join(a["name"] for a in oi_accounts)
                 )
 
-        # ── D. Employee Expenses → notes to p&l!D31 ─────────────────
-        # D34 = SUM(D31:D33), p&l!E13 ← notes to p&l!D34
-        # Include accounts classified as employee_expenses OR named "salary"
-        salary_accounts = [a for a in individual_accounts
-                           if (a.get("bs_head") == "employee_expenses"
-                               or "salary" in a.get("name","").lower()
-                               or "wage" in a.get("name","").lower())
-                           and "payable" not in a.get("name","").lower()
-                           and abs(a.get("net", 0)) > 0]
-        if salary_accounts:
-            total_salary = sum(abs(a["net"]) for a in salary_accounts)
-            if _safe_write(ws_npl, 31, 4, total_salary):
-                injected.append(f"notes to p&l!D31 (Salaries) = {total_salary:,.2f}")
+        # ── D. Employee Expenses → match to template rows dynamically ──
+        # Detect Employee benefits section in notes to p&l
+        emp_start = None
+        emp_end = None
+        for r in range(30, 60):
+            b = ws_npl.cell(r, 2).value
+            if b and 'employee benefit' in str(b).lower():
+                emp_start = r + 1
+            if emp_start and b and 'total' in str(b).lower() and 'employee' in str(b).lower():
+                emp_end = r
+                break
+        if not emp_start: emp_start = 41
+        if not emp_end: emp_end = 46
 
-        # ── E. Finance Cost → notes to p&l!D38 (Bank Interest) & D39 (Unsecured Loan) ──
-        # ONLY genuine bank/loan interest goes here.
-        # "INTT PAID ON LATE PAYMENT OF TDS" stays in Other Expenses.
-        BANK_INT_KEYWORDS  = ["bank cc intt", "bank interest", "cc interest",
-                               "bank od interest", "overdraft interest"]
-        LOAN_INT_KEYWORDS  = ["interest on unsecured loan", "interest on loan",
-                               "interest on term loan", "interest paid to"]
+        # All employee-type accounts (including ESI, bonus, leave with wages)
+        emp_accounts = [a for a in individual_accounts
+                        if a.get("bs_head") == "employee_expenses"
+                        and "payable" not in a.get("name","").lower()
+                        and abs(a.get("net", 0)) > 0]
+        # Also include salary, wages, ESI, bonus, leave from other_expenses
+        for a in individual_accounts:
+            name_l = a.get("name","").lower()
+            if a.get("bs_head") in ("other_expenses", "direct_expenses"):
+                if any(kw in name_l for kw in ["salary", "wage", "e.s.i", "esi ",
+                       "bonus", "leave with", "labour refreshment", "labor"]):
+                    if "payable" not in name_l and abs(a.get("net", 0)) > 0:
+                        if a not in emp_accounts:
+                            emp_accounts.append(a)
 
-        bank_int_accounts = [a for a in individual_accounts
-                             if a.get("bs_head") in ("other_expenses", "finance_cost")
-                             and any(kw in a.get("name","").lower() for kw in BANK_INT_KEYWORDS)
-                             and abs(a.get("net", 0)) > 0]
-        loan_int_accounts = [a for a in individual_accounts
-                             if a.get("bs_head") in ("other_expenses", "finance_cost")
-                             and any(kw in a.get("name","").lower() for kw in LOAN_INT_KEYWORDS)
-                             and abs(a.get("net", 0)) > 0]
+        if emp_accounts:
+            emp_template = {}
+            for r in range(emp_start, emp_end):
+                b = ws_npl.cell(r, 2).value
+                if b and isinstance(b, str) and len(b.strip()) > 2:
+                    emp_template[r] = b.strip().lower()
+            
+            written_emp = set()
+            for acct in emp_accounts:
+                matched = False
+                for r, lbl in emp_template.items():
+                    if r in written_emp: continue
+                    if _fuzzy_match_name(acct["name"], lbl):
+                        if _safe_set(ws_npl, r, 4, abs(acct["net"])):
+                            written_emp.add(r)
+                            injected.append(f"notes to p&l!D{r} (Employee: {acct['name']}) = {abs(acct['net']):,.2f}")
+                            matched = True
+                        break
+                if not matched:
+                    # Find empty row in section
+                    for r in range(emp_start, emp_end):
+                        if r not in written_emp:
+                            d = ws_npl.cell(r, 4).value
+                            if d is None or d == 0:
+                                b = ws_npl.cell(r, 2).value
+                                if b is None or str(b).strip() == "":
+                                    _safe_set(ws_npl, r, 2, acct["name"])
+                                _safe_set(ws_npl, r, 4, abs(acct["net"]))
+                                written_emp.add(r)
+                                injected.append(f"notes to p&l!D{r} (Employee new: {acct['name']}) = {abs(acct['net']):,.2f}")
+                                break
 
-        if bank_int_accounts:
-            total_bank_int = sum(abs(a["net"]) for a in bank_int_accounts)
-            if _safe_write(ws_npl, 38, 4, total_bank_int):
-                names = ", ".join(a["name"] for a in bank_int_accounts)
-                injected.append(f"notes to p&l!D38 (Bank Interest) = {total_bank_int:,.2f} [{names}]")
+        # ── E. Finance Cost → match to template rows dynamically ──
+        # Detect Finance cost section
+        fin_start = None
+        fin_end = None
+        for r in range(40, 70):
+            b = ws_npl.cell(r, 2).value
+            if b and 'finance cost' in str(b).lower():
+                fin_start = r + 1
+            if fin_start and b and 'total' in str(b).lower() and 'finance' in str(b).lower():
+                fin_end = r
+                break
+        if not fin_start: fin_start = 50
+        if not fin_end: fin_end = 56
 
-        if loan_int_accounts:
-            total_loan_int = sum(abs(a["net"]) for a in loan_int_accounts)
-            if _safe_write(ws_npl, 39, 4, total_loan_int):
-                names = ", ".join(a["name"] for a in loan_int_accounts)
-                injected.append(f"notes to p&l!D39 (Loan Interest) = {total_loan_int:,.2f} [{names}]")
+        # All finance cost accounts (interest on loans, bank charges related to loans)
+        FINANCE_KEYWORDS = ["interest", "loan interest", "car loan interest",
+                           "machine loan", "top up", "bank cc intt", "bank interest",
+                           "cc interest", "bank od interest", "overdraft interest",
+                           "interest on unsecured", "interest on loan", "interest on term",
+                           "interest paid to", "interest to partner"]
+        
+        finance_accounts = [a for a in individual_accounts
+                           if abs(a.get("net", 0)) > 0
+                           and any(kw in a.get("name","").lower() for kw in FINANCE_KEYWORDS)]
+        # Also include accounts explicitly classified as finance_cost
+        for a in individual_accounts:
+            if a.get("bs_head") == "finance_cost" and abs(a.get("net", 0)) > 0:
+                if a not in finance_accounts:
+                    finance_accounts.append(a)
 
-        # Combined finance accounts list (for exclusion from Other Expenses)
-        finance_accounts = bank_int_accounts + loan_int_accounts
+        if finance_accounts:
+            fin_template = {}
+            for r in range(fin_start, fin_end):
+                b = ws_npl.cell(r, 2).value
+                if b and isinstance(b, str) and len(b.strip()) > 2:
+                    fin_template[r] = b.strip().lower()
+            
+            written_fin = set()
+            for acct in finance_accounts:
+                matched = False
+                for r, lbl in fin_template.items():
+                    if r in written_fin: continue
+                    if _fuzzy_match_name(acct["name"], lbl):
+                        if _safe_set(ws_npl, r, 4, abs(acct["net"])):
+                            written_fin.add(r)
+                            injected.append(f"notes to p&l!D{r} (Finance: {acct['name']}) = {abs(acct['net']):,.2f}")
+                            matched = True
+                        break
+                if not matched:
+                    for r in range(fin_start, fin_end):
+                        if r not in written_fin:
+                            d = ws_npl.cell(r, 4).value
+                            if d is None or d == 0:
+                                b = ws_npl.cell(r, 2).value
+                                if b is None or str(b).strip() == "":
+                                    _safe_set(ws_npl, r, 2, acct["name"])
+                                _safe_set(ws_npl, r, 4, abs(acct["net"]))
+                                written_fin.add(r)
+                                injected.append(f"notes to p&l!D{r} (Finance new: {acct['name']}) = {abs(acct['net']):,.2f}")
+                                break
+
+        # Combined finance+employee accounts for exclusion from Other Expenses
+        finance_acct_names = {a["name"].lower() for a in finance_accounts}
+        emp_acct_names = {a["name"].lower() for a in emp_accounts} if emp_accounts else set()
 
         # ── F. Other Expenses → notes to p&l!D57:D78 ─────────────────
         # Finance-cost keywords to exclude from other_expenses
@@ -2275,16 +2455,18 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         FINANCE_KEYWORDS = set(BANK_INT_KEYWORDS + LOAN_INT_KEYWORDS)
         finance_acct_names = {a["name"].lower() for a in finance_accounts}
 
-        # Also exclude salary and depreciation — handled separately
-        EXCLUDE_FROM_OTHER = finance_acct_names | {"salary","depreciation","dep on","amort"}
+        # Also exclude salary, depreciation, and employee expenses — handled separately
+        EXCLUDE_FROM_OTHER = finance_acct_names | emp_acct_names | {"salary","depreciation","dep on","amort"}
 
         other_exp_accounts = [a for a in individual_accounts
                               if a.get("bs_head") == "other_expenses"
                               and abs(a.get("net", 0)) > 0
                               and a.get("name","").lower() not in EXCLUDE_FROM_OTHER
+                              and a.get("name","").lower() not in finance_acct_names
+                              and a.get("name","").lower() not in emp_acct_names
                               and not any(kw in a.get("name","").lower()
-                                          for kw in {"salary","depreciation","dep on","amort"})
-                              and a["name"].lower() not in finance_acct_names]
+                                          for kw in {"salary","depreciation","dep on","amort",
+                                                     "salary to partner", "interest to partner"})]
 
         # FIX (Issue 2): "INTT PAID ON LATE PAYMENT OF TDS" must stay in Other Expenses.
         # Previously these were rerouted to D62 (Bank Charges), which was wrong
