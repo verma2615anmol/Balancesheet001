@@ -6306,6 +6306,39 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
     if not gst_data:
         return {'status': 'error', 'message': 'No valid GSTR 3B PDFs found in the ZIP.'}
 
+    # ── Normalize month keys so sales & GSTR3B match ─────────────────
+    # Sales might have "April","May" or "Dec-25","Jan-26" etc.
+    # GSTR3B uses "Dec-25","Mar-26" from _month_key().
+    import re as _re
+    _MF = {'january':'jan','february':'feb','march':'mar','april':'apr',
+           'may':'may','june':'jun','july':'jul','august':'aug',
+           'september':'sep','october':'oct','november':'nov','december':'dec'}
+
+    def _norm_month(raw):
+        s = str(raw).strip().lower().rstrip('.')
+        # "Dec-25" / "Jan-26"
+        m = _re.match(r'^([a-z]+)-?(\d{2,4})$', s)
+        if m:
+            mon = _MF.get(m.group(1), m.group(1)[:3])
+            return f"{mon}-{m.group(2)[-2:]}"
+        # "April" / "December" (full, no year)
+        if s in _MF:
+            return _MF[s]
+        if s[:3] in _MF.values():
+            return s[:3]
+        return s
+
+    # Normalize sales keys
+    sales_data = {_norm_month(k): v for k, v in sales_data.items()}
+    # Normalize GSTR3B month keys
+    for sc in list(gst_data.keys()):
+        gst_data[sc] = {_norm_month(mk): d for mk, d in gst_data[sc].items()}
+
+    log.append(f"Normalized: Sales={sorted(sales_data.keys())}")
+    if gst_data:
+        sample_sc = next(iter(gst_data))
+        log.append(f"  GSTR3B[{sample_sc}]={sorted(gst_data[sample_sc].keys())}")
+
     # --- 3. Build output Excel ---
     wb = Workbook()
     ws_out = wb.active
@@ -6546,7 +6579,7 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
 
 
 def _month_sort_key(ms):
-    """Sort key for month strings like 'Apr-25', 'Dec-25', 'Jan-26'."""
+    """Sort key for month strings like 'Apr-25', 'Dec-25', 'Jan-26', or bare 'apr','may'."""
     month_order = {'apr':1,'may':2,'jun':3,'jul':4,'aug':5,'sep':6,
                    'oct':7,'nov':8,'dec':9,'jan':10,'feb':11,'mar':12}
     parts = ms.lower().split('-')
@@ -6555,6 +6588,9 @@ def _month_sort_key(ms):
         try: y = int(parts[1])
         except: y = 0
         return (y, m)
+    # Bare month name (no year)
+    m = month_order.get(ms.lower()[:3], 0)
+    if m: return (0, m)
     return (99, 99)
 
 
