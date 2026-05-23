@@ -6053,39 +6053,48 @@ async function doProcess(){
   if(!salesFile){showStatus('error','✗ Please upload your Sales Summary Excel file.');return;}
   if(!gstFile){showStatus('error','✗ Please upload your GSTR 3B ZIP file.');return;}
 
-  // If consolidated mode — inject a single mapping with the col name
-  const isConsolidated = document.getElementById('consolidated-chk').checked;
-  if(isConsolidated){
-    const colName = (document.getElementById('consolidated-col-input').value||'consolidated').trim();
-    // Clear normal mappings and add a single consolidated marker
-    fd.append('consolidated_mode', 'true');
-    fd.append('consolidated_col', colName);
-  }
+  // Check consolidated mode
+  const chkEl=document.getElementById('consolidated-chk');
+  const isConsolidated = chkEl && chkEl.checked;
 
-  // Collect mappings
-  const rows=document.querySelectorAll('.mapping-row');
+  // Collect state-column mappings (location-wise mode only)
   const mappings={};
-  for(const r of rows){
-    const code=r.querySelector('.map-code').value.trim();
-    const col=r.querySelector('.map-col').value.trim();
-    if(code&&col)mappings[code]=col;
+  if(!isConsolidated){
+    const rows=document.querySelectorAll('.mapping-row');
+    for(const r of rows){
+      const code=r.querySelector('.map-code').value.trim();
+      const col=r.querySelector('.map-col').value.trim();
+      if(code&&col)mappings[code]=col;
+    }
+    if(Object.keys(mappings).length===0){
+      showStatus('error','✗ Please add at least one State Code → Column mapping, or tick Consolidated Sales.');
+      return;
+    }
   }
-  if(Object.keys(mappings).length===0){showStatus('error','✗ Please add at least one State Code → Column mapping.');return;}
 
+  // Build FormData FIRST, then append all fields
   const fd=new FormData();
   fd.append('sales_file',salesFile);
   fd.append('gst_file',gstFile);
   fd.append('mappings',JSON.stringify(mappings));
   fd.append('output_name',document.getElementById('output-name').value.trim());
 
+  // Consolidated params
+  if(isConsolidated){
+    const colInputEl=document.getElementById('consolidated-col-input');
+    const colName=(colInputEl?colInputEl.value:'').trim();
+    fd.append('consolidated_mode','true');
+    fd.append('consolidated_col',colName);
+  }
+
   btn.disabled=true;sp.style.display='inline-block';bt.textContent='Processing…';
   showStatus('','');dl.style.display='none';
 
   try{
-    const res=await fetch('/gst-process',{method:'POST',body:fd});
+    const res=await fetch('/gst-process',{method:'POST',body:fd,credentials:'include'});
     const ct=res.headers.get('content-type')||'';
     if(!ct.includes('application/json')){
-      showStatus('error','✗ Server error. Please try again.');return;
+      showStatus('error','✗ Server error (not JSON). Please try again.');return;
     }
     const data=await res.json();
     if(data.status==='success'){
