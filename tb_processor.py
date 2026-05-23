@@ -300,6 +300,20 @@ BS_HEADS = {
         ],
         "negative_keywords": ["provision for depreciation"],
     },
+    # NEW — separate bucket for Direct Expenses (Electricity, Wages, Power & Fuel)
+    # so they post into the Trading A/c "Direct Expenses" sub-rows instead of
+    # being collapsed into Purchases.
+    "direct_expenses": {
+        "label": "Direct Expenses",
+        "side": "pl",
+        "keywords": [
+            "wages a/c", "wages account", "factory wages", "labour wages",
+            "electricity exp", "power and fuel", "power & fuel",
+            "oil & lubricant", "oil and lubricant",
+            "factory expense", "production expense",
+        ],
+        "negative_keywords": ["wages payable", "electricity payable"],
+    },
 }
 
 # Priority order for classification (most specific first)
@@ -313,7 +327,7 @@ CLASSIFICATION_PRIORITY = [
     "cash_bank", "inventories",
     "st_provisions",
     "st_borrowings", "lt_borrowings",
-    "employee_expenses", "purchases", "revenue", "other_income",
+    "employee_expenses", "direct_expenses", "purchases", "revenue", "other_income",
     "fixed_assets", "non_current_investments",
     "stla",
     "capital",
@@ -970,7 +984,11 @@ GROUP_HEAD_MAP = {
     "stock-in-hand":             "inventories",
     "stock in hand":             "inventories",
     "indirect expenses":         "other_expenses",
-    "direct expenses":           "purchases",
+    # FIX (Issue 2/4): Direct expenses (Electricity, Wages, Power & Fuel)
+    # need their OWN injection target on the Trading A/c. They were
+    # previously collapsed into `purchases`, which made them overwrite the
+    # purchase header row instead of landing in the Direct Expenses sub-rows.
+    "direct expenses":           "direct_expenses",
     "indirect income":           "other_income",
     "indirect incomes":          "other_income",
     "direct income":             "revenue",
@@ -1863,41 +1881,92 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                              if a.get("bs_head") == "revenue"
                              and abs(a.get("net", 0)) > 0]
 
-            # Map TB sale account names → GROSS PROFIT rows
-            # Row 11=12% Interstate, 12=12% WS, 13=5% Interstate, 14=5% WS
-            SALE_ROW_MAP = {
-                "12% interstate": 11, "12% intertate": 11,
-                "12% within": 12,
-                "18% interstate": 13, "18% intertate": 13,
-                "18% within": 14,
-                "5% interstate": 15, "5% intertate": 15,
-                "5% within": 16,
-            }
-            sale_row_totals = {11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0}
-            unmatched_sale = 0
+            # FIX (Issues 2 & 4): Trading-account formatting.
+            #
+            # Previously this block used HARD-CODED row numbers
+            # (12% Within → row 12, 18% Within → row 14 …) which assumed
+            # one specific template layout. If the user's BS template has a
+            # different layout (e.g. extra rows, different section order,
+            # different GST rates listed), the sale amounts landed on the
+            # WRONG rows — sometimes on the TOTAL row, overwriting its formula
+            # and showing the same number on every row.
+            #
+            # New strategy: SCAN column D of the GROSS PROFIT sheet for sale-side
+            # row labels (B11:D24 area), build a label→row map dynamically, and
+            # write each TB sale account into the row whose label best matches.
+            # Unknown rate codes get appended below the last labelled row.
+            gp_cache = _cache.get("GROSS PROFIT", {})
 
+            def _norm_gst(s):
+                """Normalise 'GST 12% WITHIN STATE' -> '12% within state' etc."""
+                s = str(s).lower()
+                s = re.sub(r"\b(sale|sales|gst|a/c)\b", " ", s)
+                s = re.sub(r"\s+", " ", s).strip()
+                return s
+
+            # Build label→row map by scanning the Sales side of GROSS PROFIT.
+            # Sale rows live in col D (label) with amounts in col E.
+            sale_label_rows = {}
+            sale_total_rows = set()
+            for r in range(1, 40):
+                lbl = gp_cache.get((r, 4))   # col D = sales-side label
+                if not lbl:
+                    continue
+                lbl_s = str(lbl).strip()
+                if not lbl_s:
+                    continue
+                lbl_low = lbl_s.lower()
+                # Skip section headers (SALES, CLOSING STOCK) and totals
+                if lbl_low in ("sales", "closing stock", "") or "total" in lbl_low:
+                    if "total" in lbl_low:
+                        sale_total_rows.add(r)
+                    continue
+                if "as certified" in lbl_low or "proprietor" in lbl_low:
+                    continue
+                # This is a sub-item row — record it
+                sale_label_rows[_norm_gst(lbl_s)] = (r, lbl_s)
+
+            # Place each TB sale into its matching row
+            sale_row_totals = {}     # {row: amount}
+            unmatched_sales = []
             for acct in sale_accounts:
-                name_l = acct["name"].lower()
-                matched = False
-                for pattern, row in SALE_ROW_MAP.items():
-                    if pattern in name_l:
-                        sale_row_totals[row] += abs(acct["net"])
-                        matched = True
-                        break
-                if not matched:
-                    # Dump into row 14 (5% within state = largest category)
-                    sale_row_totals[14] += abs(acct["net"])
+                name_norm = _norm_gst(acct["name"])
+                best_row = None
+                best_label = None
+                # Prefer exact normalised match, else substring either-way
+                if name_norm in sale_label_rows:
+                    best_row, best_label = sale_label_rows[name_norm]
+                else:
+                    for lbl_norm, (r, lbl_orig) in sale_label_rows.items():
+                        if lbl_norm and (lbl_norm in name_norm or name_norm in lbl_norm):
+                            best_row, best_label = r, lbl_orig
+                            break
+                if best_row is None:
+                    unmatched_sales.append(acct)
+                    continue
+                sale_row_totals[best_row] = sale_row_totals.get(best_row, 0) + abs(acct["net"])
 
+            # Write each label-matched row — NEVER write to a Total row
             for row, amt in sale_row_totals.items():
-                if amt > 0:
-                    e_val = ws_gp.cell(row, 5).value
-                    if not _is_formula(str(e_val or "")):
-                        if _safe_write(ws_gp, row, 5, amt):
-                            injected.append(f"GROSS PROFIT!E{row} (Sale) = {amt:,.2f}")
-                    else:
-                        # Formula cell — try to override it (MergedCell-safe)
-                        if _safe_write(ws_gp, row, 5, amt):
-                            injected.append(f"GROSS PROFIT!E{row} (Sale override) = {amt:,.2f}")
+                if row in sale_total_rows:
+                    continue
+                if _safe_write(ws_gp, row, 5, amt):
+                    injected.append(f"GROSS PROFIT!E{row} (Sale {amt:,.2f})")
+
+            # Unmatched sales — append below the last sale sub-row but ABOVE total
+            if unmatched_sales and sale_label_rows:
+                last_sub_row = max(r for r, _ in sale_label_rows.values())
+                next_row = last_sub_row + 1
+                for acct in unmatched_sales:
+                    # Stop if we'd overwrite a total / closing-stock row
+                    if next_row in sale_total_rows:
+                        break
+                    if _safe_write(ws_gp, next_row, 4, acct["name"]):
+                        _safe_write(ws_gp, next_row, 5, abs(acct["net"]))
+                        injected.append(
+                            f"GROSS PROFIT!E{next_row} (Sale unmatched: {acct['name']}) = {abs(acct['net']):,.2f}"
+                        )
+                        next_row += 1
 
             # Also inject individual sales into notes to p&l (rows 7-14)
             if ws_npl:
@@ -1928,30 +1997,147 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                   if a.get("bs_head") == "purchases"
                                   and abs(a.get("net", 0)) > 0]
 
-            PURCH_ROW_MAP = {
-                "12% interstate": 14, "12% intertate": 14,
-                "12% within": 15,
-                "18% within": 16,
-                "5% interstate": 17, "5% intertate": 17,
-                "5% within": 18,
-            }
-            purch_row_totals = {14: 0, 15: 0, 16: 0, 17: 0, 18: 0}
+            # FIX (Issues 2 & 4): Same label-driven approach as Sales.
+            # Purchases live on the DEBIT side of GROSS PROFIT —
+            # column A holds labels, column B holds amounts.
+            gp_cache = _cache.get("GROSS PROFIT", {})
+            purch_label_rows = {}
+            purch_total_rows = set()
+            for r in range(1, 40):
+                lbl = gp_cache.get((r, 1))  # col A
+                if not lbl:
+                    continue
+                lbl_s = str(lbl).strip()
+                if not lbl_s:
+                    continue
+                lbl_low = lbl_s.lower()
+                # Skip headers and totals (PURCHASES, DIRECT EXPENSES, OPENING STOCK,
+                # GROSS PROFIT, TOTAL).
+                if lbl_low in ("purchases", "direct expenses", "opening stock",
+                                "gross profit"):
+                    continue
+                if "total" in lbl_low:
+                    purch_total_rows.add(r)
+                    continue
+                purch_label_rows[_norm_gst(lbl_s)] = (r, lbl_s)
 
+            purch_row_totals = {}
+            unmatched_purch = []
             for acct in purchase_accounts:
-                name_l = acct["name"].lower()
-                matched = False
-                for pattern, row in PURCH_ROW_MAP.items():
-                    if pattern in name_l:
-                        purch_row_totals[row] += abs(acct["net"])
-                        matched = True
-                        break
-                if not matched:
-                    purch_row_totals[18] += abs(acct["net"])
+                name_norm = _norm_gst(acct["name"])
+                best_row = None
+                if name_norm in purch_label_rows:
+                    best_row = purch_label_rows[name_norm][0]
+                else:
+                    for lbl_norm, (r, _) in purch_label_rows.items():
+                        if lbl_norm and (lbl_norm in name_norm or name_norm in lbl_norm):
+                            best_row = r
+                            break
+                if best_row is None:
+                    unmatched_purch.append(acct)
+                else:
+                    purch_row_totals[best_row] = purch_row_totals.get(best_row, 0) + abs(acct["net"])
 
             for row, amt in purch_row_totals.items():
-                if amt > 0:
-                    if _safe_write(ws_gp, row, 2, amt):
-                        injected.append(f"GROSS PROFIT!B{row} (Purchase) = {amt:,.2f}")
+                if row in purch_total_rows:
+                    continue   # never overwrite TOTAL row
+                if _safe_write(ws_gp, row, 2, amt):
+                    injected.append(f"GROSS PROFIT!B{row} (Purchase {amt:,.2f})")
+
+            # Append unmatched purchase accounts below last sub-row, above TOTAL
+            if unmatched_purch and purch_label_rows:
+                last_sub_row = max(r for r, _ in purch_label_rows.values())
+                next_row = last_sub_row + 1
+                for acct in unmatched_purch:
+                    if next_row in purch_total_rows:
+                        break
+                    if _safe_write(ws_gp, next_row, 1, acct["name"]):
+                        _safe_write(ws_gp, next_row, 2, abs(acct["net"]))
+                        injected.append(
+                            f"GROSS PROFIT!B{next_row} (Purchase unmatched: {acct['name']}) = {abs(acct['net']):,.2f}"
+                        )
+                        next_row += 1
+
+        # ── B2. DIRECT EXPENSES → GROSS PROFIT Direct-Expenses sub-rows ──
+        # FIX (Issues 2/4): Direct expenses (Electricity Exp, Wages A/c,
+        # Oil & Lubricant) must NOT be collapsed onto the Purchases header.
+        # They live in their own labelled sub-rows below "DIRECT EXPENSES"
+        # on the debit side of the Trading A/c.
+        if "GROSS PROFIT" in wb.sheetnames:
+            de_accounts = [a for a in individual_accounts
+                           if a.get("bs_head") == "direct_expenses"
+                           and abs(a.get("net", 0)) > 0]
+            if de_accounts:
+                gp_cache_de = _cache.get("GROSS PROFIT", {})
+                # Find the DIRECT EXPENSES header row
+                de_header_row = None
+                for r in range(1, 40):
+                    lbl = gp_cache_de.get((r, 1))
+                    if lbl and "direct expense" in str(lbl).lower():
+                        de_header_row = r
+                        break
+                # Find the first "total" / "gross profit" row after it
+                de_end_row = None
+                if de_header_row:
+                    for r in range(de_header_row + 1, de_header_row + 15):
+                        lbl = gp_cache_de.get((r, 1))
+                        if lbl and ("total" in str(lbl).lower()
+                                    or "gross profit" in str(lbl).lower()):
+                            de_end_row = r
+                            break
+
+                if de_header_row and de_end_row and de_end_row > de_header_row + 1:
+                    # Build label→row map for the direct-expense sub-rows
+                    de_rows = {}
+                    for r in range(de_header_row + 1, de_end_row):
+                        lbl = gp_cache_de.get((r, 1))
+                        if lbl:
+                            de_rows[str(lbl).strip().lower()] = r
+
+                    used_rows = set()
+                    for acct in de_accounts:
+                        name_l = acct["name"].lower()
+                        amt = abs(acct["net"])
+                        placed = False
+                        # Match against existing labelled rows
+                        for lbl, r in de_rows.items():
+                            if r in used_rows:
+                                continue
+                            if lbl in name_l or name_l in lbl or any(
+                                w in lbl and w in name_l
+                                for w in ("electricity", "wages", "oil",
+                                          "lubricant", "power", "fuel")
+                            ):
+                                if _safe_write(ws_gp, r, 2, amt):
+                                    injected.append(
+                                        f"GROSS PROFIT!B{r} (Direct Exp: {acct['name']}) = {amt:,.2f}"
+                                    )
+                                    used_rows.add(r)
+                                    placed = True
+                                    break
+                        if placed:
+                            continue
+                        # Append as new labelled sub-row before TOTAL
+                        for r in range(de_header_row + 1, de_end_row):
+                            if r in used_rows:
+                                continue
+                            cur_lbl = gp_cache_de.get((r, 1))
+                            cur_amt = gp_cache_de.get((r, 2))
+                            if (not cur_lbl or str(cur_lbl).strip() == "") and (
+                                cur_amt is None or cur_amt == 0
+                            ):
+                                if _safe_write(ws_gp, r, 1, acct["name"]):
+                                    _safe_write(ws_gp, r, 2, amt)
+                                    used_rows.add(r)
+                                    injected.append(
+                                        f"GROSS PROFIT!B{r} (Direct Exp new: {acct['name']}) = {amt:,.2f}"
+                                    )
+                                    placed = True
+                                    break
+                        if not placed:
+                            skipped.append(
+                                f"Direct expense '{acct['name']}' = {amt:,.2f}: no free row in Trading A/c"
+                            )
 
         # ── C. Opening Stock → GROSS PROFIT!B9 ──────────────────────
         # B9 = "='notes to p&l'!D17" which = "=E24" (prev yr closing)
@@ -1964,6 +2150,78 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             # notes to p&l!D17 is "=E24" — override it directly
             if _safe_write(ws_npl, 17, 4, total_opening):
                 injected.append(f"notes to p&l!D17 (Opening stock) = {total_opening:,.2f}")
+
+        # ── C2. OTHER INCOME (Rebate & Discount, Interest Received, etc.) ──
+        # FIX (Issue 3): "REBATE & DISCOUNT" / other indirect-income accounts
+        # were being classified correctly as `other_income` but never written
+        # anywhere — so the amount silently disappeared from the BS / P&L.
+        #
+        # The standard "Notes to P&L" template carries an "Other Income"
+        # section. We locate it by scanning column B of `notes to p&l` for a
+        # row whose label contains "other income" / "other incomes", then
+        # write each TB other-income account into a sub-row beneath it.
+        oi_accounts = [a for a in individual_accounts
+                       if a.get("bs_head") == "other_income"
+                       and abs(a.get("net", 0)) > 0]
+        if oi_accounts:
+            npl_cache_for_oi = _cache.get("notes to p&l", {})
+            oi_header_row = None
+            oi_total_row  = None
+            for r in range(1, 200):
+                b = npl_cache_for_oi.get((r, 2))
+                if not b:
+                    continue
+                bs = str(b).strip().lower()
+                if "other income" in bs and "total" not in bs:
+                    oi_header_row = r
+                    break
+            if oi_header_row:
+                for r in range(oi_header_row + 1, oi_header_row + 20):
+                    b = npl_cache_for_oi.get((r, 2))
+                    if b and "total" in str(b).lower() and "other" in str(b).lower():
+                        oi_total_row = r
+                        break
+
+            if oi_header_row and oi_total_row and oi_total_row > oi_header_row + 1:
+                for acct in oi_accounts:
+                    amt = abs(acct["net"])
+                    placed = False
+                    # First try fuzzy-matching an existing labelled sub-row
+                    for r in range(oi_header_row + 1, oi_total_row):
+                        b = npl_cache_for_oi.get((r, 2))
+                        if b and _fuzzy_match_name(acct["name"], str(b)):
+                            if _safe_write(ws_npl, r, 4, amt):
+                                injected.append(
+                                    f"notes to p&l!D{r} (Other Income: {acct['name']}) = {amt:,.2f}"
+                                )
+                                placed = True
+                                break
+                    if placed:
+                        continue
+                    # Otherwise find first empty sub-row
+                    for r in range(oi_header_row + 1, oi_total_row):
+                        d_val = npl_cache_for_oi.get((r, 4))
+                        b_val = npl_cache_for_oi.get((r, 2))
+                        if (d_val is None or d_val == 0) and (
+                            b_val is None or str(b_val).strip() == ""
+                        ):
+                            if _safe_write(ws_npl, r, 2, acct["name"]):
+                                _safe_write(ws_npl, r, 4, amt)
+                                injected.append(
+                                    f"notes to p&l!D{r} (Other Income new: {acct['name']}) = {amt:,.2f}"
+                                )
+                                placed = True
+                                break
+                    if not placed:
+                        skipped.append(
+                            f"Other Income '{acct['name']}' = {amt:,.2f}: no row in Other Income section"
+                        )
+            else:
+                skipped.append(
+                    "Other Income section not found in 'notes to p&l'. "
+                    "Add a row labelled 'Other Income' to capture: "
+                    + ", ".join(a["name"] for a in oi_accounts)
+                )
 
         # ── D. Employee Expenses → notes to p&l!D31 ─────────────────
         # D34 = SUM(D31:D33), p&l!E13 ← notes to p&l!D34
@@ -2170,7 +2428,9 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
     #      otherwise treat closing stock as the Trading A/c balancing figure.
     # ─────────────────────────────────────────────────────────────
     revenue_total       = aggregated_values.get("revenue", 0)
+    other_income_total  = aggregated_values.get("other_income", 0)   # FIX Issue 3
     purchases_total     = aggregated_values.get("purchases", 0)
+    direct_exp_total    = aggregated_values.get("direct_expenses", 0)
     employee_total      = aggregated_values.get("employee_expenses", 0)
     other_exp_total     = aggregated_values.get("other_expenses", 0)
     depreciation_total  = aggregated_values.get("depreciation", 0)
@@ -2207,11 +2467,15 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         # independently — leave at 0 and let Net Profit absorb the difference.
         closing_stock_bs = 0.0
 
-    # Net Profit = Sales + Closing Stock − Opening Stock − Purchases
-    #              − Employee − Other Expenses − Depreciation
+    # Net Profit = Sales + Other Income + Closing Stock
+    #              − Opening Stock − Purchases − Employee
+    #              − Other Expenses − Depreciation
+    # FIX Issue 3: Other Income (e.g. Rebate & Discount) was being silently
+    # ignored from the P&L computation, causing the on-screen "Profit" figure
+    # to under-report by that amount.
     net_profit = (
-        revenue_total + closing_stock_bs
-        - opening_stock - purchases_total
+        revenue_total + other_income_total + closing_stock_bs
+        - opening_stock - purchases_total - direct_exp_total
         - employee_total - other_exp_total - depreciation_total
     )
 
@@ -2242,8 +2506,10 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
     log.append(f"\n📊 P&L Summary:")
     log.append(f"  Revenue:           {revenue_total:>15,.2f}")
+    log.append(f"  Other Income:      {other_income_total:>15,.2f}")
     log.append(f"  Opening Stock:     {opening_stock:>15,.2f}")
     log.append(f"  Purchases:         {purchases_total:>15,.2f}")
+    log.append(f"  Direct Expenses:   {direct_exp_total:>15,.2f}")
     log.append(f"  Employee Exp:      {employee_total:>15,.2f}")
     log.append(f"  Other Expenses:    {other_exp_total:>15,.2f}")
     log.append(f"  Depreciation:      {depreciation_total:>15,.2f}")
@@ -2273,6 +2539,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         "total_liabilities": total_liabilities,
         "net_profit": net_profit,
         "revenue": revenue_total,
+        "other_income": other_income_total,           # NEW Issue 3
         "opening_stock": opening_stock,
         "closing_stock": closing_stock_bs,
         "capital": capital_total,
@@ -2348,6 +2615,42 @@ def analyze_trial_balance(tb_path):
     low_conf = [a for a in classified if a["confidence"] == "low"]
     unclassified = [a for a in classified if a["confidence"] == "none"]
 
+    # ── FIX (Issue 1): Build an explicit "Manual Review" list so the UI can
+    # show the user WHICH accounts need attention. Previously the front-end
+    # only knew the COUNT ("6 Manual") but had no way to drill down. We now
+    # return the full account objects, plus a flat list of dropdown options
+    # so the UI can render a `<select>` with every valid bs_head label.
+    bs_head_options = [
+        {"key": k, "label": v["label"], "side": v["side"]}
+        for k, v in BS_HEADS.items()
+    ]
+    # Add the two sign-aware advance heads (they aren't in BS_HEADS as separate
+    # buckets — they're virtual heads that aggregate into stla / other_cl)
+    bs_head_options.append({"key": "advance_to_supplier",
+                            "label": "Advance to Supplier (Cr-side debit)",
+                            "side": "asset"})
+    bs_head_options.append({"key": "advance_from_customer",
+                            "label": "Advance from Customer (Dr-side credit)",
+                            "side": "liability"})
+
+    # Manual-review payload — what the UI shows under the "Manual" tab.
+    # `dr_cr` is filled so the UI can colour debit vs credit balances and
+    # show them at the end of the BS/P&L group they ALMOST belong to.
+    manual_review = []
+    for a in unclassified:
+        manual_review.append({
+            "row":      a.get("row"),
+            "name":     a.get("name"),
+            "group":    a.get("group"),
+            "debit":    a.get("debit", 0),
+            "credit":   a.get("credit", 0),
+            "net":      a.get("net", 0),
+            "dr_cr":    "Dr" if a.get("net", 0) >= 0 else "Cr",
+            "bs_head":  a.get("bs_head", "unclassified"),
+            # Suggest the most likely side so the UI can pre-position the row
+            "suggested_side": "asset" if a.get("net", 0) >= 0 else "liability",
+        })
+
     return {
         "status": "success",
         "detection": {
@@ -2361,11 +2664,14 @@ def analyze_trial_balance(tb_path):
             "net_col": detection["net_col"],
         },
         "accounts": classified,
+        "manual_review": manual_review,            # NEW — list of "Manual X" items
+        "bs_head_options": bs_head_options,        # NEW — dropdown options for UI
         "summary": {
-            "total_accounts": len(classified),
-            "high_confidence": len(high_conf),
-            "low_confidence": len(low_conf),
-            "unclassified": len(unclassified),
+            "total_accounts":    len(classified),
+            "high_confidence":   len(high_conf),
+            "low_confidence":    len(low_conf),
+            "unclassified":      len(unclassified),
+            "manual_count":      len(unclassified),  # alias for UI clarity
         },
     }
 
