@@ -372,7 +372,7 @@ def parse_tb_pdf(pdf_path):
     }
 
     def _norm_header(line):
-        return re.sub(r "[\s\-:]+$ ",  " ", line.strip().lower())
+    	return re.sub(r"[\s\-:]+$", " ", line.strip().lower())
 
     def _is_group_header(line):
         return _norm_header(line) in GROUP_KEYWORDS
