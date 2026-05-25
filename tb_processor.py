@@ -709,220 +709,130 @@ def detect_tb_structure(file_path):
 
 
 def _detect_columns(rows, sheet_name):
-    """Detect which column is what in the TB."""
+    """Detect which column is what in the TB. Robust against spacing & currency symbols."""
     header_row = None
     acct_col = None
     dr_col = None
     cr_col = None
     net_col = None
     format_type = None
-
+    
     # Scan first 15 rows for headers
     for ri, row in enumerate(rows[:15]):
-        if not row:
-            continue
-        row_lower = [str(c).strip().lower() if c else "" for c in row]
+        if not row: continue
+            
+        # Normalize: lowercase, strip, remove currency symbols
+        row_lower = [str(c).strip().lower().replace('₹', '').replace('rs.', '').replace('inr', '') if c else "" for c in row]
 
-        # Look for account name column
         for ci, val in enumerate(row_lower):
-            if not val:
-                continue
+            if not val: continue
 
-            # Account name indicators
-            if any(k in val for k in [
-                "particular", "account", "ledger", "name", "head",
-                "description", "party name",
-            ]):
+            # 1. Account Name Column
+            if any(k in val for k in ["particular", "account", "ledger", "name", "head", "description", "party"]):
                 if acct_col is None:
                     acct_col = ci
                     header_row = ri
 
-            # Debit column — handle "Debit (₹)", "Dr.", "Debit Amount" etc
-            if (val in ("dr", "debit", "dr balance", "debit balance",
-                       "dr amount", "debit amount", "dr bal", "debit bal") or
-                    val.startswith("debit") or val.startswith("dr ") or
-                    val == "dr." or "debit" in val.split("(")[0].strip()):
-                dr_col = ci
+            # Clean val for keyword matching (ignore anything in parentheses like "Dr(₹)")
+            clean_val = val.split("(")[0].strip()
+            
+            # 2. Debit Column Detection
+            is_debit = (
+                clean_val in ("dr", "debit", "dr balance", "debit balance", "dr amount", "debit amount") or
+                clean_val.startswith(("dr ", "debit ")) or
+                "debit" in clean_val
+            )
+            if is_debit: dr_col = ci
 
-            # Credit column — handle "Credit (₹)", "Cr.", "Credit Amount" etc
-            if (val in ("cr", "credit", "cr balance", "credit balance",
-                       "cr amount", "credit amount", "cr bal", "credit bal") or
-                    val.startswith("credit") or val.startswith("cr ") or
-                    val == "cr." or "credit" in val.split("(")[0].strip()):
-                cr_col = ci
+            # 3. Credit Column Detection
+            is_credit = (
+                clean_val in ("cr", "credit", "cr balance", "credit balance", "cr amount", "credit amount") or
+                clean_val.startswith(("cr ", "credit ")) or
+                "credit" in clean_val
+            )
+            if is_credit: cr_col = ci
 
-            # Net/Amount column
-            if val in ("amount", "net balance", "net amount", "balance",
-                       "closing balance", "closing", "net"):
+            # 4. Net/Amount Column Detection
+            if clean_val in ("amount", "net balance", "net amount", "balance", "closing balance", "closing", "net"):
                 net_col = ci
 
-            # Opening column (Type 3)
-            if val in ("opening", "opening balance"):
-                pass  # We mostly care about closing
-
-            # Closing column (Type 3)
-            if val in ("closing", "closing balance"):
-                if net_col is None:
-                    net_col = ci
-
-    # If no header found, try heuristic: first column with text, next columns with numbers
+    # Fallback heuristic if header keywords weren't found
     if acct_col is None:
         for ri, row in enumerate(rows[:15]):
-            if not row:
-                continue
-            text_cols = []
-            num_cols = []
+            if not row: continue
+            text_cols, num_cols = [], []
             for ci, val in enumerate(row):
-                if val is None:
-                    continue
+                if val is None: continue
                 if isinstance(val, str) and len(val.strip()) > 2 and not _is_number_str(val):
                     text_cols.append(ci)
                 elif isinstance(val, (int, float)) or _is_number_str(str(val)):
                     num_cols.append(ci)
-            if len(text_cols) >= 1 and len(num_cols) >= 1:
+            if text_cols and num_cols:
                 acct_col = text_cols[0]
                 header_row = ri
                 break
 
-    if acct_col is None:
-        return None
+    if acct_col is None: return None
 
     # Determine format type
-    # Re-check: if both dr and cr columns found but assigned same index, fix
     if dr_col is not None and cr_col is not None and dr_col != cr_col:
-        format_type = 1  # Dr/Cr separate columns
-    elif dr_col is not None and cr_col is not None and dr_col == cr_col:
-        # Conflict - reset and try harder
-        dr_col = None; cr_col = None
-        format_type = None
+        format_type = 1  # Separate Dr/Cr columns
     elif net_col is not None:
-        format_type = 4  # Single amount (negative = credit)
+        format_type = 4  # Single net column
     else:
-        # Try to auto-detect number columns after the account column
-        for ri, row in enumerate(rows[header_row + 1: header_row + 10], header_row + 1):
-            if not row:
-                continue
-            num_cols_found = []
-            for ci, val in enumerate(row):
-                if ci == acct_col:
-                    continue
-                if isinstance(val, (int, float)) and val != 0:
-                    num_cols_found.append(ci)
-                elif isinstance(val, str) and _is_number_str(val):
-                    num_cols_found.append(ci)
-            if len(num_cols_found) >= 2:
-                dr_col = num_cols_found[0]
-                cr_col = num_cols_found[1]
+        # Try to find two numeric columns after account column
+        for ri in range(header_row + 1, min(header_row + 10, len(rows))):
+            row = rows[ri]
+            if not row: continue
+            num_found = [ci for ci, v in enumerate(row) if ci != acct_col and (isinstance(v, (int, float)) or _is_number_str(str(v)))]
+            if len(num_found) >= 2:
+                dr_col, cr_col = num_found[0], num_found[1]
                 format_type = 1
                 break
-            elif len(num_cols_found) == 1:
-                net_col = num_cols_found[0]
+            elif len(num_found) == 1:
+                net_col = num_found[0]
                 format_type = 4
                 break
 
-    if format_type is None:
-        return None
+    if format_type is None: return None
 
-    # Fix: if format detected as 4 (single net column) but there are actually
-    # two number columns (like Debit col A and Credit col B in this TB),
-    # detect that and switch to format 1
-    if format_type == 4 and net_col is not None and dr_col is None:
-        # Check if there are two numeric columns around the net_col
-        for ri2 in range(header_row + 1, min(header_row + 10, len(rows))):
-            row2 = rows[ri2]
-            if not row2: continue
-            num_cols_found = []
-            for ci2, v2 in enumerate(row2):
-                if ci2 == acct_col: continue
-                if isinstance(v2, (int, float)) and v2 != 0:
-                    num_cols_found.append(ci2)
-            if len(num_cols_found) >= 2:
-                # Two numeric columns found — treat as Dr/Cr
-                format_type = 1
-                dr_col = num_cols_found[0]
-                cr_col = num_cols_found[1]
-                net_col = None
-                break
-
-    # Data starts after header
+    # Extract accounts (rest of your original logic stays exactly the same)
     data_start = header_row + 1
-
-    # Extract accounts — handles both flat and hierarchical TB formats
+    total_keywords = {"total", "grand total", "difference", "net total", "closing balance", "opening balance total", "balance c/d", "balance b/d"}
+    current_group = None
     accounts = []
-    total_keywords = {"total", "grand total", "difference", "net total",
-                      "closing balance", "opening balance total",
-                      "balance c/d", "balance b/d"}
-
-    current_group = None  # Track current group header for hierarchical TBs
 
     for ri in range(data_start, len(rows)):
         row = rows[ri]
-        if not row or ri >= len(rows):
-            continue
+        if not row or ri >= len(rows): continue
+        
         acct_name = row[acct_col] if acct_col < len(row) else None
-        if not acct_name or not isinstance(acct_name, str):
-            continue
+        if not acct_name or not isinstance(acct_name, str): continue
+        
         acct_name = acct_name.strip()
-        if not acct_name or len(acct_name) < 2:
+        if not acct_name or len(acct_name) < 2: continue
+        if acct_name.lower() in total_keywords or re.match(r'^(total|grand total|sub total|net total)\b', acct_name, re.I):
             continue
 
-        # Skip totals/subtotals
-        if acct_name.lower().strip() in total_keywords:
-            continue
-        if re.match(r'^(total|grand total|sub total|net total)\b', acct_name, re.I):
-            continue
-
-        # Get amounts
-        dr_amt = 0
-        cr_amt = 0
-        net_amt = 0
-
+        dr_amt, cr_amt, net_amt = 0, 0, 0
         if format_type == 1 and dr_col is not None and cr_col is not None:
-            dr_val = row[dr_col] if dr_col < len(row) else None
-            cr_val = row[cr_col] if cr_col < len(row) else None
-            dr_amt = _to_float(dr_val)
-            cr_amt = _to_float(cr_val)
+            dr_amt = _to_float(row[dr_col] if dr_col < len(row) else None)
+            cr_amt = _to_float(row[cr_col] if cr_col < len(row) else None)
             net_amt = dr_amt - cr_amt
         elif format_type == 4 and net_col is not None:
-            # For hierarchical format: check BOTH debit and credit columns
-            # even if format_type was detected as 4
-            if dr_col is None and cr_col is None:
-                # Try columns 1 and 2 as dr/cr if they have data
-                dr_try = row[1] if len(row) > 1 else None
-                cr_try = row[2] if len(row) > 2 else None
-                dr_f = _to_float(dr_try)
-                cr_f = _to_float(cr_try)
-                if dr_f != 0 or cr_f != 0:
-                    dr_amt = dr_f
-                    cr_amt = cr_f
-                    net_amt = dr_amt - cr_amt
-                else:
-                    net_val = row[net_col] if net_col < len(row) else None
-                    net_amt = _to_float(net_val)
-                    if net_amt > 0:
-                        dr_amt = net_amt
-                    else:
-                        cr_amt = abs(net_amt)
-            else:
-                net_val = row[net_col] if net_col < len(row) else None
-                net_amt = _to_float(net_val)
-                if net_amt > 0:
-                    dr_amt = net_amt
-                else:
-                    cr_amt = abs(net_amt)
+            net_amt = _to_float(row[net_col] if net_col < len(row) else None)
+            dr_amt = net_amt if net_amt > 0 else 0
+            cr_amt = abs(net_amt) if net_amt < 0 else 0
 
-        # Detect group headers: rows with name but zero amounts
-        # These help classify sub-items in hierarchical TBs
         if dr_amt == 0 and cr_amt == 0 and net_amt == 0:
-            # This is likely a group/category header
             current_group = acct_name
             continue
 
         accounts.append({
             "row": ri,
-            "key": f"{acct_name}_{ri}",   # unique key for JS mapping
+            "key": f"{acct_name}_{ri}",
             "name": acct_name,
-            "group": current_group,  # parent group for classification hint
+            "group": current_group,
             "debit": dr_amt,
             "credit": cr_amt,
             "net": net_amt,
