@@ -466,29 +466,34 @@ def parse_tb_pdf(pdf_path):
         try: return _parse_tb_pdf_text_fallback(pdf_path)
         except Exception: return None
 
-    return {
-         "format_type ":    "PDF ",
-         "sheet_name ":     "PDF ",
-         "header_row ":    0,
-         "data_start_row ":0,
-         "account_col ":   0,
-         "debit_col ":     1,
-         "credit_col ":    2,
-         "net_col ":       None,
-         "accounts ":      accounts,
+ return {
+        "format_type": "PDF",
+        "sheet_name": "PDF",
+        "header_row": 0,
+        "data_start_row": 0,
+        "account_col": 0,
+        "debit_col": 1,
+        "credit_col": 2,
+        "net_col": None,
+        "accounts": accounts,
     }
 
 def _parse_tb_pdf_text_fallback(pdf_path):
     """Legacy text-only PDF parser kept as a fallback."""
     import pdfplumber, re
+    
     all_lines = []
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            text = page.extract_text() or  " "
-            for line in text.split( "\n "):
+            text = page.extract_text() or ""
+            # FIX: Split by newline ONLY, not newline + space
+            for line in text.split("\n"):
                 l = line.strip()
-                if l: all_lines.append(l)
-    if not all_lines: return None
+                if l:
+                    all_lines.append(l)
+    
+    if not all_lines:
+        return None
 
     num_re = re.compile(r'([\d,]+\.\d{2})')
     skip_patterns = { "trial balance ",  "as on  ",  "page no ",  "continued ",
