@@ -7267,7 +7267,6 @@ def _inject_cap_fa(output_path, cap_entries, fa_entries, log):
     wb.save(output_path)
     wb.close()
 
-
 @app.route("/tb-process", methods=["POST"])
 def tb_process():
     if "uid" not in session:
@@ -7275,10 +7274,10 @@ def tb_process():
     user = get_user_by_id(session["uid"])
     if not user:
         return jsonify({"status": "error", "message": "Not logged in"}), 401
-    plan = user.get("plan", "free")
+    
     if not TB_PROCESSOR_AVAILABLE:
         return jsonify({"status": "error", "message": "TB processor not available"}), 500
-
+    
     try:
         import tempfile, os, json, shutil
 
@@ -7288,31 +7287,35 @@ def tb_process():
         if not tb_file or not bs_file:
             return jsonify({"status": "error", "message": "Both Trial Balance and BS template files are required"})
 
+        # 🔍 Safely parse user mappings from frontend
         raw_mappings = request.form.get("user_mappings", "{}")
         try:
             user_mapping = json.loads(raw_mappings)
-        except (json.JSONDecodeError, ValueError):
+            # Clean keys & values: strip spaces, ignore empty/auto
+            user_mapping = {
+                str(k).strip(): str(v).strip() 
+                for k, v in user_mapping.items() 
+                if v and str(v).strip().lower() not in ("", "auto", "none", "ignore")
+            }
+        except Exception:
             user_mapping = {}
-        user_mapping = {k: v for k, v in user_mapping.items()
-                        if v and v not in ("", "auto", "none")}
 
-        # ── Read Capital & FA user entries ────────────────────────────
+        # Read Capital & FA user entries (if any)
         raw_cap = request.form.get("capital_entries", "[]")
         raw_fa  = request.form.get("fa_entries", "[]")
         try:
             cap_entries = json.loads(raw_cap)
-        except:
+        except Exception:
             cap_entries = []
         try:
             fa_entries = json.loads(raw_fa)
-        except:
+        except Exception:
             fa_entries = []
 
         client_name = request.form.get("client_name", "Balance_Sheet").strip()
         cy_year = request.form.get("cy_year", "2025").strip()
 
         tmp = tempfile.mkdtemp()
-        # Preserve extension for PDF detection
         tb_orig = tb_file.filename or "tb.xlsx"
         tb_ext = ".pdf" if tb_orig.lower().endswith(".pdf") else ".xlsx"
         tb_path  = os.path.join(tmp, "tb" + tb_ext)
@@ -7322,6 +7325,7 @@ def tb_process():
         tb_file.save(tb_path)
         bs_file.save(bs_path)
 
+        # Process using the updated tb_processor
         result = process_tb_to_bs(
             tb_path, bs_path, out_path,
             user_mapping=user_mapping,
@@ -7332,7 +7336,7 @@ def tb_process():
             except: pass
             return jsonify(result)
 
-        # ── Inject Capital & FA user entries into output ─────────────
+        # Inject Capital & FA user entries into output
         if cap_entries or fa_entries:
             _inject_cap_fa(out_path, cap_entries, fa_entries, result.get("log", []))
 
@@ -7343,21 +7347,17 @@ def tb_process():
         try: shutil.rmtree(tmp, ignore_errors=True)
         except: pass
 
-        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in client_name)
+        safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in client_name)
         fname = f"{safe_name}_BS_{cy_year}.xlsx"
         log_usage(user["id"], fname)
 
-        # ── FIX (Issue 2 & 3): Surface aggregated P&L figures + tally to UI ────
-        # The frontend now shows Revenue / Other Income / Direct Expenses cards
-        # next to the standard tally rows. These values come straight from
-        # tb_processor.process_tb_to_bs result (`aggregated` + injection-level
-        # totals). Frontend reads: data.tally, data.other_income, data.direct_expenses.
+        # Extract aggregated P&L figures for UI success page
         aggregated_vals = result.get("aggregated", {}) or {}
-        revenue_val        = result.get("revenue",         aggregated_vals.get("revenue", 0))
-        other_income_val   = result.get("other_income",    aggregated_vals.get("other_income", 0))
+        revenue_val        = result.get("revenue", aggregated_vals.get("revenue", 0))
+        other_income_val   = result.get("other_income", aggregated_vals.get("other_income", 0))
         direct_expenses_val= aggregated_vals.get("direct_expenses", 0)
-        opening_stock_val  = result.get("opening_stock",   aggregated_vals.get("opening_stock", 0))
-        closing_stock_val  = result.get("closing_stock",   aggregated_vals.get("inventories", 0))
+        opening_stock_val  = result.get("opening_stock", aggregated_vals.get("opening_stock", 0))
+        closing_stock_val  = result.get("closing_stock", aggregated_vals.get("inventories", 0))
         purchases_val      = aggregated_vals.get("purchases", 0)
         employee_exp_val   = aggregated_vals.get("employee_expenses", 0)
         other_exp_val      = aggregated_vals.get("other_expenses", 0)
@@ -7371,15 +7371,14 @@ def tb_process():
         diff_val           = abs(float(total_assets_val) - float(total_liab_val))
 
         return jsonify({
-            "status":   "success",
+            "status":    "success",
             "log":      result.get("log", []),
             "file_id":  h,
             "filename": fname,
-            # ── NEW: aggregated values for the success-page summary ─────
             "aggregated":      aggregated_vals,
             "revenue":         revenue_val,
-            "other_income":    other_income_val,        # Issue 2
-            "direct_expenses": direct_expenses_val,     # Issue 3
+            "other_income":    other_income_val,
+            "direct_expenses": direct_expenses_val,
             "opening_stock":   opening_stock_val,
             "closing_stock":   closing_stock_val,
             "purchases":       purchases_val,
@@ -7401,7 +7400,7 @@ def tb_process():
     except Exception as e:
         import traceback
         return jsonify({
-            "status":  "error",
+            "status":   "error",
             "message": f"Processing failed: {e}\n{traceback.format_exc()}"
         }), 500
 
