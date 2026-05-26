@@ -1001,12 +1001,18 @@ GROUP_HEAD_MAP = {
     "sales":                     "revenue",
     "stock-in-hand":             "inventories",
     "stock in hand":             "inventories",
-    # "indirect expenses" removed — let keyword classifier handle individual accounts
+    # "indirect expenses" → other_expenses (high confidence via group header).
+    # Previously this was commented out, causing FREIGHT, ADVERTISEMENT, ACCOUNTANCY
+    # CHARGES etc. (all under "Indirect Expenses" in Tally) to fall through to
+    # low-confidence classification and land in wrong buckets (purchases or direct_expenses).
+    "indirect expenses":         "other_expenses",
+    "indirect expense":          "other_expenses",
     # FIX (Issue 2/4): Direct expenses (Electricity, Wages, Power & Fuel)
     # need their OWN injection target on the Trading A/c. They were
     # previously collapsed into `purchases`, which made them overwrite the
     # purchase header row instead of landing in the Direct Expenses sub-rows.
     "direct expenses":           "direct_expenses",
+    "direct expense":            "direct_expenses",
     "indirect income":           "other_income",
     "indirect incomes":          "other_income",
     "direct income":             "revenue",
@@ -1079,6 +1085,10 @@ def _classify_single(name, net_amount, group=None):
         if any(kw in name_lower for kw in ["loan", "od", "cc", "overdraft",
                "cash credit", "machinery", "vehicle", "term loan"]):
             return "lt_borrowings", "high"
+        # Cheque issued/not cleared with credit balance = outstanding liability
+        if any(kw in name_lower for kw in ["cheque issued", "chq issued",
+               "not cleared", "not presented", "issued not"]):
+            return "other_cl", "high"
         # Bank account with negative balance = bank overdraft = short term borrowing
         if any(kw in group_lower for kw in ["bank", "cash"]):
             return "st_borrowings", "high"
@@ -1167,6 +1177,23 @@ def get_aggregated_values(classified_accounts):
             acct["bs_head"]      = "stla"
             acct["reclassified_from"] = "st_provisions"
             acct["stla_subtype"]  = "revenue_authority"  # flag for D127 row
+
+        # Provision with CREDIT balance but name doesn't match genuine provisions
+        # → reclassify to other_cl to prevent spurious amounts in ST Provisions.
+        # Genuine provisions: tax, gratuity, bonus, leave, warranty.
+        elif head == "st_provisions" and net < 0:
+            VALID_PROVISION_KEYWORDS = {
+                "provision for tax", "provision for income",
+                "provision for gratuity", "provision for bonus",
+                "provision for leave", "provision for warranty",
+                "provision for bad", "provision for doubtful",
+                "short term provision",
+            }
+            name_l = acct.get("name", "").lower()
+            if not any(kw in name_l for kw in VALID_PROVISION_KEYWORDS):
+                head = "other_cl"
+                acct["bs_head"] = "other_cl"
+                acct["reclassified_from"] = "st_provisions"
 
         # ── Explicit user-mapped advance heads ─────────────────────────
         # When the user picks "Advance from Customer" / "Advance to Supplier"
@@ -1362,8 +1389,24 @@ def _detect_notes_structure(wb):
 def _fuzzy_match_name(tb_name, template_name):
     """Check if two party names roughly match (for creditor/debtor matching)."""
     import re
+
+    # Finance-cost abbreviation aliases: Tally short names → normalised forms
+    # so "BANK CC INTT" matches a template row labelled "Bank Interest".
+    FINANCE_ALIASES = {
+        "bank cc intt":       "bank interest",
+        "bank cc interest":   "bank interest",
+        "bank od intt":       "bank interest",
+        "bank od interest":   "bank interest",
+        "cc interest":        "bank interest",
+        "od interest":        "bank interest",
+        "bank charges and interest": "bank interest",
+    }
+
     def normalize(s):
-        s = s.lower()
+        s = s.lower().strip()
+        # Apply finance alias before generic normalisation
+        if s in FINANCE_ALIASES:
+            s = FINANCE_ALIASES[s]
         s = re.sub(r'\bm/s\.?\s*', '', s)
         s = re.sub(r'[^a-z0-9\s]', ' ', s)
         s = re.sub(r'\s+', ' ', s).strip()
@@ -1490,7 +1533,16 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             ltb_accounts = [a for a in individual_accounts
                             if a.get("bs_head") == "lt_borrowings"
                             and abs(a.get("net", 0)) > 0]
-            
+
+            # Separate secured vs unsecured based on Tally group
+            def _is_unsecured(acct):
+                g = acct.get("group", "").lower()
+                n = acct.get("name", "").lower()
+                return "unsecure" in g or "unsecure" in n
+
+            secured_accounts   = [a for a in ltb_accounts if not _is_unsecured(a)]
+            unsecured_accounts = [a for a in ltb_accounts if _is_unsecured(a)]
+
             # Build template label → row map for LT borrowing section
             ltb_template = {}
             for r in range(7, 24):
@@ -1500,28 +1552,45 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     if 'total' in lbl or 'secured' in lbl or 'unsecured' in lbl or 'from' in lbl:
                         continue
                     ltb_template[r] = lbl
-            
+
+            # Find the unsecured section start row (row after "Unsecured" header)
+            unsecured_start = None
+            secured_end = None
+            for r in range(7, 24):
+                b_val = ws_n.cell(r, 2).value
+                if b_val and isinstance(b_val, str):
+                    bl = b_val.strip().lower()
+                    if 'unsecured' in bl and 'total' not in bl:
+                        unsecured_start = r + 1
+                    if 'total' in bl and 'secured' in bl and 'unsecured' not in bl and secured_end is None:
+                        secured_end = r
+            if unsecured_start is None:
+                unsecured_start = 15  # fallback
+            if secured_end is None:
+                secured_end = 11
+
             written_rows = set()
-            for acct in ltb_accounts:
-                amt = abs(acct["net"])
-                name = acct["name"]
-                # Try fuzzy match to template row
-                matched_row = None
-                for r, lbl in ltb_template.items():
-                    if r in written_rows:
-                        continue
-                    if _fuzzy_match_name(name, lbl):
-                        matched_row = r
-                        break
-                
-                if matched_row:
-                    if _safe_set(ws_n, matched_row, 4, amt):
-                        written_rows.add(matched_row)
-                        injected.append(f"notes to bs!D{matched_row} ({name}) = {amt:,.2f}")
-                else:
-                    # No match — find empty row in LT section
-                    for r in range(7, 14):
-                        if r not in written_rows:
+
+            def _inject_ltb_list(acct_list, fallback_start, fallback_end):
+                for acct in acct_list:
+                    amt = abs(acct["net"])
+                    name = acct["name"]
+                    matched_row = None
+                    for r, lbl in ltb_template.items():
+                        if r in written_rows:
+                            continue
+                        if _fuzzy_match_name(name, lbl):
+                            matched_row = r
+                            break
+                    if matched_row:
+                        if _safe_set(ws_n, matched_row, 4, amt):
+                            written_rows.add(matched_row)
+                            injected.append(f"notes to bs!D{matched_row} ({name}) = {amt:,.2f}")
+                    else:
+                        # No match — find empty row in the correct section
+                        for r in range(fallback_start, fallback_end + 5):
+                            if r in written_rows:
+                                continue
                             d_val = ws_n.cell(r, 4).value
                             b_val = ws_n.cell(r, 2).value
                             if (d_val is None or d_val == 0) and (b_val is None or str(b_val).strip() == ""):
@@ -1530,7 +1599,12 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                     written_rows.add(r)
                                     injected.append(f"notes to bs!D{r} (new: {name}) = {amt:,.2f}")
                                 break
-            
+
+            # Secured → rows 7 to secured_end-1 as fallback
+            _inject_ltb_list(secured_accounts, 7, secured_end - 1)
+            # Unsecured → rows unsecured_start onward as fallback
+            _inject_ltb_list(unsecured_accounts, unsecured_start, unsecured_start + 5)
+
             if not written_rows and ltb_amt:
                 # Fallback: write total to "from banks" row
                 for r in range(7, 11):
@@ -1552,11 +1626,14 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 skipped.append(f"short_term_borrowings {stb_amt:,.2f}: no writable row in notes to bs")
 
         # ── Cheques Issued But Not Cleared → D68 (OCL) ─────────────────
-        # These are liabilities, not assets — classifier may put them in stla
+        # Only CREDIT-balance cheque accounts are liabilities (issued cheques).
+        # Debit-balance cheque accounts are assets (cheques received) and must
+        # NOT be redirected here — they belong in cash_bank.
         if individual_accounts:
             cheque_accounts = [a for a in individual_accounts
-                               if "cheque" in a.get("name","").lower()
-                               or "chq" in a.get("name","").lower()]
+                               if ("cheque" in a.get("name","").lower()
+                               or "chq" in a.get("name","").lower())
+                               and a.get("net", 0) < 0]   # credit balance = liability
             total_cheques = sum(abs(a["net"]) for a in cheque_accounts)
             if total_cheques > 0:
                 if _safe_set(ws_n, 68, 4, total_cheques):
@@ -1641,7 +1718,8 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         cash_bank_amt = aggregated_values.get("cash_bank", 0)
         if individual_accounts:
             cash_accounts = [a for a in individual_accounts
-                             if a.get("bs_head") in ("cash_bank", "cash_bank")]
+                             if a.get("bs_head") in ("cash_bank", "cash_bank")
+                             and a.get("net", 0) > 0]   # only DEBIT balance = actual asset
             cash_only  = [a for a in cash_accounts if "cash" in a["name"].lower()]
             bank_only  = [a for a in cash_accounts if "cash" not in a["name"].lower()]
 
@@ -1723,16 +1801,18 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         injected.append(f"notes to bs!D137 (TDS from Facebook / Other CA) = {abs(acct['net']):,.2f}")
                     placed = True
 
+                # ── TCS GST → D129 (must be checked BEFORE generic GST branch
+                #    because "TCS GST A/C" contains "gst" and would otherwise
+                #    fall into the GST refund row D128 instead) ──────────────
+                elif "tcs" in name_l:
+                    if _safe_set(ws_n, 129, 4, abs(acct["net"])):
+                        injected.append(f"notes to bs!D129 (TCS GST) = {abs(acct['net']):,.2f}")
+                    placed = True
+
                 # ── GST Refund Receivable → D128 ─────────────────────────────
                 elif "gst" in name_l or "igst" in name_l or "cgst" in name_l or "sgst" in name_l:
                     if _safe_set(ws_n, 128, 4, abs(acct["net"])):
                         injected.append(f"notes to bs!D128 (GST refund) = {abs(acct['net']):,.2f}")
-                    placed = True
-
-                # ── TCS GST → D129 ────────────────────────────────────────────
-                elif "tcs" in name_l:
-                    if _safe_set(ws_n, 129, 4, abs(acct["net"])):
-                        injected.append(f"notes to bs!D129 (TCS GST) = {abs(acct['net']):,.2f}")
                     placed = True
 
                 # ── Excess TDS Deposited → D130 ──────────────────────────────
@@ -1998,9 +2078,19 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             gp_cache = _cache.get("GROSS PROFIT", {})
 
             def _norm_gst(s):
-                """Normalise 'GST 12% WITHIN STATE' -> '12% within state' etc."""
+                """Normalise sale/purchase account names for row matching.
+                Maps all synonym pairs to canonical forms so that e.g.
+                'SALE GST 12% INTERSTATE' and 'Sales 12% Intrastate' match
+                the same template row regardless of exact wording.
+                """
                 s = str(s).lower()
-                s = re.sub(r"\b(sale|sales|gst|a/c)\b", " ", s)
+                s = re.sub(r"\b(sale|sales|purchase|purchases|gst|a/c)\b", " ", s)
+                # Synonym normalisation
+                s = s.replace("intrastate", "within state")
+                s = s.replace("within state", "intrastate")   # canonical = intrastate
+                s = s.replace("within state", "intrastate")
+                s = s.replace("intra state", "intrastate")
+                s = s.replace("inter state", "interstate")
                 s = re.sub(r"\s+", " ", s).strip()
                 return s
 
@@ -2416,9 +2506,10 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
         # All finance cost accounts (interest on loans, bank charges related to loans)
         FINANCE_KEYWORDS = ["interest", "loan interest", "car loan interest",
-                           "machine loan", "top up", "bank cc intt", "bank interest",
-                           "cc interest", "bank od interest", "overdraft interest",
-                           "interest on unsecured", "interest on loan", "interest on term",
+                           "machine loan", "top up", "bank cc intt", "bank cc",
+                           "bank interest", "cc interest", "bank od interest",
+                           "overdraft interest", "interest on unsecured",
+                           "interest on loan", "interest on term",
                            "interest paid to", "interest to partner"]
         
         finance_accounts = [a for a in individual_accounts
