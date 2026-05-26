@@ -2070,24 +2070,36 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
             # Also inject individual sales into notes to p&l (rows 7-14)
             if ws_npl:
-                npl_sale_row = 7
+                import re as _re2
+                def _extract_rate(name):
+                    m = _re2.search(r'(\d+)\s*%', name)
+                    return m.group(1) if m else None
+
                 for acct in sale_accounts:
                     amt = abs(acct["net"])
-                    if amt > 0 and npl_sale_row <= 9:
-                        # Try to match or write to first empty row
-                        wrote = False
-                        for r in range(7, 10):
-                            cell_name = ws_npl.cell(r, 2).value
-                            if cell_name and _fuzzy_match_name(acct["name"], str(cell_name)):
+                    if amt <= 0: continue
+                    acct_rate = _extract_rate(acct["name"])
+                    wrote = False
+                    for r in range(7, 15):
+                        cell_name = ws_npl.cell(r, 2).value
+                        if not cell_name: continue
+                        tmpl_rate = _extract_rate(str(cell_name))
+                        if acct_rate and tmpl_rate and acct_rate == tmpl_rate:
+                            acct_l = acct["name"].lower()
+                            tmpl_l = str(cell_name).lower()
+                            if (("within" in acct_l) == ("within" in tmpl_l)) or \
+                               ("inter" not in acct_l and "within" not in acct_l):
                                 if _safe_write(ws_npl, r, 4, amt):
                                     injected.append(f"notes to p&l!D{r} (Sale: {acct['name']}) = {amt:,.2f}")
                                     wrote = True
                                 break
-                        if not wrote:
-                            if _safe_write(ws_npl, npl_sale_row, 4, amt):
-                                _safe_write(ws_npl, npl_sale_row, 2, acct["name"])
-                                injected.append(f"notes to p&l!D{npl_sale_row} (Sale: {acct['name']}) = {amt:,.2f}")
-                            npl_sale_row += 1
+                    if not wrote:
+                        for r in range(7, 10):
+                            if ws_npl.cell(r, 4).value is None:
+                                _safe_write(ws_npl, r, 2, acct["name"])
+                                _safe_write(ws_npl, r, 4, amt)
+                                injected.append(f"notes to p&l!D{r} (Sale new: {acct['name']}) = {amt:,.2f}")
+                                break
 
         # ── B. Purchases → GROSS PROFIT!B14:B18 ─────────────────────
         # Row 14=Purchase GST 12% Interstate, 15=12% WS, 16=18% WS
@@ -2329,9 +2341,11 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         emp_end = None
         for r in range(30, 60):
             b = ws_npl.cell(r, 2).value
-            if b and 'employee benefit' in str(b).lower():
+            if not b: continue
+            bl = str(b).lower()
+            if not emp_start and 'employee benefit' in bl and 'total' not in bl:
                 emp_start = r + 1
-            if emp_start and b and 'total' in str(b).lower() and 'employee' in str(b).lower():
+            if emp_start and 'total' in bl and 'employee' in bl:
                 emp_end = r
                 break
         if not emp_start: emp_start = 41
@@ -2390,9 +2404,11 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         fin_end = None
         for r in range(40, 70):
             b = ws_npl.cell(r, 2).value
-            if b and 'finance cost' in str(b).lower():
+            if not b: continue
+            bl = str(b).lower()
+            if not fin_start and 'finance cost' in bl and 'total' not in bl:
                 fin_start = r + 1
-            if fin_start and b and 'total' in str(b).lower() and 'finance' in str(b).lower():
+            if fin_start and 'total' in bl and 'finance' in bl:
                 fin_end = r
                 break
         if not fin_start: fin_start = 50
