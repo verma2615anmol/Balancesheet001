@@ -1080,6 +1080,12 @@ def _classify_single(name, net_amount, group=None):
         # Generic loan with credit balance = borrowing
         return "lt_borrowings", "high"
 
+    # Rule: cheque issued / not cleared with credit balance = outstanding liability (OCL)
+    # Must check BEFORE the "bank in name" rule since these don't always contain "bank"
+    if net_amount < 0 and any(kw in name_lower for kw in [
+            "cheque issued", "chq issued", "not cleared", "not presented", "issued not"]):
+        return "other_cl", "high"
+
     # Rule: "bank" in name + CREDIT balance = secured loan/OD/CC
     if ("bank" in name_lower or "a/c" in name_lower) and net_amount < 0:
         if any(kw in name_lower for kw in ["loan", "od", "cc", "overdraft",
@@ -1096,6 +1102,42 @@ def _classify_single(name, net_amount, group=None):
     # Rule: "round off" / "roundoff" = other_expenses (even if credit)
     if "round off" in name_lower or "roundoff" in name_lower:
         return "other_expenses", "high"
+
+    # ── Name-priority overrides: run BEFORE group check ──────────────
+    # These specific P&L sub-categories must override a broad group like
+    # "indirect expenses" → other_expenses which fires too early.
+    # Order matters: check most specific first.
+
+    # Depreciation: must always go to depreciation head
+    for kw in BS_HEADS["depreciation"]["keywords"]:
+        if kw in name_lower:
+            return "depreciation", "high"
+
+    # Employee expenses: salary, wages etc. (but not "salary payable")
+    # Use word-boundary matching for short/ambiguous keywords to avoid
+    # false matches (e.g. "esi" matching "designer", "esi " is safer)
+    _emp_neg = BS_HEADS["employee_expenses"].get("negative_keywords", [])
+    if not any(nk in name_lower for nk in _emp_neg):
+        _emp_match = False
+        for kw in BS_HEADS["employee_expenses"]["keywords"]:
+            # For very short keywords (≤4 chars), require word boundary (space or start/end)
+            if len(kw) <= 4:
+                import re as _re
+                if _re.search(r'(?<![a-z])' + _re.escape(kw) + r'(?![a-z])', name_lower):
+                    _emp_match = True
+                    break
+            elif kw in name_lower:
+                _emp_match = True
+                break
+        if _emp_match:
+            return "employee_expenses", "high"
+
+    # Finance cost: bank interest, cc intt etc. (but not late payment interest)
+    _fin_neg = BS_HEADS["finance_cost"].get("negative_keywords", [])
+    if not any(nk in name_lower for nk in _fin_neg):
+        for kw in BS_HEADS["finance_cost"]["keywords"]:
+            if kw in name_lower:
+                return "finance_cost", "high"
 
     # Step 1: Check if group header directly maps to a head
     if group_lower and group_lower in GROUP_HEAD_MAP:
@@ -1176,7 +1218,17 @@ def get_aggregated_values(classified_accounts):
             head = "stla"
             acct["bs_head"]      = "stla"
             acct["reclassified_from"] = "st_provisions"
-            acct["stla_subtype"]  = "revenue_authority"  # flag for D127 row
+            acct["stla_subtype"]  = "revenue_authority"  # flag for D129 row
+
+        # stla accounts that are TCS/TDS by name also get revenue_authority subtype
+        # (covers accounts classified via group "duties & taxes" → stla directly,
+        #  bypassing the st_provisions reclassification path above)
+        elif head == "stla" and net > 0:
+            name_l = acct.get("name", "").lower()
+            if "tcs" in name_l and not acct.get("stla_subtype"):
+                acct["stla_subtype"] = "revenue_authority"
+            elif "excess tds" in name_l and not acct.get("stla_subtype"):
+                acct["stla_subtype"] = "revenue_authority"
 
         # Provision with CREDIT balance but name doesn't match genuine provisions
         # → reclassify to other_cl to prevent spurious amounts in ST Provisions.
@@ -2696,7 +2748,21 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 if not placed:
                     skipped.append(f"Other expense '{acct['name']}' = {amt:,.2f}: no row in notes to p&l")
 
-    # ── Depreciation — FA sheet not touched (user fills from ledger) ──
+    # ── Depreciation → Fixed Assets C. Yr. sheet H31 ─────────────────
+    # notes to p&l!D52 = 'Fixed Assets C. Yr.'!H31 (formula, auto)
+    # We write the TB depreciation total directly to H31 so it flows through.
+    dep_total = aggregated_values.get("depreciation", 0)
+    if dep_total and "Fixed Assets C. Yr." in wb.sheetnames:
+        ws_fa = wb["Fixed Assets C. Yr."]
+        fa_cell = ws_fa.cell(31, 8)  # H31
+        if fa_cell.value is None or (isinstance(fa_cell.value, (int, float)) and fa_cell.value == 0):
+            if _safe_set(ws_fa, 31, 8, dep_total):
+                injected.append(f"Fixed Assets C. Yr.!H31 (Depreciation) = {dep_total:,.2f}")
+            else:
+                skipped.append(f"Depreciation {dep_total:,.2f}: Fixed Assets H31 is formula — not overwritten")
+        else:
+            log.append(f"· Depreciation H31 already has value {fa_cell.value} — not overwritten")
+
     for s in skipped:
         log.append(f"⚠ SKIPPED: {s}")
     for inj_msg in injected:
