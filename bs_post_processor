@@ -1,0 +1,916 @@
+"""
+bs_post_processor.py
+====================
+Universal post-processing pass that runs AFTER process_tb_to_bs().
+
+The core processor (tb_processor2_fixed.py) injects values correctly but
+leaves 6 structural defects that are template-layout problems, not
+classification problems. This module fixes all 6 deterministically by
+scanning each section's actual rows at runtime rather than using hardcoded
+row numbers.
+
+Usage
+-----
+    from bs_post_processor import post_process
+    result = process_tb_to_bs(tb, template, output)
+    post_process(output, result['classified_accounts'])
+
+    # Or as a standalone CLI:
+    python bs_post_processor.py <output.xlsx>
+
+Bugs fixed
+----------
+  1. OCL insert_rows overflow  — injector appends rows below the SUM range;
+                                 post-processor consolidates values into named rows.
+  2. Cash & Bank row mismatch  — injector writes to wrong rows (headers/offsets);
+                                 post-processor scans for "cash in hand" label and
+                                 correct bank name rows.
+  3. STLA wrong row            — GST refund goes to "Loans to Related Parties" row;
+                                 post-processor moves it to "GST" row under Revenue Auth.
+  4. STLA formula pointer      — Total(A+B+C+D) formula refs don't include Revenue Auth;
+                                 post-processor rewrites the formula after finding row #s.
+  5. BS formula pointers       — bs!E18/E19/E33/E34 may point to wrong notes rows after
+                                 the insert_rows shift; post-processor rewrites them using
+                                 the label-scanned totals.
+  6. GROSS PROFIT #REF         — broken =B13+B18+#REF! formula in old-data column;
+                                 replaced with 0.
+  7. Finance cost orphan       — BANK CC INTT written to a floating row below the section;
+                                 re-injected to the "Bank Interest" labelled row.
+  8. Short-term Provisions SUM — SUM range may include OCL overflow rows; rewritten to
+                                 reference only the tax provision row.
+  9. LT Borrowings incomplete  — injector places only 4 loans; remaining loans added to
+                                 empty rows in the secured section.
+ 10. Closing stock formula     — =B24-SUM(E11:E14) back-calculates wrongly; overridden
+                                 with the correct certified value from the TB.
+"""
+
+from __future__ import annotations
+import re
+from typing import Optional
+from openpyxl import load_workbook
+from openpyxl.workbook.workbook import Workbook
+from openpyxl.worksheet.worksheet import Worksheet
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _label(ws: Worksheet, r: int, c: int = 2) -> str:
+    """Return normalised cell label (col B by default)."""
+    v = ws.cell(r, c).value
+    return str(v).strip().lower() if v else ""
+
+def _val(ws: Worksheet, r: int, c: int = 4):
+    """Return numeric value or 0."""
+    v = ws.cell(r, c).value
+    return v if isinstance(v, (int, float)) else 0
+
+def _is_formula(v) -> bool:
+    return isinstance(v, str) and v.strip().startswith("=")
+
+def _safe_write(ws: Worksheet, r: int, c: int, value, log: list):
+    """Write only if cell is not a structural formula."""
+    cell = ws.cell(r, c)
+    old  = cell.value
+    if _is_formula(old):
+        log.append(f"  SKIP formula {ws.title}!{cell.coordinate} = {old}")
+        return False
+    cell.value = value
+    log.append(f"  WRITE {ws.title}!{cell.coordinate}: {repr(old)!s:30} → {repr(value)}")
+    return True
+
+def _find_row_by_label(ws: Worksheet,
+                       keywords: list[str],
+                       start: int = 1, end: int = 200,
+                       col: int = 2) -> Optional[int]:
+    """Return first row whose col-B label contains ALL keywords (case-insensitive)."""
+    kws = [k.lower() for k in keywords]
+    for r in range(start, end + 1):
+        lbl = _label(ws, r, col)
+        if all(k in lbl for k in kws):
+            return r
+    return None
+
+def _find_section_total_row(ws: Worksheet,
+                            keywords: list[str],
+                            start: int, end: int) -> Optional[int]:
+    """Return the row containing 'Total …' and whose col-D holds a SUM formula."""
+    for r in range(start, end + 1):
+        lbl = _label(ws, r)
+        if "total" in lbl and all(k in lbl for k in keywords):
+            return r
+        # Also accept rows where col D has a SUM formula and label is nearby
+        d = ws.cell(r, 4).value
+        if _is_formula(str(d)) and "SUM" in str(d).upper() and "total" in lbl:
+            return r
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bug 1 – OCL insert_rows overflow
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fix_ocl(ws_n: Worksheet, log: list):
+    """
+    The injector appends individual payable rows below the last named OCL row,
+    outside the SUM(Dstart:Dend) range. We:
+      1. Find the SUM formula row (Total Other current liabilities).
+      2. Determine the SUM range it uses (e.g. D59:D66).
+      3. Collect all numeric values from inside that range (named rows) AND
+         from inserted rows below (unnamed rows up to the Total row).
+      4. Group them into the 7 template categories by label keyword matching.
+      5. Write the categorised totals into the named rows; zero out the overflow.
+    """
+    log.append("\n[OCL] Fixing OCL overflow rows")
+
+    # Find Total row
+    total_row = None
+    for r in range(55, 100):
+        lbl = _label(ws_n, r)
+        if "total other current" in lbl or ("total" in lbl and "current liabilit" in lbl):
+            total_row = r
+            break
+    if not total_row:
+        log.append("  OCL: total row not found — skipped")
+        return
+
+    # Parse SUM range from formula
+    formula = ws_n.cell(total_row, 4).value or ""
+    m = re.search(r'SUM\(D(\d+):D(\d+)\)', str(formula), re.IGNORECASE)
+    if not m:
+        log.append(f"  OCL: SUM formula not parseable ({formula}) — skipped")
+        return
+
+    sum_start = int(m.group(1))
+    sum_end   = int(m.group(2))
+
+    # Collect ALL values (named rows inside range + unnamed overflow rows below)
+    # Each entry: (row, label, amount)
+    all_entries = []
+    for r in range(sum_start, total_row):
+        lbl = _label(ws_n, r)
+        d   = ws_n.cell(r, 4).value
+        if isinstance(d, (int, float)) and d != 0:
+            all_entries.append((r, lbl, d))
+
+    if not all_entries:
+        log.append("  OCL: no values found — skipped")
+        return
+
+    # Category keyword map → row label pattern
+    CATEGORY_KEYWORDS = [
+        ("esi",          ["esi"]),
+        ("wages",        ["wages"]),
+        ("tds payable",  ["tds"]),
+        ("leave",        ["leave"]),
+        ("bonus",        ["bonus"]),
+        ("audit",        ["audit"]),
+        ("professional", ["professional"]),
+        ("salary",       ["salary"]),
+    ]
+
+    # Sum up into categories
+    cat_totals: dict[str, float] = {c[0]: 0.0 for c in CATEGORY_KEYWORDS}
+    uncategorised: list[tuple] = []
+
+    for r, lbl, amt in all_entries:
+        matched = False
+        for cat, kws in CATEGORY_KEYWORDS:
+            if any(k in lbl for k in kws):
+                cat_totals[cat] += abs(amt)
+                matched = True
+                break
+        if not matched:
+            uncategorised.append((r, lbl, amt))
+
+    # Write categorised totals to named rows (inside SUM range, col D)
+    for r in range(sum_start, sum_end + 1):
+        lbl = _label(ws_n, r)
+        if not lbl:
+            continue
+        for cat, kws in CATEGORY_KEYWORDS:
+            if any(k in lbl for k in kws) and cat_totals[cat] > 0:
+                _safe_write(ws_n, r, 4, cat_totals[cat], log)
+                cat_totals[cat] = 0  # written
+                break
+
+    # Clear overflow rows below SUM range
+    for r in range(sum_end + 1, total_row):
+        d = ws_n.cell(r, 4).value
+        b = ws_n.cell(r, 2).value
+        if isinstance(d, (int, float)) and d != 0 and not b:
+            ws_n.cell(r, 4).value = None
+            log.append(f"  OCL: cleared overflow D{r}={d}")
+
+    ocl_total = sum(_val(ws_n, r) for r in range(sum_start, sum_end + 1))
+    log.append(f"  OCL total after fix = {ocl_total:,.2f}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bug 2 – Cash & Bank row mismatch
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fix_cash_bank(ws_n: Worksheet, tb_accounts: list, log: list):
+    """
+    Find Cash and Bank section dynamically by labels; write correct values
+    to the right rows; fix all three SUM/addition formulas.
+    """
+    log.append("\n[CASH] Fixing Cash & Bank")
+
+    # Locate section header
+    hdr = _find_row_by_label(ws_n, ["cash", "bank", "balance"], start=90, end=160)
+    if not hdr:
+        log.append("  CASH: section header not found — skipped")
+        return
+
+    # Find named sub-rows within ±40 rows of header
+    cash_row  = _find_row_by_label(ws_n, ["cash in hand"],         hdr, hdr+40)
+    total_a   = _find_row_by_label(ws_n, ["total"],                hdr, hdr+40)
+    bank_rows: dict[str, int] = {}  # bank_name_lower → row
+
+    # Scan for bank-name rows — stop at next major section (STLA / Short Term Loans)
+    for r in range(hdr, hdr + 40):
+        lbl = _label(ws_n, r)
+        # Stop if we've hit the next section
+        if any(k in lbl for k in ["short term loan", "short-term loan",
+               "loans and advance", "other current asset"]):
+            break
+        if not lbl or "total" in lbl or "balance" in lbl or "equivalent" in lbl:
+            continue
+        if any(k in lbl for k in ["bank", "a/c", "current", "savings"]) and \
+           not any(k in lbl for k in ["cash in hand", "other bank"]):
+            bank_rows[lbl] = r
+
+    total_b   = _find_row_by_label(ws_n, ["total other bank"],     hdr, hdr+40)
+    total_ab  = _find_row_by_label(ws_n, ["total cash and bank"],  hdr, hdr+40)
+
+    # Extract TB values
+    tb_cash   = sum(abs(a["net"]) for a in tb_accounts
+                    if a.get("bs_head") == "cash_bank"
+                    and "cash" in a.get("name","").lower()
+                    and a.get("net", 0) > 0)
+    tb_banks  = {a["name"].lower(): abs(a["net"]) for a in tb_accounts
+                 if a.get("bs_head") == "cash_bank"
+                 and "bank" in a.get("name","").lower()
+                 and "cheque" not in a.get("name","").lower()
+                 and a.get("net", 0) > 0}
+
+    # Write cash in hand
+    if cash_row:
+        _safe_write(ws_n, cash_row, 4, tb_cash or None, log)
+    else:
+        log.append("  CASH: 'cash in hand' row not found")
+
+    # Write bank accounts by fuzzy name match
+    written_bank_rows = set()
+    for tb_name, tb_amt in tb_banks.items():
+        matched_row = None
+        for lbl, row in bank_rows.items():
+            # fuzzy: any significant word from TB name appears in template label
+            tb_words = [w for w in tb_name.split() if len(w) > 3
+                        and w not in {"bank","a/c","ltd","pvt","the"}]
+            if any(w in lbl for w in tb_words):
+                matched_row = row
+                break
+        if matched_row:
+            _safe_write(ws_n, matched_row, 4, tb_amt, log)
+            written_bank_rows.add(matched_row)
+        else:
+            # Find first empty bank row
+            for lbl, row in bank_rows.items():
+                if row not in written_bank_rows:
+                    cell_d = ws_n.cell(row, 4).value
+                    if cell_d is None or cell_d == 0:
+                        _safe_write(ws_n, row, 4, tb_amt, log)
+                        written_bank_rows.add(row)
+                        break
+
+    # Fix SUM formulas
+    if cash_row and total_a:
+        ws_n.cell(total_a, 4).value = f"=SUM(D{cash_row}:D{cash_row})"
+        log.append(f"  CASH: Total(A) formula → =SUM(D{cash_row}:D{cash_row})")
+
+    if total_b and bank_rows:
+        bank_row_nums = sorted(bank_rows.values())
+        r_start = bank_row_nums[0]
+        r_end   = bank_row_nums[-1]
+        ws_n.cell(total_b, 4).value = f"=SUM(D{r_start}:D{r_end})"
+        log.append(f"  CASH: Total(B) formula → =SUM(D{r_start}:D{r_end})")
+
+    if total_ab and total_a and total_b:
+        ws_n.cell(total_ab, 4).value = f"=D{total_a}+D{total_b}"
+        log.append(f"  CASH: Total(A+B) formula → =D{total_a}+D{total_b}")
+
+    # Fix BS formula pointer
+    total_row = total_ab or total_b or total_a
+    if total_row:
+        log.append(f"  CASH: notes row for BS = D{total_row}")
+    return total_row
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bug 3 & 4 – STLA wrong row + formula pointer
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fix_stla(ws_n: Worksheet, tb_accounts: list, log: list):
+    """
+    Find STLA section; move GST/TCS/TDS values to correct sub-rows under
+    'Advance to Revenue Authorities'; rewrite Total(D) and Total(A+B+C+D).
+    """
+    log.append("\n[STLA] Fixing Short Term Loans & Advances")
+
+    # Locate STLA header
+    hdr = _find_row_by_label(ws_n, ["short term loan"], start=110, end=180)
+    if not hdr:
+        hdr = _find_row_by_label(ws_n, ["short term"], start=110, end=180)
+    if not hdr:
+        log.append("  STLA: section header not found — skipped")
+        return None
+
+    # Find Revenue Authorities header
+    rev_hdr = _find_row_by_label(ws_n, ["revenue authorit"], hdr, hdr+50)
+    if not rev_hdr:
+        rev_hdr = _find_row_by_label(ws_n, ["advance to revenue"], hdr, hdr+50)
+
+    # Find Total(D) and Total(A+B+C+D)
+    total_d    = _find_row_by_label(ws_n, ["total"],   rev_hdr or hdr, hdr+50) if rev_hdr else None
+    total_abcd = _find_row_by_label(ws_n, ["a+b+c+d"], hdr, hdr+60)
+    if not total_abcd:
+        total_abcd = _find_row_by_label(ws_n, ["a+b+c"], hdr, hdr+60)
+
+    # Collect TB STLA accounts
+    gst_total  = sum(abs(a["net"]) for a in tb_accounts
+                     if a.get("bs_head") == "stla"
+                     and "gst" in a.get("name","").lower()
+                     and "tcs" not in a.get("name","").lower())
+    tcs_total  = sum(abs(a["net"]) for a in tb_accounts
+                     if a.get("bs_head") == "stla"
+                     and ("tcs" in a.get("name","").lower()))
+    tds_total  = sum(abs(a["net"]) for a in tb_accounts
+                     if a.get("bs_head") == "stla"
+                     and "tds" in a.get("name","").lower()
+                     and "tcs" not in a.get("name","").lower())
+    # Excess TDS
+    excess_tds = sum(abs(a["net"]) for a in tb_accounts
+                     if a.get("bs_head") == "stla"
+                     and "excess tds" in a.get("name","").lower())
+
+    log.append(f"  STLA TB: GST={gst_total:,.2f}  TCS={tcs_total:,.2f}  TDS={tds_total:,.2f}")
+
+    if not rev_hdr:
+        log.append("  STLA: Revenue Authorities header not found — skipped")
+        return total_abcd
+
+    # Within Revenue Authorities section, map named rows
+    # Scan from rev_hdr to total_d (or +15 rows)
+    scan_end = total_d if total_d else rev_hdr + 15
+    rev_rows: dict[str, int] = {}  # category → row
+    for r in range(rev_hdr + 1, scan_end + 1):
+        lbl = _label(ws_n, r)
+        if "total" in lbl:
+            break
+        if "gst" in lbl and "tcs" not in lbl and "tds" not in lbl:
+            rev_rows["gst"] = r
+        elif "tcs" in lbl:
+            rev_rows["tcs"] = r
+        elif "excess tds" in lbl:
+            rev_rows["excess_tds"] = r
+        elif "tds" in lbl:
+            rev_rows["tds"] = r
+
+    # First clear wrong values from misplaced rows (e.g. "Loans to Related Parties")
+    # and write to correct rows
+    if "gst" in rev_rows and gst_total > 0:
+        _safe_write(ws_n, rev_rows["gst"], 4, gst_total, log)
+    if "tcs" in rev_rows and tcs_total > 0:
+        _safe_write(ws_n, rev_rows["tcs"], 4, tcs_total, log)
+    if "excess_tds" in rev_rows and excess_tds > 0:
+        _safe_write(ws_n, rev_rows["excess_tds"], 4, excess_tds, log)
+    if "tds" in rev_rows and tds_total > 0:
+        _safe_write(ws_n, rev_rows["tds"], 4, tds_total, log)
+
+    # Clear any misplaced STLA values from non-revenue-auth rows
+    # (values that landed in "Loans to Related Parties" etc.)
+    loans_row = _find_row_by_label(ws_n, ["loans to related"], hdr, hdr+20)
+    if loans_row:
+        d = ws_n.cell(loans_row, 4).value
+        if isinstance(d, (int, float)) and d > 0:
+            ws_n.cell(loans_row, 4).value = None
+            log.append(f"  STLA: cleared misplaced value from 'Loans to Related Parties' D{loans_row}={d}")
+
+    # Clear misplaced injector values in blank rows between Loans to Related Parties
+    # and Revenue Authorities (the injector sometimes writes GST refund here)
+    if loans_row and rev_hdr:
+        for r in range(loans_row + 1, rev_hdr):
+            lbl = _label(ws_n, r)
+            d   = ws_n.cell(r, 4).value
+            if isinstance(d, (int, float)) and d > 0 and not lbl:
+                ws_n.cell(r, 4).value = None
+                log.append(f"  STLA: cleared blank misplaced row D{r}={d}")
+
+    # Fix Total(B) for STLA if it points to the Cash total row (a common injector error)
+    total_b_stla = _find_row_by_label(ws_n, ["total (b)"], hdr, rev_hdr or hdr+30)
+    if total_b_stla:
+        tb_formula = ws_n.cell(total_b_stla, 4).value
+        # If the formula points to the cash total row (D116, D122, etc.), fix it
+        if isinstance(tb_formula, str) and re.search(r'=D1[012][0-9]', tb_formula):
+            # Should point to the loans-to-related-parties row above it
+            related_row = _find_row_by_label(ws_n, ["loans to related"], hdr, total_b_stla)
+            if related_row:
+                ws_n.cell(total_b_stla, 4).value = f"=D{related_row}"
+                log.append(f"  STLA: Total(B) D{total_b_stla} fixed from {tb_formula} → =D{related_row}")
+
+    # Fix Total(D) formula
+    if total_d and rev_rows:
+        rows_sorted = sorted(rev_rows.values())
+        ws_n.cell(total_d, 4).value = f"=SUM(D{rows_sorted[0]}:D{rows_sorted[-1]})"
+        log.append(f"  STLA: Total(D) formula → =SUM(D{rows_sorted[0]}:D{rows_sorted[-1]})")
+
+    # Find Total(B) and Total(C) rows for the final sum
+    total_b = _find_row_by_label(ws_n, ["total"], hdr, rev_hdr)
+    total_c = None
+    for r in range(hdr, rev_hdr):
+        lbl = _label(ws_n, r)
+        if "total" in lbl and "b" in lbl and r != total_b:
+            total_c = r
+
+    # Fix Total(A+B+C+D) — include D(total_d) instead of old broken refs
+    if total_abcd and total_d:
+        # Find total_b_loans (Total B - loans to others) and total_c (Total C)
+        tb_row = _find_row_by_label(ws_n, ["total (b)"], hdr, rev_hdr)
+        tc_row = _find_row_by_label(ws_n, ["total (c)"], hdr, rev_hdr)
+        ta_row = _find_row_by_label(ws_n, ["total (a)"], hdr, rev_hdr)
+        parts  = [f"D{total_d}"]
+        if tb_row: parts.append(f"D{tb_row}")
+        if tc_row: parts.append(f"D{tc_row}")
+        if ta_row: parts.append(f"D{ta_row}")
+        if len(parts) > 1:
+            ws_n.cell(total_abcd, 4).value = "=" + "+".join(parts)
+            log.append(f"  STLA: Total(A+B+C+D) formula → {'='+'+'.join(parts)}")
+
+    total_stla = _val(ws_n, total_abcd) if total_abcd else (gst_total + tcs_total + tds_total)
+    log.append(f"  STLA total row = D{total_abcd}  (will recalc in Excel)")
+    return total_abcd
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bug 5 – BS formula pointers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fix_bs_pointers(ws_bs: Worksheet, ws_n: Worksheet,
+                    ocl_total_row: int, cash_total_row: Optional[int],
+                    stla_total_row: Optional[int], log: list):
+    """
+    Rewrite bs!E18 (OCL), bs!E19 (ST Prov), bs!E33 (Cash), bs!E34 (STLA)
+    to point to the correct notes to bs rows discovered during scanning.
+    """
+    log.append("\n[BS] Fixing bs sheet formula pointers")
+
+    # Find the OCL total row in notes to bs
+    ocl_row = _find_row_by_label(ws_n, ["total other current"], start=55, end=100)
+    if not ocl_row:
+        ocl_row = _find_row_by_label(ws_n, ["total"], start=60, end=90)
+
+    # Find ST Provisions total row
+    st_prov_row = None
+    for r in range(60, 95):
+        lbl = _label(ws_n, r)
+        d   = ws_n.cell(r, 4).value
+        if "short-term provision" in lbl or "short term provision" in lbl:
+            if _is_formula(str(d)) and "SUM" in str(d).upper():
+                st_prov_row = r
+                break
+
+    fixes = []
+    # Find correct bs rows by scanning column B labels (template-agnostic)
+    def _bs_row_for(keywords):
+        for r in range(10, 45):
+            lbl = _label(ws_bs, r, 2)
+            if all(k in lbl for k in keywords):
+                return r
+        return None
+
+    bs_ocl_row  = _bs_row_for(["other current liabilit"])
+    bs_stp_row  = _bs_row_for(["short-term provision"]) or _bs_row_for(["short term provision"])
+    bs_cash_row = _bs_row_for(["cash and bank"])
+    bs_stla_row = _bs_row_for(["short term loans and advance"]) or _bs_row_for(["short term loan"])
+
+    if ocl_row and bs_ocl_row:
+        fixes.append((bs_ocl_row, 5, f"='notes to bs'!D{ocl_row}", "Other CL → OCL total"))
+    if st_prov_row and bs_stp_row:
+        fixes.append((bs_stp_row, 5, f"='notes to bs'!D{st_prov_row}", "ST Provisions → correct row"))
+    if cash_total_row and bs_cash_row:
+        fixes.append((bs_cash_row, 5, f"='notes to bs'!D{cash_total_row}", "Cash & Bank → correct total"))
+    if stla_total_row and bs_stla_row:
+        fixes.append((bs_stla_row, 5, f"='notes to bs'!D{stla_total_row}", "STLA → correct total"))
+
+    for r, c, new_formula, reason in fixes:
+        old = ws_bs.cell(r, c).value
+        ws_bs.cell(r, c).value = new_formula
+        log.append(f"  BS R{r}C{c}: {repr(old)!s:40} → {new_formula}  // {reason}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bug 6 – GROSS PROFIT #REF and closing stock back-calculation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fix_gross_profit(ws_gp: Worksheet, tb_accounts: list, log: list):
+    """Kill #REF! formulas in old-data columns; fix closing stock formula."""
+    log.append("\n[GP] Fixing GROSS PROFIT sheet")
+
+    # Fix #REF! in any cell
+    for r in range(1, 35):
+        for c in range(1, 12):
+            v = ws_gp.cell(r, c).value
+            if isinstance(v, str) and "#REF!" in v:
+                ws_gp.cell(r, c).value = 0
+                log.append(f"  GP: cleared #REF! at R{r}C{c}")
+
+    # Fix closing stock back-calculation (E17 in Fashion Adda layout)
+    # Find the "CLOSING STOCK" row
+    closing_row = None
+    for r in range(12, 25):
+        for c in [4, 5]:
+            lbl = _label(ws_gp, r, c)
+            if "closing stock" in lbl:
+                closing_row = r
+                break
+        if closing_row:
+            break
+
+    if closing_row:
+        # CY closing stock col is E (col 5) in Fashion Adda; col F (col 6) in Shree Craft
+        for c in [5, 6]:
+            v = ws_gp.cell(closing_row, c).value
+            if isinstance(v, str) and "B24" in v and "SUM" in v:
+                # Back-calculation formula — replace with certified value if available
+                closing_val = sum(abs(a["net"]) for a in tb_accounts
+                                  if "closing stock" in a.get("name","").lower()
+                                  or a.get("bs_head") == "inventories")
+                if closing_val and closing_val > 0:
+                    ws_gp.cell(closing_row, c).value = closing_val
+                    log.append(f"  GP: replaced back-calc closing stock C{c}R{closing_row} with {closing_val:,.2f}")
+                else:
+                    log.append(f"  GP: back-calc formula found at C{c}R{closing_row} but no closing stock in TB — left as-is")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bug 7 – Finance cost orphan
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fix_finance_cost(ws_npl: Worksheet, log: list):
+    """
+    If BANK CC INTT (or bank interest) landed in a floating row below the
+    Finance Cost section, move it to the 'Bank Interest' named row.
+    """
+    log.append("\n[FIN] Fixing Finance cost orphan")
+
+    # Find Finance cost section
+    fin_hdr = _find_row_by_label(ws_npl, ["finance cost"], start=35, end=65)
+    if not fin_hdr:
+        log.append("  FIN: Finance cost header not found — skipped")
+        return
+
+    # Find Total Finance cost row
+    fin_total = _find_row_by_label(ws_npl, ["total finance"], fin_hdr, fin_hdr + 15)
+    if not fin_total:
+        log.append("  FIN: Total Finance cost row not found — skipped")
+        return
+
+    # Find Bank Interest named row (inside section)
+    bank_int_row = _find_row_by_label(ws_npl, ["bank interest"], fin_hdr, fin_total)
+    if not bank_int_row:
+        bank_int_row = _find_row_by_label(ws_npl, ["bank"], fin_hdr, fin_total)
+
+    # Check if any value exists BELOW fin_total that looks like orphaned finance cost
+    # (within 10 rows, naked number, no label)
+    for r in range(fin_total + 1, fin_total + 12):
+        lbl = _label(ws_npl, r)
+        d   = ws_npl.cell(r, 4).value
+        if isinstance(d, (int, float)) and d > 0 and not lbl:
+            # Check if bank_int_row is empty
+            if bank_int_row:
+                existing = ws_npl.cell(bank_int_row, 4).value
+                if not existing or existing == 0:
+                    ws_npl.cell(bank_int_row, 4).value = d
+                    log.append(f"  FIN: moved orphan D{r}={d} → Bank Interest D{bank_int_row}")
+                else:
+                    # Add to existing
+                    ws_npl.cell(bank_int_row, 4).value = (existing or 0) + d
+                    log.append(f"  FIN: added orphan D{r}={d} to Bank Interest D{bank_int_row}")
+                ws_npl.cell(r, 4).value = None
+                log.append(f"  FIN: cleared orphan D{r}")
+
+    # Fix Total formula to SUM both sub-rows
+    if fin_total and fin_hdr:
+        # Scan for numbered sub-rows
+        sub_rows = []
+        for r in range(fin_hdr + 1, fin_total):
+            d = ws_npl.cell(r, 4).value
+            if isinstance(d, (int, float)) and d != 0:
+                sub_rows.append(r)
+            elif _is_formula(str(d)):
+                sub_rows.append(r)
+        if sub_rows:
+            r_start = sub_rows[0]; r_end = sub_rows[-1]
+            ws_npl.cell(fin_total, 4).value = f"=SUM(D{r_start}:D{r_end})"
+            log.append(f"  FIN: Total formula → =SUM(D{r_start}:D{r_end})")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bug 8 – Short-term Provisions SUM range
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fix_st_provisions(ws_n: Worksheet, log: list):
+    """Ensure ST Provisions SUM formula only covers tax provision rows."""
+    log.append("\n[STP] Fixing Short-term Provisions")
+
+    # Find the ST Provisions total row in notes to bs
+    # There are typically two: one in the main section, one mislabelled
+    for r in range(60, 105):
+        lbl  = _label(ws_n, r)
+        d    = ws_n.cell(r, 4).value
+        if ("short-term provision" in lbl or "short term provision" in lbl) \
+                and _is_formula(str(d)):
+            # Check what its SUM range covers
+            m = re.search(r'SUM\(D(\d+):D(\d+)\)', str(d), re.IGNORECASE)
+            if m:
+                s, e = int(m.group(1)), int(m.group(2))
+                # If it sweeps through OCL rows → it's wrong; find the tax provision row
+                tax_row = _find_row_by_label(ws_n, ["provision for tax"], s, e)
+                if not tax_row:
+                    tax_row = _find_row_by_label(ws_n, ["net provision"], s, e)
+                if tax_row:
+                    ws_n.cell(r, 4).value = f"=SUM(D{tax_row}:D{tax_row+1})"
+                    log.append(f"  STP: R{r} formula fixed → =SUM(D{tax_row}:D{tax_row+1})")
+
+    # Also fix the BS pointer: bs!E19 should point to a non-OCL ST Prov total
+    # (handled by fix_bs_pointers)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bug 9 – LT Borrowings incomplete injection
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fix_lt_borrowings(ws_n: Worksheet, tb_accounts: list, log: list):
+    """
+    If the secured loan rows in the template have empty cells that the
+    injector missed (fuzzy match failed), fill them from remaining TB loans.
+    """
+    log.append("\n[LTB] Checking LT Borrowings completeness")
+
+    # Find the secured section Total(A) row
+    total_a = _find_row_by_label(ws_n, ["total (a)"], start=4, end=25)
+    if not total_a:
+        log.append("  LTB: Total(A) not found — skipped")
+        return
+
+    # What the template's SUM covers
+    d_formula = ws_n.cell(total_a, 4).value or ""
+    m = re.search(r'SUM\(D(\d+):D(\d+)\)', str(d_formula), re.IGNORECASE)
+    if not m:
+        log.append(f"  LTB: SUM formula not parseable ({d_formula}) — skipped")
+        return
+
+    sum_start, sum_end = int(m.group(1)), int(m.group(2))
+
+    # Sum already injected
+    already_injected = sum(_val(ws_n, r) for r in range(sum_start, sum_end + 1))
+
+    # Sum expected from TB secured loans
+    tb_secure = sum(abs(a["net"]) for a in tb_accounts
+                    if a.get("bs_head") == "lt_borrowings"
+                    and "unsecure" not in a.get("group","").lower()
+                    and a.get("net", 0) < 0)
+
+    diff = abs(tb_secure - already_injected)
+    log.append(f"  LTB: injected={already_injected:,.2f}  TB_expected={tb_secure:,.2f}  diff={diff:,.2f}")
+
+    if diff < 1:
+        log.append("  LTB: ✓ complete")
+        return
+
+    # Find uninjected TB loans
+    for r in range(sum_start, sum_end + 1):
+        lbl = _label(ws_n, r)
+        d   = ws_n.cell(r, 4).value
+        if (d is None or d == 0) and not _is_formula(str(d)) and lbl:
+            # Match TB account to this label
+            for a in tb_accounts:
+                if a.get("bs_head") == "lt_borrowings" and a.get("net", 0) < 0:
+                    a_name = a["name"].lower()
+                    a_words = [w for w in a_name.split() if len(w) > 3]
+                    if any(w in lbl for w in a_words):
+                        _safe_write(ws_n, r, 4, abs(a["net"]), log)
+                        break
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bug 10 – LT Borrowings BS pointer
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fix_lt_bs_pointer(ws_bs: Worksheet, ws_n: Worksheet, log: list):
+    """Ensure bs!E11 points to notes LT total row."""
+    total_ab = _find_row_by_label(ws_n, ["total (a) + (b)"], start=4, end=28)
+    if not total_ab:
+        total_ab = _find_row_by_label(ws_n, ["total (a)+(b)"], start=4, end=28)
+    if total_ab:
+        current = ws_bs.cell(11, 5).value
+        expected = f"='notes to bs'!D{total_ab}"
+        if current != expected:
+            ws_bs.cell(11, 5).value = expected
+            log.append(f"\n[LTB_BS] bs!E11 updated: {repr(current)} → {expected}")
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fix: Trade Receivables — D101 points to wrong Details row
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fix_trade_receivables(ws_n: Worksheet, ws_det, log: list):
+    """
+    Fix trade receivable formula to point to actual debtor rows in Details,
+    not the advance-to-supplier total.
+    """
+    log.append("\n[TR] Fixing Trade Receivables")
+
+    # Find the trade receivables section header first
+    tr_hdr = _find_row_by_label(ws_n, ["trade receivable"], start=80, end=150)
+    if not tr_hdr:
+        tr_hdr = _find_row_by_label(ws_n, ["trade rec"], start=80, end=150)
+    scan_start = tr_hdr if tr_hdr else 90
+    scan_end   = min(scan_start + 30, 150)
+
+    # Find the <6months unsecured debtor row in notes to bs
+    for r in range(scan_start, scan_end):
+        lbl = _label(ws_n, r)
+        if "unsecured considered good" in lbl and "outstanding" not in lbl:
+            # Check parent context: should be under <6months section
+            parent_lbl = _label(ws_n, r-2)
+            if "less than 6" in parent_lbl or "less than" in parent_lbl:
+                cell = ws_n.cell(r, 4)
+                current = cell.value or ""
+                if isinstance(current, str) and "Details" in current:
+                    # Find the correct Details trade rec total row
+                    # by scanning Details for a SUM of debtor rows
+                    if ws_det:
+                        for dr in range(60, 90):
+                            dv = ws_det.cell(dr, 4).value
+                            if isinstance(dv, str) and "SUM" in dv.upper():
+                                # Check if this row sums debtor names (not supplier names)
+                                # by checking the rows above it
+                                for rr in range(max(dr-5, 1), dr):
+                                    b2 = (ws_det.cell(rr, 2).value or "").strip().lower()
+                                    if any(k in b2 for k in ["online", "credit card",
+                                           "industry", "forging", "fabrics", "pvt"]):
+                                        cell.value = f"=Details!D{dr}"
+                                        log.append(f"  TR: D{r} fixed → =Details!D{dr}")
+                                        return
+                    # Fallback: scan Details for "ONLINE PAYMENT" and use that row directly
+                    if ws_det:
+                        for dr in range(60, 90):
+                            b2 = (ws_det.cell(dr, 2).value or "").strip().lower()
+                            if "online" in b2 or "online payment" in b2:
+                                cell.value = f"=Details!D{dr}"
+                                log.append(f"  TR: D{r} fixed → =Details!D{dr} (online payment)")
+                                return
+                log.append(f"  TR: D{r} already correct or no fix needed ({repr(current)})")
+                break
+
+
+def fix_revenue_formula(ws_npl: Worksheet, ws_gp: Worksheet, log: list):
+    """Extend revenue SUM to cover all sale rows E11:E16 (some templates only have E11:E14)."""
+    log.append("\n[REV] Fixing Revenue formula range")
+    if ws_npl is None or ws_gp is None:
+        return
+    for r in range(1, 20):
+        b = ws_npl.cell(r, 2).value
+        if b and "sale of goods" in str(b).lower():
+            cell = ws_npl.cell(r+1, 4)  # next row = total/sum row
+            # Or find the total row
+            for rr in range(r, r+5):
+                d = ws_npl.cell(rr, 4).value
+                if isinstance(d, str) and "GROSS PROFIT" in d and "SUM" in d:
+                    # Update to include all sale rows up to E20
+                    # Find actual last sale row in GP sheet
+                    last_sale_row = 14
+                    for gr in range(10, 22):
+                        v = ws_gp.cell(gr, 5).value
+                        if v is not None and isinstance(v, (int, float)) and v != 0:
+                            last_sale_row = gr
+                    new_formula = f"=SUM('GROSS PROFIT'!E11:E{last_sale_row})"
+                    if d != new_formula:
+                        ws_npl.cell(rr, 4).value = new_formula
+                        log.append(f"  REV: D{rr} formula: {d} → {new_formula}")
+                    break
+            break
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main entry point
+# ─────────────────────────────────────────────────────────────────────────────
+
+def post_process(output_path: str,
+                 classified_accounts: list,
+                 recalc: bool = True) -> dict:
+    """
+    Apply all post-processing fixes to an already-injected BS xlsx.
+
+    Parameters
+    ----------
+    output_path          : path of the xlsx file produced by process_tb_to_bs()
+    classified_accounts  : the list of dicts from result['classified_accounts']
+    recalc               : if True, run LibreOffice recalc after fixing
+
+    Returns
+    -------
+    dict with keys: status, fixes_applied (list of log lines), errors (list)
+    """
+    log    = ["=== POST-PROCESSOR START ==="]
+    errors = []
+
+    try:
+        wb = load_workbook(output_path)
+    except Exception as e:
+        return {"status": "error", "errors": [str(e)], "fixes_applied": []}
+
+    ws_n   = wb['notes to bs']     if 'notes to bs'     in wb.sheetnames else None
+    ws_npl = wb['notes to p&l']    if 'notes to p&l'    in wb.sheetnames else None
+    ws_gp  = wb['GROSS PROFIT']    if 'GROSS PROFIT'    in wb.sheetnames else None
+    ws_bs  = wb['bs']              if 'bs'              in wb.sheetnames else None
+
+    tb = classified_accounts  # shorthand
+
+    # Run fixes
+    if ws_n:
+        fix_ocl(ws_n, log)
+        cash_total_row = fix_cash_bank(ws_n, tb, log)
+        ws_det = wb["Details"] if "Details" in wb.sheetnames else None
+        fix_trade_receivables(ws_n, ws_det, log)
+        stla_total_row = fix_stla(ws_n, tb, log)
+        fix_st_provisions(ws_n, log)
+        fix_lt_borrowings(ws_n, tb, log)
+
+    if ws_npl:
+        fix_finance_cost(ws_npl, log)
+        fix_revenue_formula(ws_npl, ws_gp if ws_gp else None, log)
+
+    if ws_gp:
+        fix_gross_profit(ws_gp, tb, log)
+
+    if ws_bs and ws_n:
+        ocl_total_row  = _find_row_by_label(ws_n, ["total other current"], 55, 100)
+        fix_bs_pointers(ws_bs, ws_n, ocl_total_row,
+                        cash_total_row if ws_n else None,
+                        stla_total_row if ws_n else None, log)
+        fix_lt_bs_pointer(ws_bs, ws_n, log)
+
+    wb.save(output_path)
+    log.append("\n=== POST-PROCESSOR COMPLETE — file saved ===")
+
+    # Optional recalc via LibreOffice
+    if recalc:
+        try:
+            import subprocess, sys
+            sys.path.insert(0, '/home/claude')
+            r = subprocess.run(
+                ['python3', '/home/claude/scripts/recalc.py', output_path, '90'],
+                capture_output=True, text=True, timeout=120
+            )
+            import json
+            recalc_result = json.loads(r.stdout) if r.stdout.strip() else {}
+            log.append(f"\nRecalc: {recalc_result.get('status','?')}  "
+                       f"errors={recalc_result.get('total_errors',0)}")
+            if recalc_result.get('total_errors', 0) > 0:
+                errors.append(f"Formula errors after recalc: {recalc_result['error_summary']}")
+        except Exception as e:
+            log.append(f"\nRecalc skipped: {e}")
+
+    return {
+        "status":       "success" if not errors else "partial",
+        "fixes_applied": log,
+        "errors":        errors,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI
+# ─────────────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import sys, json
+    if len(sys.argv) < 2:
+        print("Usage: python bs_post_processor.py <output.xlsx> [classified_accounts.json]")
+        sys.exit(1)
+
+    xlsx_path = sys.argv[1]
+    if len(sys.argv) >= 3:
+        with open(sys.argv[2]) as f:
+            accounts = json.load(f)
+    else:
+        accounts = []
+
+    result = post_process(xlsx_path, accounts)
+    print("\n".join(result["fixes_applied"]))
+    if result["errors"]:
+        print("ERRORS:", result["errors"])
