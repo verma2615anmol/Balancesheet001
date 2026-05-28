@@ -283,7 +283,7 @@ BS_HEADS = {
             "processing fee", "cersai charge",
             "life insurance machinery loan",
         ],
-        "negative_keywords": ["interest received", "interest income", "intt paid on late payment"],
+        "negative_keywords": ["interest received", "interest income", "intt paid on late payment", "bank charges and interest", "bank charges"],
     },
     "other_expenses": {
         "label": "Other Expenses / Indirect Expenses",
@@ -1451,7 +1451,8 @@ def _fuzzy_match_name(tb_name, template_name):
         "bank od interest":   "bank interest",
         "cc interest":        "bank interest",
         "od interest":        "bank interest",
-        "bank charges and interest": "bank interest",
+        # "bank charges and interest" is NOT a loan interest — it's a bank service charge
+        # and belongs in other_expenses. Do NOT alias it to "bank interest".
     }
 
     def normalize(s):
@@ -1601,7 +1602,10 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 b_val = ws_n.cell(r, 2).value
                 if b_val and isinstance(b_val, str) and len(b_val.strip()) > 2:
                     lbl = b_val.strip().lower()
-                    if 'total' in lbl or 'secured' in lbl or 'unsecured' in lbl or 'from' in lbl:
+                    # Exclude section headers but NOT loan names that happen to contain 'from'
+                    HEADER_LABELS = {'from banks', 'from related parties', 'from other parties',
+                                     'secured', 'unsecured', 'term loans'}
+                    if 'total' in lbl or lbl.strip() in HEADER_LABELS:
                         continue
                     ltb_template[r] = lbl
 
@@ -1624,11 +1628,14 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             written_rows = set()
 
             def _inject_ltb_list(acct_list, fallback_start, fallback_end):
-                for acct in acct_list:
-                    amt = abs(acct["net"])
+                # Sort by name length DESC so more specific accounts (longer names) match first
+                # This prevents "Axis ML3" from stealing a row meant for a more specific name
+                for acct in sorted(acct_list, key=lambda a: -len(a["name"])):
+                    amt  = abs(acct["net"])
                     name = acct["name"]
                     matched_row = None
-                    for r, lbl in ltb_template.items():
+                    # Try exact/fuzzy match — but avoid matching generic labels to wrong loans
+                    for r, lbl in sorted(ltb_template.items()):
                         if r in written_rows:
                             continue
                         if _fuzzy_match_name(name, lbl):
@@ -1677,10 +1684,9 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             if not placed:
                 skipped.append(f"short_term_borrowings {stb_amt:,.2f}: no writable row in notes to bs")
 
-        # ── Cheques Issued But Not Cleared → D68 (OCL) ─────────────────
+        # ── Cheques Issued But Not Cleared → "Cheque Issued" labelled row ──
         # Only CREDIT-balance cheque accounts are liabilities (issued cheques).
-        # Debit-balance cheque accounts are assets (cheques received) and must
-        # NOT be redirected here — they belong in cash_bank.
+        # Find the row by label (not hardcoded D68) so it works for any template.
         if individual_accounts:
             cheque_accounts = [a for a in individual_accounts
                                if ("cheque" in a.get("name","").lower()
@@ -1688,8 +1694,23 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                and a.get("net", 0) < 0]   # credit balance = liability
             total_cheques = sum(abs(a["net"]) for a in cheque_accounts)
             if total_cheques > 0:
-                if _safe_set(ws_n, 68, 4, total_cheques):
-                    injected.append(f"notes to bs!D68 (Cheques issued) = {total_cheques:,.2f}")
+                cheque_row = None
+                for r in range(50, 100):
+                    lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                    if "cheque issued" in lbl or "chq issued" in lbl or "not presented" in lbl:
+                        cheque_row = r
+                        break
+                if cheque_row:
+                    ws_n.cell(cheque_row, 4).value = total_cheques
+                    injected.append(f"notes to bs!D{cheque_row} (Cheques issued) = {total_cheques:,.2f}")
+                else:
+                    # Fallback to OCL section last named row
+                    for r in range(55, 90):
+                        lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                        if "total" in lbl and "current" in lbl:
+                            ws_n.cell(r-1, 4).value = total_cheques
+                            injected.append(f"notes to bs!D{r-1} (Cheques issued fallback) = {total_cheques:,.2f}")
+                            break
 
         # Other current liabilities → match by name to template rows
         ocl_amt = aggregated_values.get("other_cl", 0)
@@ -1699,7 +1720,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             ocl_end = None
             for r in range(50, 100):
                 b = ws_n.cell(r, 2).value
-                if b and 'other current liabilit' in str(b).lower():
+                if b and 'other current liabilit' in str(b).lower() and 'total' not in str(b).lower():
                     ocl_start = r + 1
                 if ocl_start and b and 'total' in str(b).lower() and 'other' in str(b).lower():
                     ocl_end = r
@@ -1721,7 +1742,10 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             if individual_accounts:
                 ocl_accounts = [a for a in individual_accounts
                                 if a.get("bs_head") == "other_cl"
-                                and abs(a.get("net", 0)) > 0]
+                                and abs(a.get("net", 0)) > 0
+                                # Exclude cheque accounts — already injected above
+                                and "cheque" not in a.get("name","").lower()
+                                and "chq" not in a.get("name","").lower()]
                 written_ocl = set()
                 
                 # Phase 1: fuzzy match to template
@@ -1735,77 +1759,138 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                 injected.append(f"notes to bs!D{r} (OCL: {acct['name']}) = {abs(acct['net']):,.2f}")
                             break
                 
-                # Phase 2: unmatched → empty rows in section
+                # Phase 2: unmatched → aggregate into category rows (NEVER insert_rows)
+                # Group unmatched accounts by category keyword and add to the best
+                # matching named row. This avoids row-shifting entirely.
+                CATEGORY_KEYWORDS_OCL = [
+                    ("esi",          ["esi"]),
+                    ("wages",        ["wages", "wage"]),
+                    ("tds payable",  ["tds"]),
+                    ("leave",        ["leave with wages", "leave"]),
+                    ("bonus",        ["bonus"]),
+                    ("audit",        ["audit"]),
+                    ("professional", ["professional"]),
+                    ("salary",       ["salary payable", "salary"]),
+                ]
+                # Accumulate unmatched amounts by category
+                cat_pending: dict = {}
                 for acct in ocl_accounts:
-                    if any(_fuzzy_match_name(acct["name"], ocl_template.get(r, "")) for r in written_ocl):
+                    if any(_fuzzy_match_name(acct["name"],
+                           ocl_template.get(r, "")) for r in written_ocl):
+                        continue   # already matched in Phase 1
+                    name_l = acct["name"].lower()
+                    amt    = abs(acct["net"])
+                    matched_cat = None
+                    for cat, kws in CATEGORY_KEYWORDS_OCL:
+                        if any(k in name_l for k in kws):
+                            matched_cat = cat
+                            break
+                    if not matched_cat:
+                        matched_cat = "other"
+                    cat_pending[matched_cat] = cat_pending.get(matched_cat, 0) + amt
+
+                # Write accumulated category totals to matching template rows
+                for cat, amt in cat_pending.items():
+                    if amt == 0:
                         continue
-                    amt = abs(acct["net"])
-                    placed = False
-                    for r in range(ocl_start, ocl_end):
+                    for r, lbl in ocl_template.items():
                         if r in written_ocl:
                             continue
-                        d = ws_n.cell(r, 4).value
-                        b = ws_n.cell(r, 2).value
-                        if (d is None or d == 0) and r not in written_ocl:
-                            if b is None or str(b).strip() == "":
-                                _safe_set(ws_n, r, 2, acct["name"])
-                            if _safe_set(ws_n, r, 4, amt):
-                                written_ocl.add(r)
-                                injected.append(f"notes to bs!D{r} (OCL new: {acct['name']}) = {amt:,.2f}")
-                                placed = True
+                        cat_kws = next(
+                            (kws for c, kws in CATEGORY_KEYWORDS_OCL if c == cat), []
+                        )
+                        if any(k in lbl for k in cat_kws):
+                            existing = ws_n.cell(r, 4).value or 0
+                            if not _is_formula(str(existing)):
+                                new_val = (existing if isinstance(existing,(int,float)) else 0) + amt
+                                if _safe_set(ws_n, r, 4, new_val):
+                                    written_ocl.add(r)
+                                    injected.append(
+                                        f"notes to bs!D{r} (OCL cat '{cat}') = {new_val:,.2f}"
+                                    )
                             break
-                    if not placed:
-                        # Insert row before total
-                        try:
-                            ws_n.insert_rows(ocl_end)
-                            _safe_set(ws_n, ocl_end, 2, acct["name"])
-                            _safe_set(ws_n, ocl_end, 4, amt)
-                            written_ocl.add(ocl_end)
-                            injected.append(f"notes to bs!D{ocl_end} (OCL inserted: {acct['name']}) = {amt:,.2f}")
-                            ocl_end += 1
-                        except:
-                            skipped.append(f"OCL '{acct['name']}' = {amt:,.2f}: section full")
+                    else:
+                        # No template row for this category — find first truly empty row
+                        for r in range(ocl_start, ocl_end):
+                            if r in written_ocl:
+                                continue
+                            d = ws_n.cell(r, 4).value
+                            if d is None or d == 0:
+                                if _safe_set(ws_n, r, 4, amt):
+                                    written_ocl.add(r)
+                                    injected.append(
+                                        f"notes to bs!D{r} (OCL overflow '{cat}') = {amt:,.2f}"
+                                    )
+                                break
+                        else:
+                            skipped.append(
+                                f"OCL category '{cat}' = {amt:,.2f}: no row — template full"
+                            )
 
-        # Cash → D109 (Cash in hand), HDFC → D113, ICICI → D114
+        # ── Cash & Bank — label-driven, no hardcoded row numbers ─────────────
         cash_bank_amt = aggregated_values.get("cash_bank", 0)
         if individual_accounts:
             cash_accounts = [a for a in individual_accounts
-                             if a.get("bs_head") in ("cash_bank", "cash_bank")
-                             and a.get("net", 0) > 0]   # only DEBIT balance = actual asset
-            cash_only  = [a for a in cash_accounts if "cash" in a["name"].lower()]
-            bank_only  = [a for a in cash_accounts if "cash" not in a["name"].lower()]
+                             if a.get("bs_head") in ("cash_bank",)
+                             and a.get("net", 0) > 0]
+            cash_only = [a for a in cash_accounts if "cash" in a["name"].lower()]
+            bank_only = [a for a in cash_accounts
+                         if "cash" not in a["name"].lower()
+                         and "cheque" not in a["name"].lower()]
 
-            # Cash in hand → D109 directly (plain cell)
-            if cash_only:
+            # Locate Cash in Hand row by scanning for the label (not hardcoded row 109)
+            cash_in_hand_row = None
+            for r in range(90, 170):
+                lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                if "cash in hand" in lbl:
+                    cash_in_hand_row = r
+                    break
+
+            if cash_in_hand_row and cash_only:
                 total_cash = sum(abs(a["net"]) for a in cash_only)
-                if _safe_set(ws_n, 109, 4, total_cash):
-                    injected.append(f"notes to bs!D109 (Cash in hand) = {total_cash:,.2f}")
+                # Always write cash (overwrite even formula PY values in CY col)
+                ws_n.cell(cash_in_hand_row, 4).value = total_cash
+                injected.append(
+                    f"notes to bs!D{cash_in_hand_row} (Cash in hand) = {total_cash:,.2f}"
+                )
 
-            # Individual bank accounts → D113, D114 by name match
+            # Locate bank rows by scanning for bank name labels
             for acct in bank_only:
-                name_l = acct["name"].lower()
-                amt = abs(acct["net"])
-                if "hdfc" in name_l:
-                    if _safe_set(ws_n, 113, 4, amt):
-                        injected.append(f"notes to bs!D113 (HDFC) = {amt:,.2f}")
-                elif "icici" in name_l:
-                    if _safe_set(ws_n, 114, 4, amt):
-                        injected.append(f"notes to bs!D114 (ICICI) = {amt:,.2f}")
-                elif "pnb" in name_l or "punjab national" in name_l:
-                    if _safe_set(ws_n, 113, 4, amt):
-                        injected.append(f"notes to bs!D113 (PNB) = {amt:,.2f}")
-                elif "sbi" in name_l or "state bank" in name_l:
-                    if _safe_set(ws_n, 113, 4, amt):
-                        injected.append(f"notes to bs!D113 (SBI) = {amt:,.2f}")
+                a_name_l = acct["name"].lower()
+                a_words  = [w for w in a_name_l.split()
+                            if len(w) > 3 and w not in {"bank","a/c","ltd","pvt","the","current"}]
+                for r in range(90, 170):
+                    lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                    if not lbl or "total" in lbl or "cash in hand" in lbl:
+                        continue
+                    if any(w in lbl for w in a_words):
+                        ws_n.cell(r, 4).value = abs(acct["net"])
+                        injected.append(
+                            f"notes to bs!D{r} ({acct['name']}) = {abs(acct['net']):,.2f}"
+                        )
+                        break
                 else:
-                    # First empty bank row
-                    for r in range(113, 116):
-                        if ws_n.cell(r, 4).value is None:
-                            if _safe_set(ws_n, r, 4, amt):
-                                injected.append(f"notes to bs!D{r} ({acct['name']}) = {amt:,.2f}")
-                            break
+                    # Fallback: find empty bank row near section
+                    for r in range(90, 170):
+                        lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                        if any(k in lbl for k in ["bank", "a/c"]) and "total" not in lbl \
+                                and "cash in hand" not in lbl:
+                            d = ws_n.cell(r, 4).value
+                            if d is None or d == 0:
+                                ws_n.cell(r, 4).value = abs(acct["net"])
+                                injected.append(
+                                    f"notes to bs!D{r} ({acct['name']}) = {abs(acct['net']):,.2f}"
+                                )
+                                break
+
         elif cash_bank_amt:
-            inject_notes_row(109, 4, cash_bank_amt, "Cash and bank (lump)")
+            # Fallback: find Cash in hand row by label
+            for r in range(90, 170):
+                lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                if "cash in hand" in lbl:
+                    ws_n.cell(r, 4).value = cash_bank_amt
+                    injected.append(f"notes to bs!D{r} (Cash and bank lump) = {cash_bank_amt:,.2f}")
+                    break
 
         # Short-term loans & advances → D128 (GST), D129 (TCS GST), D130 (Excess TDS)
         # Special case: "TDS claimable from Facebook" → D137 (Other current assets)
@@ -1821,68 +1906,120 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 name_l = acct["name"].lower()
                 placed = False
 
-                # ── Revenue Authority advance (TCS/TDS debit provisions) → D129 ─
-                # TCS GST A/C debit = TCS paid to govt = advance to revenue authority
-                # FIX (Issue 1): D127 is the section header row and is NOT included
-                # in the Total (D) formula at D131. Writing here is invisible to the total.
-                # The TCS GST A/C debit balance must go into the TCS GST sub-item row (D129),
-                # accumulating with any existing TCS GST balance so it is summed correctly.
-                if acct.get("stla_subtype") == "revenue_authority" or (
-                    "tcs" in name_l and "gst" in name_l
-                ):
-                    existing = ws_n.cell(129, 4).value
-                    base = 0.0
-                    if existing is not None and not _is_formula(str(existing)):
-                        try:
-                            base = float(existing)
-                        except (TypeError, ValueError):
-                            base = 0.0
-                    new_val = base + abs(acct["net"])
-                    if _safe_set(ws_n, 129, 4, new_val):
-                        injected.append(
-                            f"notes to bs!D129 (Advance to Revenue Authority — TCS GST: {acct['name']}) "
-                            f"= {new_val:,.2f} (base {base:,.2f} + provision-debit {abs(acct['net']):,.2f})"
-                        )
+                # Find the STLA Revenue Authorities section dynamically
+                # by scanning for label keywords (works for any template layout)
+                def _find_rev_auth_row(keyword):
+                    """Scan notes to bs for a row matching keyword under Revenue Authorities."""
+                    in_rev_section = False
+                    for r in range(110, 180):
+                        lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                        if "advance to revenue" in lbl or "revenue authorit" in lbl:
+                            in_rev_section = True
+                        if in_rev_section:
+                            if keyword in lbl:
+                                return r
+                            if "total" in lbl and "a+b" in lbl:
+                                break  # past section
+                    return None
+
+                # ── Facebook TDS → Other current assets ─────────────────────
+                if "facebook" in name_l:
+                    fb_row = None
+                    for r in range(130, 180):
+                        lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                        if "facebook" in lbl or "recoverable" in lbl:
+                            fb_row = r; break
+                    if fb_row and _safe_set(ws_n, fb_row, 4, abs(acct["net"])):
+                        injected.append(f"notes to bs!D{fb_row} (TDS from Facebook) = {abs(acct['net']):,.2f}")
                     placed = True
 
-                # ── Facebook TDS → D137 (Other current assets) ──────────────
-                # "TDS claimable from Facebook" is NOT a tax deposit —
-                # it's an amount recoverable from a party (Other current asset)
-                elif "facebook" in name_l:
-                    if _safe_set(ws_n, 137, 4, abs(acct["net"])):
-                        injected.append(f"notes to bs!D137 (TDS from Facebook / Other CA) = {abs(acct['net']):,.2f}")
-                    placed = True
-
-                # ── TCS GST → D129 (must be checked BEFORE generic GST branch
-                #    because "TCS GST A/C" contains "gst" and would otherwise
-                #    fall into the GST refund row D128 instead) ──────────────
+                # ── TCS → TCS row under Revenue Authorities ─────────────────
                 elif "tcs" in name_l:
-                    if _safe_set(ws_n, 129, 4, abs(acct["net"])):
-                        injected.append(f"notes to bs!D129 (TCS GST) = {abs(acct['net']):,.2f}")
-                    placed = True
+                    row = _find_rev_auth_row("tcs")
+                    if row:
+                        existing = ws_n.cell(row, 4).value
+                        base = float(existing) if isinstance(existing,(int,float)) else 0
+                        ws_n.cell(row, 4).value = base + abs(acct["net"])
+                        injected.append(
+                            f"notes to bs!D{row} (TCS) = {base+abs(acct['net']):,.2f}"
+                        )
+                        placed = True
 
-                # ── GST Refund Receivable → D128 ─────────────────────────────
-                elif "gst" in name_l or "igst" in name_l or "cgst" in name_l or "sgst" in name_l:
-                    if _safe_set(ws_n, 128, 4, abs(acct["net"])):
-                        injected.append(f"notes to bs!D128 (GST refund) = {abs(acct['net']):,.2f}")
-                    placed = True
+                # ── GST (CGST/SGST/IGST/refund) → one row per account ───────
+                # Check GST BEFORE TDS so "GST TDS 2024-25" goes to GST section
+                elif any(k in name_l for k in ["gst","igst","cgst","sgst"]):
+                    # Find next AVAILABLE (empty) GST row; each account gets its own row
+                    placed_gst = False
+                    for r in range(110, 180):
+                        lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                        if "advance to revenue" in lbl or "revenue authorit" in lbl:
+                            for rr in range(r+1, r+15):
+                                lbl2 = (ws_n.cell(rr, 2).value or "").strip().lower()
+                                if "total" in lbl2: break
+                                if "gst" in lbl2 or "igst" in lbl2 or "cgst" in lbl2 or "sgst" in lbl2:
+                                    d = ws_n.cell(rr, 4).value
+                                    # Only write to empty rows — gives each account its own slot
+                                    if d is None or d == 0:
+                                        ws_n.cell(rr, 4).value = abs(acct["net"])
+                                        injected.append(f"notes to bs!D{rr} (GST: {acct['name']}) = {abs(acct['net']):,.2f}")
+                                        placed_gst = True
+                                        break
+                            break
+                    if placed_gst:
+                        placed = True
 
-                # ── Excess TDS Deposited → D130 ──────────────────────────────
-                elif "tds" in name_l or "excess tds" in name_l:
-                    if _safe_set(ws_n, 130, 4, abs(acct["net"])):
-                        injected.append(f"notes to bs!D130 (Excess TDS deposited) = {abs(acct['net']):,.2f}")
-                    placed = True
+                # ── TDS / Excess TDS → separate rows per account ─────────────
+                elif "tds" in name_l:
+                    # Use _find_rev_auth_row to get first matching TDS label row,
+                    # but find an EMPTY one (each TDS account → its own row).
+                    placed_tds = False
+                    for r in range(110, 180):
+                        lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                        if "advance to revenue" in lbl or "revenue authorit" in lbl:
+                            for rr in range(r+1, r+15):
+                                lbl2 = (ws_n.cell(rr, 2).value or "").strip().lower()
+                                if "total" in lbl2: break
+                                # Match TDS-labelled rows (not GST rows)
+                                if ("tds" in lbl2 or "excess tds" in lbl2) and \
+                                        "gst" not in lbl2:
+                                    d = ws_n.cell(rr, 4).value
+                                    if d is None or d == 0:
+                                        ws_n.cell(rr, 4).value = abs(acct["net"])
+                                        injected.append(f"notes to bs!D{rr} (TDS: {acct['name']}) = {abs(acct['net']):,.2f}")
+                                        placed_tds = True
+                                        break
+                            break
+                    if placed_tds:
+                        placed = True
 
                 if not placed:
-                    # Find first empty row in STLA section 125-132
-                    for r in range(125, 133):
-                        d = ws_n.cell(r, 4).value
-                        if d is None:
-                            if _safe_set(ws_n, r, 4, abs(acct["net"])):
-                                injected.append(f"notes to bs!D{r} ({acct['name']}) = {abs(acct['net']):,.2f}")
+                    # Generic: find first empty row in STLA Revenue Auth area
+                    for r in range(110, 180):
+                        lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                        if "advance to revenue" in lbl or "revenue authorit" in lbl:
+                            for rr in range(r+1, r+15):
+                                lbl2 = (ws_n.cell(rr, 2).value or "").strip().lower()
+                                if "total" in lbl2:
+                                    break
+                                d = ws_n.cell(rr, 4).value
+                                if d is None or d == 0:
+                                    ws_n.cell(rr, 4).value = abs(acct["net"])
+                                    injected.append(
+                                        f"notes to bs!D{rr} ({acct['name']}) = {abs(acct['net']):,.2f}"
+                                    )
+                                    placed = True
+                                    break
                             break
+                    if not placed:
+                        skipped.append(f"STLA '{acct['name']}' = {abs(acct['net']):,.2f}: no row found")
         elif stla_amt:
-            inject_notes_row(128, 4, stla_amt, "Short-term loans & advances")
+            # Lump sum fallback
+            for r in range(110, 180):
+                lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                if "advance to revenue" in lbl or "gst" in lbl:
+                    ws_n.cell(r, 4).value = stla_amt
+                    injected.append(f"notes to bs!D{r} (STLA lump) = {stla_amt:,.2f}")
+                    break
 
     # ────────────────────────────────────────────────────────────────
     # 3. DETAILS — individual creditor/debtor amounts (CACHE-BASED)
@@ -2021,21 +2158,33 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         # They go into the OCL section of notes to bs (rows 60-82)
         adv_from_customer = [a for a in individual_accounts
                              if a.get("reclassified_from") == "trade_rec"]
-        if adv_from_customer and "notes to bs" in wb.sheetnames:
-            ws_n_ocl = wb["notes to bs"]
+        if adv_from_customer and "Details" in wb.sheetnames:
+            ws_det_afc = wb["Details"]
             for acct in adv_from_customer:
-                # Find first writable OCL row not yet used
-                for r in range(60, 82):
-                    d = ws_n_ocl.cell(r, 4).value
-                    b = ws_n_ocl.cell(r, 2).value
-                    if b is None or len(str(b).strip()) < 2:
-                        continue
-                    b_str = str(b).strip().lower()
-                    if any(kw in b_str for kw in ['total', 'particular', 'header']):
-                        continue
-                    if d is None or (not _is_formula(str(d))):
-                        if _safe_set(ws_n_ocl, r, 4, abs(acct["net"])):
-                            injected.append(f"notes to bs!D{r} (adv-from-customer: {acct['name']}) = {abs(acct['net']):,.2f}")
+                # Write to Details sheet "Advance from Customers" section
+                # by matching party name to existing template rows
+                name_l = acct["name"].lower()
+                placed = False
+                for r in range(20, 90):
+                    b = ws_det_afc.cell(r, 2).value
+                    if b and _fuzzy_match_name(acct["name"], str(b)):
+                        _safe_set(ws_det_afc, r, 4, abs(acct["net"]))
+                        injected.append(f"Details!D{r} (adv-from-customer: {acct['name']}) = {abs(acct['net']):,.2f}")
+                        placed = True
+                        break
+                if not placed:
+                    # Find "Advance from Customers" section and write there
+                    for r in range(20, 90):
+                        b = ws_det_afc.cell(r, 2).value
+                        if b and "advance from customer" in str(b).lower():
+                            for rr in range(r+1, r+8):
+                                b2 = ws_det_afc.cell(rr, 2).value
+                                d2 = ws_det_afc.cell(rr, 4).value
+                                if (b2 is None or not str(b2).strip()) and (d2 is None or d2 == 0):
+                                    _safe_set(ws_det_afc, rr, 4, abs(acct["net"]))
+                                    injected.append(f"Details!D{rr} (adv-from-cust new: {acct['name']}) = {abs(acct['net']):,.2f}")
+                                    placed = True
+                                    break
                             break
 
     # ────────────────────────────────────────────────────────────────
@@ -2544,7 +2693,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         # Detect Finance cost section
         fin_start = None
         fin_end = None
-        for r in range(40, 70):
+        for r in range(30, 80):
             b = ws_npl.cell(r, 2).value
             if not b: continue
             bl = str(b).lower()
@@ -2566,7 +2715,8 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         
         finance_accounts = [a for a in individual_accounts
                            if abs(a.get("net", 0)) > 0
-                           and any(kw in a.get("name","").lower() for kw in FINANCE_KEYWORDS)]
+                           and any(kw in a.get("name","").lower() for kw in FINANCE_KEYWORDS)
+                           and a.get("bs_head") != "other_expenses"]  # don't override classification
         # Also include accounts explicitly classified as finance_cost
         for a in individual_accounts:
             if a.get("bs_head") == "finance_cost" and abs(a.get("net", 0)) > 0:
@@ -3101,6 +3251,33 @@ def process_tb_to_bs(tb_path, bs_template_path, output_path, user_mapping=None):
         mapping_overrides=None,
         individual_accounts=accounts,
     )
+
+    # Step 5: Post-process — fix structural layout bugs that the injector
+    # cannot avoid (row-shift from insert_rows, wrong formula pointers, etc.)
+    try:
+        import importlib.util, os
+        _pp_path = os.path.join(os.path.dirname(__file__), "bs_post_processor.py")
+        if not os.path.exists(_pp_path):
+            # Try same dir as this file
+            _pp_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "bs_post_processor.py"
+            )
+        if os.path.exists(_pp_path):
+            spec = importlib.util.spec_from_file_location("bs_post_processor", _pp_path)
+            pp   = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(pp)
+            pp_result = pp.post_process(output_path, accounts, recalc=True)
+            result["post_process_log"]    = pp_result.get("fixes_applied", [])
+            result["post_process_errors"] = pp_result.get("errors", [])
+            if pp_result.get("errors"):
+                result["log"] = result.get("log", []) + [
+                    f"⚠ Post-process warning: {e}"
+                    for e in pp_result["errors"]
+                ]
+        else:
+            result["post_process_log"] = ["bs_post_processor.py not found — skipped"]
+    except Exception as _pp_exc:
+        result["post_process_log"] = [f"Post-processor error: {_pp_exc}"]
 
     result["analysis"]            = analysis
     result["aggregated"]          = aggregated
