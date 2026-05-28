@@ -92,7 +92,7 @@ TEMPLATE_CONFIGS = {
 
             # Cost of Material (Note 15)
             "com_opening_stock":           {"row": 17, "formula": "=E24"},   # auto
-            "com_purchases":               {"row": 20, "formula": "=SUM('GROSS PROFIT'!B14:B18)"},
+            "com_purchases":               {"row": 20, "formula": "=SUM('GROSS PROFIT'!B14:B19)"},
             "com_closing_stock":           {"row": 24, "formula": "='GROSS PROFIT'!E17"},
             "com_total":                   {"row": 26, "formula": "=SUM(D17:D22)-D24"},
 
@@ -185,6 +185,13 @@ TEMPLATE_CONFIGS = {
 
             # Closing stock
             "closing_stock":       {"row": 17, "col": 5},  # E17
+
+            # Formulas that must be rewritten after injection
+            # (template defaults to stale E11:E14 range — must be E11:E16)
+            "formula_fixes": [
+                {"row": 17, "col": 5, "formula": "=B24-SUM(E11:E16)"},   # Closing stock
+                {"row": 22, "col": 2, "formula": "=SUM(E11:E16)*8.5%"},  # Gross Profit %
+            ],
         },
     },
 
