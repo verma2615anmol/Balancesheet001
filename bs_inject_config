@@ -809,13 +809,19 @@ def inject_with_config(tb_path: str,
 
     _ensure_formula(pl_cfg, "com_total", ws_npl, log)
 
-    # ── 17. GROSS PROFIT: #REF! killer ──
+    # ── 17. GROSS PROFIT: #REF! killer + formula fixes ──
     for r in range(1, 30):
         for c in range(1, 12):
             v = ws_gp.cell(r, c).value
             if isinstance(v, str) and "#REF!" in v:
                 ws_gp.cell(r, c).value = 0
                 log.append(f"  GP: cleared #REF! at R{r}C{c}")
+
+    # Apply formula_fixes from template config
+    # (e.g. closing stock and GP% need E11:E16 range, not stale E11:E14)
+    for fix in gp_cfg.get("formula_fixes", []):
+        ws_gp.cell(fix["row"], fix["col"]).value = fix["formula"]
+        log.append(f"  GP formula fix R{fix['row']}C{fix['col']} → {fix['formula']}")
 
     # ── 18. BS formula corrections ──
     log.append("\n[BS] Verifying bs formula pointers")
