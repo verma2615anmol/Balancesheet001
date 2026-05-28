@@ -1,0 +1,882 @@
+"""
+bs_inject_config.py
+===================
+Config-driven injection engine.  Uses template_configs.py exact row maps —
+no fuzzy matching, no row scanning, no insert_rows.
+
+Usage
+-----
+    from bs_inject_config import inject_with_config
+    result = inject_with_config(
+        tb_path   = "trial.xlsx",         # or PDF
+        template  = "template.xlsx",
+        output    = "output.xlsx",
+        overrides = {}                    # optional per-run overrides
+    )
+"""
+
+from __future__ import annotations
+import shutil, sys, os
+sys.path.insert(0, os.path.dirname(__file__))
+
+from openpyxl import load_workbook
+from template_configs import get_config, TEMPLATE_CONFIGS
+
+# ── reuse existing classifier ──────────────────────────────────────────
+try:
+    from tb_processor2_fixed import (
+        analyze_trial_balance,
+        get_aggregated_values,
+        _classify_single,
+    )
+    _HAS_CLASSIFIER = True
+except ImportError:
+    _HAS_CLASSIFIER = False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────
+
+def _w(ws, row: int, col: int, value, log: list, label: str = ""):
+    """Write a plain value (never overwrites formula cells)."""
+    cell = ws.cell(row, col)
+    existing = cell.value
+    if isinstance(existing, str) and existing.strip().startswith("="):
+        log.append(f"  SKIP {ws.title}!R{row}C{col} (formula) [{label}]")
+        return False
+    cell.value = value
+    log.append(f"  WRITE {ws.title}!R{row}C{col} = {value!r}  [{label}]")
+    return True
+
+
+def _wf(ws, row: int, col: int, formula: str, log: list, label: str = ""):
+    """Write or overwrite a formula (replaces stale/wrong formulas)."""
+    ws.cell(row, col).value = formula
+    log.append(f"  FORMULA {ws.title}!R{row}C{col} = {formula}  [{label}]")
+
+
+def _num(v) -> float:
+    """Return float or 0."""
+    return float(v) if isinstance(v, (int, float)) else 0.0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# OCL aggregation helpers
+# ──────────────────────────────────────────────────────────────────────
+
+# Map TB account name keywords → OCL config key
+_OCL_KEYWORD_MAP = [
+    ("esi",                      "ocl_esi"),
+    ("e.s.i",                    "ocl_esi"),
+    ("leave with wages",         "ocl_lww"),    # must be before "wages payable"
+    ("wages payable",            "ocl_wages"),
+    ("wags payable",             "ocl_wages"),   # Tally typo variant
+    ("wage",                     "ocl_wages"),
+    ("tds payable",              "ocl_tds"),
+    ("leave with wages",         "ocl_lww"),
+    ("leave",                    "ocl_lww"),
+    ("bonus payable",            "ocl_bonus"),
+    ("bonus",                    "ocl_bonus"),
+    ("audit fees payable",       "ocl_audit"),
+    ("audit",                    "ocl_audit"),
+    ("professional charges",     "ocl_professional"),
+    ("legal fees payable",       "ocl_legal_fees"),
+    ("legal",                    "ocl_legal_fees"),
+    ("salary payable",           "ocl_salary"),     # covers "ocl_salary_payable" alias too
+    ("salary",                   "ocl_salary"),
+    ("cheque issued",            "ocl_cheques_issued"),
+    ("chq issued",               "ocl_cheques_issued"),
+    ("not presented",            "ocl_cheques_issued"),
+    ("not cleared",              "ocl_cheques_issued"),
+]
+
+def _ocl_key_for(account_name: str) -> str | None:
+    name_l = account_name.lower()
+    for kw, key in _OCL_KEYWORD_MAP:
+        if kw in name_l:
+            return key
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# STLA account → config key map
+# ──────────────────────────────────────────────────────────────────────
+
+_STLA_KEYWORD_MAP = [
+    ("tcs deducted 2023",        "stla_tcs_2324"),
+    ("tcs deducted 2022",        "stla_tcs_2324"),
+    ("tcs deducted",             "stla_tcs_2324"),
+    ("t.d.s deducted 2023",      "stla_tds_2324"),
+    ("tds deducted 2023",        "stla_tds_2324"),
+    ("gst credit ledger cgst",   "stla_gst_cgst"),
+    ("cgst",                     "stla_gst_cgst"),
+    ("gst credit ledger sgst",   "stla_gst_sgst"),
+    ("sgst",                     "stla_gst_sgst"),
+    ("gst credit ledger igst",   "stla_gst_igst"),
+    ("igst",                     "stla_gst_igst"),
+    ("gst tds 2024",             "stla_gst_tds_2425"),
+    ("gst tds",                  "stla_gst_tds_2425"),
+    ("tcs gst",                  "stla_tcs_gst"),   # must be before generic "gst "
+    ("gst refund",               "stla_gst_refund"),
+    ("gst ",                     "stla_gst_refund"),
+    ("excess tds",               "stla_excess_tds"),
+    ("tds deducted 2024",        "stla_tds_2425"),
+    ("tds deducted",             "stla_tds_2425"),   # no year = current year (2024-25)
+]
+
+def _stla_key_for(account_name: str) -> str | None:
+    name_l = account_name.lower()
+    for kw, key in _STLA_KEYWORD_MAP:
+        if kw in name_l:
+            return key
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Finance cost account → config key
+# ──────────────────────────────────────────────────────────────────────
+
+_FIN_KEYWORD_MAP = [
+    ("car loan interest",        "fin_car_loan"),
+    ("top up car loan",          "fin_topup"),
+    ("top up",                   "fin_topup"),
+    ("machine loan 1",           "fin_ml1"),
+    ("machine loan 2",           "fin_ml2"),
+    ("machine loan 3",           "fin_ml3"),
+    ("machine loan 4",           "fin_ml4"),
+    ("bank cc intt",             "fin_bank_interest"),
+    ("bank cc interest",         "fin_bank_interest"),
+    ("bank interest",            "fin_bank_interest"),
+    ("interest on unsecured",    "fin_unsecured_loan"),
+    ("interest to partner",      "other_partner_interest"),   # → other expenses
+    ("interest to partners",     "other_partner_interest"),
+]
+
+def _fin_key_for(account_name: str) -> str | None:
+    name_l = account_name.lower()
+    for kw, key in _FIN_KEYWORD_MAP:
+        if kw in name_l:
+            return key
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Other Expenses account → config key
+# ──────────────────────────────────────────────────────────────────────
+
+_OTHER_EXP_KEYWORD_MAP = [
+    # Fashion Adda keys
+    ("accounting charges",       "other_accountancy"),
+    ("accountancy charges",      "other_accountancy"),
+    ("agreement charges",        "other_agreement"),
+    ("audit fees",               "other_audit"),
+    ("facebook",                 "other_advertisement"),
+    ("advertisement",            "other_advertisement"),
+    ("advertisment",             "other_advertisement"),
+    ("printing",                 "other_printing"),
+    ("bank charges",             "other_bank_charges"),
+    ("intt paid on late",        "other_bank_charges"),  # late TDS interest → bank charges row
+    ("conveyance",               "other_conveyance"),
+    ("computer",                 "other_computer"),
+    ("courier",                  "other_courier"),
+    ("electricity",              "other_electricity"),
+    ("car expense",              "other_car"),
+    ("car expenses",             "other_car"),
+    ("generator",                "other_generator"),
+    ("software",                 "other_software"),
+    ("rebate",                   "other_rebate"),
+    ("scooter",                  "other_scooter"),
+    ("travelling",               "other_travelling"),
+    ("petrol",                   "other_petrol"),
+    ("packing",                  "other_packing"),
+    ("round off",                "other_roundoff"),
+    ("roundoff",                 "other_roundoff"),
+    ("freight",                  "other_freight"),
+    ("entertainment",            "other_entertainment"),
+    ("telephone",                "other_telephone"),
+    # Shree Craft extra keys
+    ("car insurance",            "other_car_insurance"),
+    ("cartage",                  "other_cartage"),
+    ("cersai",                   "other_cersai"),
+    ("commission",               "other_commission"),
+    ("diwali",                   "other_diwali"),
+    ("general machine insurance","other_gen_insurance"),
+    ("general insurance",        "other_gen_insurance"),
+    ("life insurance",           "other_life_insurance"),
+    ("legal fees",               "other_legal"),
+    ("legal expense",            "other_legal"),
+    ("partner  interest",        "other_partner_interest"),
+    ("interest to partner",      "other_partner_interest"),
+    ("partner salary",           "other_partner_salary"),
+    ("salary to partner",        "other_partner_salary"),
+    ("printing and stationary",  "other_printing"),
+    ("processing fees",          "other_processing_fees"),
+    ("professional charges",     "other_professional"),
+    ("rent",                     "other_rent"),
+]
+
+def _other_exp_key_for(account_name: str) -> str | None:
+    name_l = account_name.lower()
+    for kw, key in _OTHER_EXP_KEYWORD_MAP:
+        if kw in name_l:
+            return key
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# LT Borrowings account → config key
+# ──────────────────────────────────────────────────────────────────────
+
+_LT_KEYWORD_MAP = [
+    ("car loan",                 "lt_car_loan"),
+    ("icici bank",               "lt_secured_from_banks"),
+    ("ugro capital",             "lt_ugro_ml1"),   # will try ml2 if ml1 taken
+    ("ugro",                     "lt_ugro_ml1"),
+    ("axis bank machinery loan a/c 3", "lt_axis_ml3"),
+    ("axis bank machinery loan a/c 4", "lt_axis_ml4"),
+    ("axis bank",                "lt_axis_ml3"),   # fallback
+    ("top up loan",              "lt_topup_car"),
+    ("top up",                   "lt_topup_car"),
+    ("machinery loan 1",         "lt_ugro_ml1"),
+    ("machinery loan 2",         "lt_ugro_ml2"),
+    ("machinery loan 3",         "lt_axis_ml3"),
+    ("machinery loan 4",         "lt_axis_ml4"),
+    ("richa",                    "lt_unsecured_other"),
+]
+
+def _lt_key_for(account_name: str) -> str | None:
+    name_l = account_name.lower()
+    for kw, key in _LT_KEYWORD_MAP:
+        if kw in name_l:
+            return key
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Employee expenses account → config key
+# ──────────────────────────────────────────────────────────────────────
+
+_EMP_KEYWORD_MAP = [
+    ("e.s.i",        "emp_esi"),
+    ("esi",          "emp_esi"),
+    ("labour refr",  "emp_labour_refreshment"),
+    ("labour_ref",   "emp_labour_refreshment"),
+    ("salary",       "emp_salary"),   # but NOT "salary to partners" → other_exp
+    ("bonus",        "emp_bonus"),
+    ("leave with",   "emp_lww"),
+    ("leave",        "emp_lww"),
+    ("staff welfa",  "emp_staff_welfare"),
+]
+
+def _emp_key_for(account_name: str) -> str | None:
+    name_l = account_name.lower()
+    # "salary to partners" → other_expenses, not employee
+    if "salary to partner" in name_l or "partner salary" in name_l:
+        return None
+    for kw, key in _EMP_KEYWORD_MAP:
+        if kw in name_l:
+            return key
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Core write helpers
+# ──────────────────────────────────────────────────────────────────────
+
+def _write_cell(cfg_section: dict, key: str, ws, value: float,
+                log: list, accumulate: bool = False) -> bool:
+    """Write value to cell identified by key in cfg_section."""
+    entry = cfg_section.get(key)
+    if not entry:
+        log.append(f"  SKIP: no config key '{key}'")
+        return False
+    row = entry["row"]
+    col = cfg_section.get("col_cy", 4)
+    cell = ws.cell(row, col)
+    existing = cell.value
+    if isinstance(existing, str) and existing.strip().startswith("="):
+        log.append(f"  SKIP R{row}C{col} formula [{key}]")
+        return False
+    if accumulate and isinstance(existing, (int, float)):
+        value = existing + value
+    cell.value = value
+    log.append(f"  {ws.title} R{row}C{col} = {value:,.2f}  [{key}]")
+    return True
+
+
+def _ensure_formula(cfg_section: dict, key: str, ws, log: list):
+    """Ensure a formula cell has the right formula (fix stale refs)."""
+    entry = cfg_section.get(key)
+    if not entry or "formula" not in entry:
+        return
+    row = entry["row"]
+    col = cfg_section.get("col_cy", 4)
+    formula = entry["formula"]
+    current = ws.cell(row, col).value
+    if current != formula:
+        ws.cell(row, col).value = formula
+        log.append(f"  FORMULA {ws.title} R{row}C{col}: {repr(current)} → {formula}  [{key}]")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Main inject function
+# ──────────────────────────────────────────────────────────────────────
+
+def inject_with_config(tb_path: str,
+                       template: str,
+                       output: str,
+                       overrides: dict = None) -> dict:
+    """
+    Inject TB data into a BS template using exact config row maps.
+
+    Returns dict: status, log, injected_count, errors
+    """
+    log    = [f"=== CONFIG-DRIVEN INJECTION: {os.path.basename(tb_path)} ==="]
+    errors = []
+
+    # ── 1. Classify TB ──
+    if not _HAS_CLASSIFIER:
+        return {"status": "error", "errors": ["tb_processor2_fixed not found"], "log": log}
+
+    try:
+        analysis = analyze_trial_balance(tb_path)
+        if "error" in analysis:
+            return {"status": "error", "errors": [analysis["error"]], "log": log}
+        accounts = analysis["accounts"]
+        get_aggregated_values(accounts)   # sets final bs_head on each account
+    except Exception as e:
+        return {"status": "error", "errors": [str(e)], "log": log}
+
+    # ── 2. Detect template ──
+    shutil.copy2(template, output)
+    wb = load_workbook(output)
+    tmpl_key, cfg = get_config(wb)
+
+    if not cfg:
+        log.append("  Unknown template — falling back to heuristic injector")
+        # Fall back to original processor
+        try:
+            from tb_processor2_fixed import process_tb_to_bs
+            return process_tb_to_bs(tb_path=tb_path,
+                                     bs_template_path=template,
+                                     output_path=output)
+        except Exception as e:
+            return {"status": "error", "errors": [str(e)], "log": log}
+
+    log.append(f"  Template detected: {tmpl_key}")
+
+    n_cfg  = cfg["notes_bs"]
+    pl_cfg = cfg["notes_pl"]
+    det    = cfg["details"]
+    gp_cfg = cfg["gross_profit"]
+    bs_cfg = cfg["bs"]
+
+    ws_n   = wb[n_cfg["sheet"]]
+    ws_npl = wb[pl_cfg["sheet"]]
+    ws_det = wb[det["sheet"]]
+    ws_gp  = wb[gp_cfg["sheet"]]
+    ws_bs  = wb["bs"]
+
+    cy = n_cfg["col_cy"]   # D col
+    pl_cy = pl_cfg["col_cy"]
+    gp_cy_sales = gp_cfg["col_sales_cy"]
+    gp_cy_purch = gp_cfg["col_purch_cy"]
+
+    written_lt = set()
+
+    # ── 3. LT Borrowings ──
+    log.append("\n[LT] Long-term borrowings")
+    for a in accounts:
+        if a.get("bs_head") not in ("lt_borrowings",): continue
+        net = abs(a["net"])
+        if net == 0: continue
+        name = a["name"]
+        key  = _lt_key_for(name)
+
+        # Ugro ML2 disambiguation: if ML1 already written, use ML2 key
+        if key == "lt_ugro_ml1" and "lt_ugro_ml1" in written_lt:
+            key = "lt_ugro_ml2"
+        # Axis ML4 disambiguation
+        if key == "lt_axis_ml3" and "lt_axis_ml3" in written_lt:
+            key = "lt_axis_ml4"
+
+        if key and key in n_cfg:
+            entry = n_cfg[key]
+            row   = entry["row"]
+            _w(ws_n, row, cy, net, log, f"LT:{name}")
+            written_lt.add(key)
+        else:
+            log.append(f"  LT: no key for '{name}' → skipped")
+
+    # Fix LT formulas
+    for fkey in ["lt_total_a","lt_total_b","lt_total_ab"]:
+        _ensure_formula(n_cfg, fkey, ws_n, log)
+
+    # ── 4. Details: Creditors ──
+    log.append("\n[DET] Details: creditors")
+    cred_rows  = det["creditor_rows"]
+    cred_accts = sorted(
+        [a for a in accounts if a.get("bs_head") == "trade_payables" and a["net"] < 0],
+        key=lambda a: -len(a["name"])
+    )
+    from tb_processor2_fixed import _fuzzy_match_name
+    written_cred = set()
+
+    for a in cred_accts:
+        net  = abs(a["net"])
+        name = a["name"]
+        matched = False
+        for r in cred_rows:
+            if r in written_cred: continue
+            b = ws_det.cell(r, 2).value
+            if b and _fuzzy_match_name(name, str(b)):
+                _w(ws_det, r, det["col_cy"], net, log, f"Cred:{name}")
+                written_cred.add(r)
+                matched = True
+                break
+        if not matched:
+            # Find first empty creditor row (no label, no value)
+            for r in cred_rows:
+                if r in written_cred: continue
+                d = ws_det.cell(r, det["col_cy"]).value
+                if d is None or d == 0:
+                    _w(ws_det, r, det["col_cy"], net, log, f"Cred new:{name}")
+                    written_cred.add(r)
+                    matched = True
+                    break
+            if not matched:
+                log.append(f"  Cred: no row for '{name}' — {net:,.2f} skipped")
+
+    # ── 5. Details: Trade Receivables ──
+    log.append("\n[DET] Details: debtors")
+    lt6_rows = det["debtor_lt6_rows"]
+    gt6_rows = det["debtor_gt6_rows"]
+    debtor_accts = sorted(
+        [a for a in accounts if a.get("bs_head") == "trade_rec" and a["net"] > 0],
+        key=lambda a: -len(a["name"])
+    )
+    written_debt = set()
+
+    for a in debtor_accts:
+        net  = abs(a["net"])
+        name = a["name"]
+        matched = False
+        for r in lt6_rows + gt6_rows:
+            if r in written_debt: continue
+            b = ws_det.cell(r, 2).value
+            if b and _fuzzy_match_name(name, str(b)):
+                _w(ws_det, r, det["col_cy"], net, log, f"Debt:{name}")
+                written_debt.add(r)
+                matched = True
+                break
+        if not matched:
+            for r in lt6_rows:
+                if r in written_debt: continue
+                d = ws_det.cell(r, det["col_cy"]).value
+                if d is None or d == 0:
+                    _w(ws_det, r, det["col_cy"], net, log, f"Debt new:{name}")
+                    written_debt.add(r)
+                    matched = True
+                    break
+        if not matched:
+            log.append(f"  Debt: no row for '{name}' — skipped")
+
+    # Ensure trade rec formulas
+    for fkey in ["trade_rec_lt6_unsecured","trade_rec_gt6_unsecured",
+                 "trade_rec_total_a","trade_rec_total_b","trade_rec_total_ab"]:
+        _ensure_formula(n_cfg, fkey, ws_n, log)
+
+    # ── 6. Details: Advance from customers ──
+    log.append("\n[DET] Advance from customers")
+    adv_rows = det.get("advance_cust_rows", [])
+    adv_accts = [a for a in accounts if a.get("bs_head") == "advance_from_customer"]
+    written_adv = set()
+    for a in adv_accts:
+        net  = abs(a["net"])
+        name = a["name"]
+        matched = False
+        for r in adv_rows:
+            if r in written_adv: continue
+            b = ws_det.cell(r, 2).value
+            if b and _fuzzy_match_name(name, str(b)):
+                _w(ws_det, r, det["col_cy"], net, log, f"Adv-cust:{name}")
+                written_adv.add(r)
+                matched = True
+                break
+        if not matched:
+            for r in adv_rows:
+                if r in written_adv: continue
+                d = ws_det.cell(r, det["col_cy"]).value
+                if d is None or d == 0:
+                    _w(ws_det, r, det["col_cy"], net, log, f"Adv-cust new:{name}")
+                    written_adv.add(r)
+                    matched = True
+                    break
+        if not matched:
+            log.append(f"  Adv-cust: no row for '{name}'")
+
+    # ── 7. OCL ──
+    log.append("\n[OCL] Other Current Liabilities")
+    cat_totals: dict[str, float] = {}
+
+    for a in accounts:
+        if a.get("bs_head") != "other_cl": continue
+        if abs(a["net"]) == 0: continue
+        name = a["name"]
+        # Skip advance_from_customer reclassified accounts
+        if a.get("reclassified_from") == "trade_rec":
+            continue
+        key = _ocl_key_for(name)
+        if not key:
+            key = "ocl_salary"   # fallback bucket
+        cat_totals[key] = cat_totals.get(key, 0) + abs(a["net"])
+
+    for key, total in cat_totals.items():
+        if key in n_cfg:
+            entry = n_cfg[key]
+            _w(ws_n, entry["row"], cy, total, log, f"OCL:{key}")
+        else:
+            log.append(f"  OCL: no config row for key '{key}' (total {total:,.2f})")
+
+    _ensure_formula(n_cfg, "ocl_total", ws_n, log)
+
+    # ── 8. Cash & Bank ──
+    log.append("\n[CASH] Cash & Bank")
+    for a in accounts:
+        if a.get("bs_head") != "cash_bank" or a["net"] <= 0: continue
+        name_l = a["name"].lower()
+        net    = abs(a["net"])
+        if "cash" in name_l:
+            entry = n_cfg["cash_in_hand"]
+            ws_n.cell(entry["row"], cy).value = net
+            log.append(f"  Cash in hand R{entry['row']} = {net:,.2f}")
+        else:
+            # Match by bank name keyword
+            placed = False
+            for key in [k for k in n_cfg if k.startswith("bank_")]:
+                kw = n_cfg[key]["label"].lower()
+                words = [w for w in kw.split() if len(w) > 3]
+                if any(w in name_l for w in words):
+                    entry = n_cfg[key]
+                    ws_n.cell(entry["row"], cy).value = net
+                    log.append(f"  Bank {n_cfg[key]['label']} R{entry['row']} = {net:,.2f}")
+                    placed = True
+                    break
+            if not placed:
+                # Fallback: first empty bank row
+                for key in [k for k in n_cfg if k.startswith("bank_")]:
+                    entry = n_cfg[key]
+                    d = ws_n.cell(entry["row"], cy).value
+                    if d is None or d == 0:
+                        ws_n.cell(entry["row"], cy).value = net
+                        log.append(f"  Bank fallback R{entry['row']} = {net:,.2f} [{a['name']}]")
+                        placed = True
+                        break
+                if not placed:
+                    log.append(f"  Bank: no row for '{a['name']}'")
+
+    for fkey in ["cash_total_a","cash_total_b","cash_total_ab"]:
+        _ensure_formula(n_cfg, fkey, ws_n, log)
+
+    # ── 9. STLA ──
+    log.append("\n[STLA] Short Term Loans & Advances")
+    stla_written: dict[str, float] = {}
+
+    for a in accounts:
+        if a.get("bs_head") != "stla" or abs(a["net"]) == 0: continue
+        name = a["name"]
+        key  = _stla_key_for(name)
+        if not key:
+            log.append(f"  STLA: no key for '{name}'")
+            continue
+        # Accumulate (in case multiple accounts map to same row, e.g. CGST+SGST separate rows)
+        stla_written[key] = stla_written.get(key, 0) + abs(a["net"])
+
+    for key, total in stla_written.items():
+        if key in n_cfg:
+            entry = n_cfg[key]
+            ws_n.cell(entry["row"], cy).value = total
+            log.append(f"  STLA R{entry['row']} = {total:,.2f}  [{key}]")
+        else:
+            log.append(f"  STLA: no config row for '{key}' ({total:,.2f})")
+
+    for fkey in ["stla_total_d","stla_total_c","stla_total_b","stla_total_a",
+                 "stla_total_abcd","stla_total_abc"]:
+        _ensure_formula(n_cfg, fkey, ws_n, log)
+
+    # ── 10. GROSS PROFIT: Sales + Notes to P&L Revenue ──
+    # For templates where notes to p&l has direct sales data rows (not a formula summing GP)
+    # we need to write to BOTH GP and npl. The _ensure_formula at the end handles the npl total.
+    log.append("\n[GP] Sales")
+    _SALES_KEY_MAP = [
+        ("sale gst 12% within state",  "sales_12_intrastate"),
+        ("sale gst 5% within state",   "sales_5_intrastate"),
+        ("sale gst 18% within state",  "sales_18_within"),
+        ("sale gst 12% interstate",    "sales_12_interstate"),
+        ("sale gst 5% interstate",     "sales_5_interstate"),
+        ("sale gst 12% intrastate",    "sales_12_intrastate"),
+        ("sale gst 5% intrastate",     "sales_5_intrastate"),
+        ("sales gst 12% within state", "sales_12_intrastate"),
+        ("sales gst 5% within state",  "sales_5_intrastate"),
+        ("sales gst 12% intrastate",   "sales_12_intrastate"),
+        ("sales gst 5% intrastate",    "sales_5_intrastate"),
+    ]
+    for a in accounts:
+        if a.get("bs_head") != "revenue" or a["net"] >= 0: continue
+        name_l = a["name"].lower()
+        net    = abs(a["net"])
+        for kw, skey in _SALES_KEY_MAP:
+            if kw in name_l and skey in gp_cfg:
+                entry = gp_cfg[skey]
+                ws_gp.cell(entry["row"], gp_cy_sales).value = net
+                log.append(f"  GP sales R{entry['row']}C{gp_cy_sales} = {net:,.2f}  [{skey}]")
+                break
+
+    # Also write sales to notes to p&l if those are direct data cells (SC-style)
+    # Map GP sales keys → npl revenue keys
+    _GP_TO_NPL_SALES = {
+        "sales_12_intrastate": "revenue_12_within",
+        "sales_5_intrastate":  None,
+        "sales_12_interstate": None,
+        "sales_5_interstate":  None,
+        "sales_18_within":     "revenue_18_within",
+        "sales_12_within":     "revenue_12_within",
+    }
+    for a in accounts:
+        if a.get("bs_head") != "revenue" or a["net"] >= 0: continue
+        name_l = a["name"].lower()
+        net    = abs(a["net"])
+        for kw, skey in _SALES_KEY_MAP:
+            if kw in name_l:
+                npl_key = _GP_TO_NPL_SALES.get(skey)
+                if npl_key and npl_key in pl_cfg:
+                    entry = pl_cfg[npl_key]
+                    # Only write if it's a plain data cell (not formula)
+                    cell = ws_npl.cell(entry["row"], pl_cy)
+                    if not (isinstance(cell.value, str) and cell.value.strip().startswith("=")):
+                        cell.value = net
+                        log.append(f"  npl revenue R{entry['row']} = {net:,.2f}  [{npl_key}]")
+                break
+
+    # ── 11. GROSS PROFIT: Purchases ──
+    log.append("\n[GP] Purchases")
+    _PURCH_KEY_MAP = [
+        ("purchase gst 12% interstate",  "purch_12_interstate"),
+        ("purchase gst 12% within",      "purch_12_intrastate"),
+        ("purchase gst 18%",             "purch_18_intrastate"),
+        ("repair and maintenace",        "purch_repair"),
+        ("repair maintiance",            "purch_repair"),
+        ("workshop accessories",         "purch_workshop"),
+        ("purchase jobwork",             "purch_jobwork"),
+        ("purchase gst 5% interstate",   "purch_5_interstate"),
+        ("purchase gst 5% within",       "purch_5_intrastate"),
+        ("purchase gst 5%",              "purch_5_intrastate"),
+        ("oil & lubricant",              "direct_oil_lub"),
+        ("oil and lubricant",            "direct_oil_lub"),
+        ("rent gst",                     "other_rent"),
+    ]
+    for a in accounts:
+        if a.get("bs_head") not in ("purchases",): continue
+        if a["net"] == 0: continue
+        name_l = a["name"].lower()
+        net    = abs(a["net"])
+        placed = False
+        for kw, pkey in _PURCH_KEY_MAP:
+            if kw in name_l:
+                if pkey in gp_cfg:
+                    entry = gp_cfg[pkey]
+                    ws_gp.cell(entry["row"], gp_cy_purch).value = net
+                    log.append(f"  GP purch R{entry['row']}C{gp_cy_purch} = {net:,.2f}  [{pkey}]")
+                    placed = True
+                elif pkey in pl_cfg:
+                    # Write to notes to p&l instead
+                    entry = pl_cfg[pkey]
+                    ws_npl.cell(entry["row"], pl_cy).value = net
+                    log.append(f"  npl purch R{entry['row']} = {net:,.2f}  [{pkey}]")
+                    placed = True
+                break
+        if not placed:
+            log.append(f"  Purch: no key for '{a['name']}'")
+
+    # ── 12. Notes to P&L: Revenue formula ──
+    _ensure_formula(pl_cfg, "revenue_sale_goods", ws_npl, log)
+    _ensure_formula(pl_cfg, "revenue_total", ws_npl, log)
+
+    # ── 13. Notes to P&L: Employee ──
+    log.append("\n[EMP] Employee expenses")
+    emp_totals: dict[str, float] = {}
+    for a in accounts:
+        if a.get("bs_head") != "employee_expenses" or abs(a["net"]) == 0: continue
+        key = _emp_key_for(a["name"])
+        if key and key in pl_cfg:
+            emp_totals[key] = emp_totals.get(key, 0) + abs(a["net"])
+        elif key:
+            log.append(f"  EMP: key '{key}' not in pl_cfg for '{a['name']}'")
+        else:
+            # No emp_key — check if other_exp_key applies (e.g. partner salary)
+            okey = _other_exp_key_for(a["name"])
+            if okey:
+                emp_totals["__other__" + okey] = emp_totals.get("__other__" + okey, 0) + abs(a["net"])
+            else:
+                log.append(f"  EMP: no key or other-exp key for '{a['name']}'")
+
+    for key, total in emp_totals.items():
+        if key.startswith("__other__"):
+            real_key = key[9:]
+            if real_key in pl_cfg:
+                ws_npl.cell(pl_cfg[real_key]["row"], pl_cy).value = total
+                log.append(f"  EMP→OTH R{pl_cfg[real_key]['row']} = {total:,.2f}  [{real_key}]")
+        elif key in pl_cfg:
+            ws_npl.cell(pl_cfg[key]["row"], pl_cy).value = total
+            log.append(f"  EMP R{pl_cfg[key]['row']} = {total:,.2f}  [{key}]")
+
+    _ensure_formula(pl_cfg, "emp_total", ws_npl, log)
+
+    # ── 14. Notes to P&L: Finance Cost ──
+    log.append("\n[FIN] Finance cost")
+    fin_totals: dict[str, float] = {}
+    for a in accounts:
+        if a.get("bs_head") != "finance_cost" or abs(a["net"]) == 0: continue
+        key = _fin_key_for(a["name"])
+        if key and key.startswith("fin_") and key in pl_cfg:
+            fin_totals[key] = fin_totals.get(key, 0) + abs(a["net"])
+        elif key and key.startswith("other_"):
+            # Reroute to other expenses
+            fin_totals.setdefault("__other__" + key, 0)
+            fin_totals["__other__" + key] += abs(a["net"])
+
+    for key, total in fin_totals.items():
+        if key.startswith("__other__"):
+            real_key = key[9:]
+            if real_key in pl_cfg:
+                ws_npl.cell(pl_cfg[real_key]["row"], pl_cy).value = total
+                log.append(f"  FIN→OTH R{pl_cfg[real_key]['row']} = {total:,.2f}  [{real_key}]")
+        elif key in pl_cfg:
+            ws_npl.cell(pl_cfg[key]["row"], pl_cy).value = total
+            log.append(f"  FIN R{pl_cfg[key]['row']} = {total:,.2f}  [{key}]")
+
+    # Also handle finance_cost accounts with no fin_key (e.g. CERSAI, life insurance)
+    # — route them via other_exp_key if available
+    for a in accounts:
+        if a.get("bs_head") != "finance_cost" or abs(a["net"]) == 0: continue
+        key = _fin_key_for(a["name"])
+        if key: continue   # already handled above
+        okey = _other_exp_key_for(a["name"])
+        if okey and okey in pl_cfg:
+            existing = ws_npl.cell(pl_cfg[okey]["row"], pl_cy).value
+            base = float(existing) if isinstance(existing, (int,float)) else 0
+            ws_npl.cell(pl_cfg[okey]["row"], pl_cy).value = base + abs(a["net"])
+            log.append(f"  FIN→OTH2 R{pl_cfg[okey]['row']} = {base+abs(a['net']):,.2f}  [{okey}]")
+
+    _ensure_formula(pl_cfg, "fin_total", ws_npl, log)
+
+    # ── 15. Notes to P&L: Other Expenses ──
+    log.append("\n[OTH] Other expenses")
+    other_totals: dict[str, float] = {}
+    for a in accounts:
+        if a.get("bs_head") != "other_expenses" or abs(a["net"]) == 0: continue
+        key = _other_exp_key_for(a["name"])
+        if key and key in pl_cfg:
+            other_totals[key] = other_totals.get(key, 0) + abs(a["net"])
+        else:
+            log.append(f"  OTH: no key for '{a['name']}' (amt={abs(a['net']):,.2f})")
+
+    for key, total in other_totals.items():
+        if key in pl_cfg:
+            ws_npl.cell(pl_cfg[key]["row"], pl_cy).value = total
+            log.append(f"  OTH R{pl_cfg[key]['row']} = {total:,.2f}  [{key}]")
+
+    _ensure_formula(pl_cfg, "other_total", ws_npl, log)
+
+    # ── 16. Notes to P&L: CoM / Direct Expenses ──
+    log.append("\n[DE] Direct expenses")
+    _DE_MAP = [
+        ("electricity",      "direct_electricity"),
+        ("wages",            "direct_wages"),
+        ("oil & lubricant",  "direct_oil_lub"),
+        ("oil and lubricant","direct_oil_lub"),
+    ]
+    for a in accounts:
+        if a.get("bs_head") not in ("direct_expenses",): continue
+        if abs(a["net"]) == 0: continue
+        name_l = a["name"].lower()
+        for kw, dkey in _DE_MAP:
+            if kw in name_l and dkey in pl_cfg:
+                ws_npl.cell(pl_cfg[dkey]["row"], pl_cy).value = abs(a["net"])
+                log.append(f"  DE R{pl_cfg[dkey]['row']} = {abs(a['net']):,.2f}  [{dkey}]")
+                break
+
+    _ensure_formula(pl_cfg, "com_total", ws_npl, log)
+
+    # ── 17. GROSS PROFIT: #REF! killer ──
+    for r in range(1, 30):
+        for c in range(1, 12):
+            v = ws_gp.cell(r, c).value
+            if isinstance(v, str) and "#REF!" in v:
+                ws_gp.cell(r, c).value = 0
+                log.append(f"  GP: cleared #REF! at R{r}C{c}")
+
+    # ── 18. BS formula corrections ──
+    log.append("\n[BS] Verifying bs formula pointers")
+    for bs_key, formula in bs_cfg.items():
+        if bs_key in ("col_cy","col_py"): continue
+        # Find the bs row whose col-B label matches the key concept
+        _BS_LABEL_MAP = {
+            "lt_borrowings":   ["long-term borrowing"],
+            "trade_pay_msme":  ["micro, small"],
+            "trade_pay_other": ["other than micro"],
+            "other_cl":        ["other current liabilit"],
+            "st_provisions":   ["short-term provision"],
+            "inventories":     ["inventor"],
+            "trade_rec":       ["trade receivable"],
+            "cash_bank":       ["cash and bank"],
+            "stla":            ["short term loans and advance"],
+            "other_ca":        ["other current asset"],
+        }
+        kws = _BS_LABEL_MAP.get(bs_key, [])
+        for r in range(1, 45):
+            lbl = (ws_bs.cell(r, 2).value or "").strip().lower()
+            if any(k in lbl for k in kws):
+                current = ws_bs.cell(r, bs_cfg["col_cy"]).value
+                if current != formula:
+                    ws_bs.cell(r, bs_cfg["col_cy"]).value = formula
+                    log.append(f"  bs R{r}C{bs_cfg['col_cy']}: {repr(current)} → {formula}")
+                break
+
+    # ── 19. Explicitly zero advance_from_customer rows in Details creditor SUM ──
+    # These rows are inside SUM(D20:D33) but should not inflate trade payables.
+    if "advance_cust_rows" in det:
+        for r in det["advance_cust_rows"]:
+            ws_det.cell(r, det["col_cy"]).value = 0
+            log.append(f"  DET: zeroed D{r} (advance_from_customer row) to prevent trade pay inflation")
+
+    # ── 20. Save + Recalc ──
+    wb.save(output)
+    log.append("\n=== SAVED ===")
+
+    try:
+        import subprocess, json
+        r = subprocess.run(
+            ["python3", os.path.join(os.path.dirname(__file__), "scripts", "recalc.py"),
+             output, "90"],
+            capture_output=True, text=True, timeout=120
+        )
+        rc = json.loads(r.stdout) if r.stdout.strip() else {}
+        log.append(f"Recalc: {rc.get('status','?')}  errors={rc.get('total_errors',0)}")
+        if rc.get("total_errors", 0) > 0:
+            errors.append(f"Formula errors: {rc.get('error_summary')}")
+    except Exception as e:
+        log.append(f"Recalc skipped: {e}")
+
+    injected = sum(1 for l in log if l.strip().startswith(("WRITE","FORMULA","  Cash","  Bank",
+                                                           "  STLA","  OCL","  EMP","  FIN",
+                                                           "  OTH","  DE","  GP","  LT","  Cred","  Debt")))
+    return {
+        "status":          "success" if not errors else "partial",
+        "injected_count":  injected,
+        "log":             log,
+        "errors":          errors,
+        "template_key":    tmpl_key,
+        "classified_accounts": accounts,
+    }
