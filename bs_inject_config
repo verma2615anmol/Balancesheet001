@@ -138,9 +138,10 @@ def _stla_key_for(account_name: str) -> str | None:
 # ──────────────────────────────────────────────────────────────────────
 
 _FIN_KEYWORD_MAP = [
-    ("car loan interest",        "fin_car_loan"),
+    ("top up car loan interest", "fin_topup"),    # must be BEFORE "car loan interest"
     ("top up car loan",          "fin_topup"),
     ("top up",                   "fin_topup"),
+    ("car loan interest",        "fin_car_loan"),
     ("machine loan 1",           "fin_ml1"),
     ("machine loan 2",           "fin_ml2"),
     ("machine loan 3",           "fin_ml3"),
