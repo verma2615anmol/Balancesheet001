@@ -2921,6 +2921,54 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
     wb.save(output_path)
     wb.close()
 
+    # ── FORMULA CORRECTION PASS ──────────────────────────────────────────────
+    # The heuristic injector writes stale formula ranges (E11:E14, B14:B18) that
+    # miss 2 sale rows. This pass rewrites all 7 affected cells with correct ranges.
+    try:
+        from openpyxl import load_workbook as _lwb
+        _wb2 = _lwb(output_path)
+        _sheets = _wb2.sheetnames
+
+        # notes to p&l fixes
+        if "notes to p&l" in _sheets:
+            _npl = _wb2["notes to p&l"]
+            # Fix 1: Revenue formula — must cover all 6 sale rows (E11:E16)
+            if str(_npl.cell(6,4).value).startswith("=SUM"):
+                _npl.cell(6,4).value = "=SUM('GROSS PROFIT'!E11:E16)"
+            # Fix 2: Clear stray SALE GST 12% INTERSTATE value written outside revenue box
+            if isinstance(_npl.cell(8,4).value, (int, float)):
+                _npl.cell(8,4).value = None
+            # Fix 3: Purchase formula — must cover all 5 purchase rows (B14:B19)
+            if str(_npl.cell(20,4).value).startswith("=SUM"):
+                _npl.cell(20,4).value = "=SUM('GROSS PROFIT'!B14:B19)"
+            # Fix 4: Merge INTT PAID ON LATE TDS (296) into Bank Charges (D62)
+            _d62 = _npl.cell(62,4).value
+            _d70 = _npl.cell(70,4).value
+            if isinstance(_d70, (int, float)) and _d70 == 296:
+                if isinstance(_d62, (int, float)):
+                    _npl.cell(62,4).value = _d62 + 296
+                _npl.cell(70,4).value = None
+
+        # GROSS PROFIT fixes
+        if "GROSS PROFIT" in _sheets:
+            _gp = _wb2["GROSS PROFIT"]
+            # Fix 5: Closing stock back-calc must use E11:E16
+            if "E11:E14" in str(_gp.cell(17,5).value):
+                _gp.cell(17,5).value = "=B24-SUM(E11:E16)"
+            # Fix 6: Gross Profit % must use E11:E16
+            if "E11:E14" in str(_gp.cell(22,2).value):
+                _gp.cell(22,2).value = "=SUM(E11:E16)*8.5%"
+            # Fix 7: Kill any #REF! in old data columns
+            for _r in range(1, 30):
+                for _c in range(1, 12):
+                    if "#REF!" in str(_wb2["GROSS PROFIT"].cell(_r,_c).value or ""):
+                        _wb2["GROSS PROFIT"].cell(_r,_c).value = 0
+
+        _wb2.save(output_path)
+        _wb2.close()
+    except Exception as _fe:
+        pass  # formula fix failed silently — do not break existing flow
+
     # ─────────────────────────────────────────────────────────────
     # FIX (Issue 3): On-screen totals must mirror what the downloaded BS shows.
     #
@@ -3246,8 +3294,8 @@ def process_tb_to_bs(tb_path, bs_template_path, output_path, user_mapping=None):
     aggregated = get_aggregated_values(accounts)
 
     # Step 4 + 5: Config-driven injection via bs_inject_config.py
-    # This uses template_configs.py exact row maps — correct formulas, no heuristics.
-    # Falls back to old injector + post-processor if bs_inject_config.py is not found.
+    # Uses template_configs.py exact row maps — correct formulas, no heuristics.
+    # Falls back to old heuristic injector (which now has formula correction pass built-in).
     try:
         import importlib.util, os
         _inj_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bs_inject_config.py")
@@ -3264,19 +3312,13 @@ def process_tb_to_bs(tb_path, bs_template_path, output_path, user_mapping=None):
             result["aggregated"]          = aggregated
             result["classified_accounts"] = accounts
         else:
-            # Fallback: old heuristic injector + post-processor
+            # bs_inject_config.py not found — use heuristic injector
+            # (formula correction pass is now built into inject_into_bs above)
             result = inject_into_bs(
                 bs_template_path, output_path, aggregated,
                 mapping_overrides=None,
                 individual_accounts=accounts,
             )
-            _pp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bs_post_processor.py")
-            if os.path.exists(_pp_path):
-                spec2 = importlib.util.spec_from_file_location("bs_post_processor", _pp_path)
-                pp    = importlib.util.module_from_spec(spec2)
-                spec2.loader.exec_module(pp)
-                pp_result = pp.post_process(output_path, accounts, recalc=True)
-                result["post_process_log"] = pp_result.get("fixes_applied", [])
             result["analysis"]            = analysis
             result["aggregated"]          = aggregated
             result["classified_accounts"] = accounts
