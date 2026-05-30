@@ -3245,9 +3245,9 @@ def process_tb_to_bs(tb_path, bs_template_path, output_path, user_mapping=None):
     # Step 3: Aggregate by bs_head (uses overridden heads)
     aggregated = get_aggregated_values(accounts)
 
-    # Step 4 + 5: Use config-driven injection (template_configs.py) which handles
-    # exact row placement, correct formula ranges, and structural fixes in one pass.
-    # Falls back to heuristic injector + post-processor for unknown templates.
+    # Step 4 + 5: Config-driven injection via bs_inject_config.py
+    # This uses template_configs.py exact row maps — correct formulas, no heuristics.
+    # Falls back to old injector + post-processor if bs_inject_config.py is not found.
     try:
         import importlib.util, os
         _inj_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bs_inject_config.py")
@@ -3256,33 +3256,38 @@ def process_tb_to_bs(tb_path, bs_template_path, output_path, user_mapping=None):
             inj  = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(inj)
             result = inj.inject_with_config(
-                tb_path   = tb_path,
-                template  = bs_template_path,
-                output    = output_path,
+                tb_path  = tb_path,
+                template = bs_template_path,
+                output   = output_path,
             )
-            # Merge accounts/aggregated into result for callers that expect them
             result["analysis"]            = analysis
             result["aggregated"]          = aggregated
             result["classified_accounts"] = accounts
         else:
-            # bs_inject_config.py not found — fall back to old heuristic injector
+            # Fallback: old heuristic injector + post-processor
             result = inject_into_bs(
                 bs_template_path, output_path, aggregated,
                 mapping_overrides=None,
                 individual_accounts=accounts,
             )
-            result["post_process_log"] = ["bs_inject_config.py not found — used heuristic injector"]
+            _pp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bs_post_processor.py")
+            if os.path.exists(_pp_path):
+                spec2 = importlib.util.spec_from_file_location("bs_post_processor", _pp_path)
+                pp    = importlib.util.module_from_spec(spec2)
+                spec2.loader.exec_module(pp)
+                pp_result = pp.post_process(output_path, accounts, recalc=True)
+                result["post_process_log"] = pp_result.get("fixes_applied", [])
             result["analysis"]            = analysis
             result["aggregated"]          = aggregated
             result["classified_accounts"] = accounts
     except Exception as _inj_exc:
-        # Hard fallback: original heuristic injector
+        # Hard fallback
         result = inject_into_bs(
             bs_template_path, output_path, aggregated,
             mapping_overrides=None,
             individual_accounts=accounts,
         )
-        result["post_process_log"] = [f"Config injector error: {_inj_exc} — used heuristic"]
+        result["post_process_log"]    = [f"Config injector error: {_inj_exc}"]
         result["analysis"]            = analysis
         result["aggregated"]          = aggregated
         result["classified_accounts"] = accounts
