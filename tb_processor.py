@@ -3245,41 +3245,46 @@ def process_tb_to_bs(tb_path, bs_template_path, output_path, user_mapping=None):
     # Step 3: Aggregate by bs_head (uses overridden heads)
     aggregated = get_aggregated_values(accounts)
 
-    # Step 4: Inject into BS template
-    result = inject_into_bs(
-        bs_template_path, output_path, aggregated,
-        mapping_overrides=None,
-        individual_accounts=accounts,
-    )
-
-    # Step 5: Post-process — fix structural layout bugs that the injector
-    # cannot avoid (row-shift from insert_rows, wrong formula pointers, etc.)
+    # Step 4 + 5: Use config-driven injection (template_configs.py) which handles
+    # exact row placement, correct formula ranges, and structural fixes in one pass.
+    # Falls back to heuristic injector + post-processor for unknown templates.
     try:
         import importlib.util, os
-        _pp_path = os.path.join(os.path.dirname(__file__), "bs_post_processor.py")
-        if not os.path.exists(_pp_path):
-            # Try same dir as this file
-            _pp_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "bs_post_processor.py"
+        _inj_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bs_inject_config.py")
+        if os.path.exists(_inj_path):
+            spec = importlib.util.spec_from_file_location("bs_inject_config", _inj_path)
+            inj  = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(inj)
+            result = inj.inject_with_config(
+                tb_path   = tb_path,
+                template  = bs_template_path,
+                output    = output_path,
             )
-        if os.path.exists(_pp_path):
-            spec = importlib.util.spec_from_file_location("bs_post_processor", _pp_path)
-            pp   = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(pp)
-            pp_result = pp.post_process(output_path, accounts, recalc=True)
-            result["post_process_log"]    = pp_result.get("fixes_applied", [])
-            result["post_process_errors"] = pp_result.get("errors", [])
-            if pp_result.get("errors"):
-                result["log"] = result.get("log", []) + [
-                    f"⚠ Post-process warning: {e}"
-                    for e in pp_result["errors"]
-                ]
+            # Merge accounts/aggregated into result for callers that expect them
+            result["analysis"]            = analysis
+            result["aggregated"]          = aggregated
+            result["classified_accounts"] = accounts
         else:
-            result["post_process_log"] = ["bs_post_processor.py not found — skipped"]
-    except Exception as _pp_exc:
-        result["post_process_log"] = [f"Post-processor error: {_pp_exc}"]
+            # bs_inject_config.py not found — fall back to old heuristic injector
+            result = inject_into_bs(
+                bs_template_path, output_path, aggregated,
+                mapping_overrides=None,
+                individual_accounts=accounts,
+            )
+            result["post_process_log"] = ["bs_inject_config.py not found — used heuristic injector"]
+            result["analysis"]            = analysis
+            result["aggregated"]          = aggregated
+            result["classified_accounts"] = accounts
+    except Exception as _inj_exc:
+        # Hard fallback: original heuristic injector
+        result = inject_into_bs(
+            bs_template_path, output_path, aggregated,
+            mapping_overrides=None,
+            individual_accounts=accounts,
+        )
+        result["post_process_log"] = [f"Config injector error: {_inj_exc} — used heuristic"]
+        result["analysis"]            = analysis
+        result["aggregated"]          = aggregated
+        result["classified_accounts"] = accounts
 
-    result["analysis"]            = analysis
-    result["aggregated"]          = aggregated
-    result["classified_accounts"] = accounts   # full list with final bs_head applied
     return result
