@@ -195,16 +195,17 @@ TEMPLATE_CONFIGS = {
         },
     },
 
+
     # ─────────────────────────────────────────────────────────
-    # SHREE CRAFT
+    # SHREE CRAFT (Updated template 2025)
     # ─────────────────────────────────────────────────────────
     "shree_craft": {
         "name": "M/S SHREE CRAFT, LUDHIANA",
         "match_strings": ["SHREE CRAFT", "SHOBHIT PANCHAL", "VIKRANT GOEL"],
 
         "bs": {
-            "col_cy": 5,   # E column = CY
-            "col_py": 6,   # F column = PY
+            "col_cy": 5,
+            "col_py": 6,
             "lt_borrowings":   "='notes to bs'!D23",
             "trade_pay_msme":  "='notes to bs'!D37",
             "trade_pay_other": "='notes to bs'!D38",
@@ -222,56 +223,54 @@ TEMPLATE_CONFIGS = {
             "col_cy": 4,
             "col_py": 5,
 
-            # LT Borrowings (secured)
-            "lt_car_loan":                 {"row": 8,  "label": "Car Loan A/c"},
-            "lt_ugro_ml1":                 {"row": 9,  "label": "Machinery Loan 1 from Ugro Capital"},
-            "lt_ugro_ml2":                 {"row": 10, "label": "Machinery Loan 2 from Ugro Capital"},
-            "lt_axis_ml3":                 {"row": 11, "label": "Axis Bank Machinery Loan A/C 3"},
-            "lt_axis_ml4":                 {"row": 12, "label": "Axis Bank Machinery Loan A/C 4"},
-            "lt_topup_car":                {"row": 13, "label": "Top up Loan on Car"},
-            "lt_total_a":                  {"row": 15, "formula": "=SUM(D7:D14)"},
-            "lt_unsecured_related":        {"row": 20, "formula": "=Details!D9"},
-            "lt_unsecured_other":          {"row": 21, "formula": "=Details!D14"},
-            "lt_total_b":                  {"row": 22, "formula": "=SUM(D19:D21)"},
-            "lt_total_ab":                 {"row": 23, "formula": "=+D22+D15"},
+            # LT Borrowings
+            "lt_car_loan":       {"row": 8,  "label": "Car Loan  A/c"},
+            "lt_ugro_ml1":       {"row": 9,  "label": "Machinery Loan 1 from Ugro Capital"},
+            "lt_ugro_ml2":       {"row": 10, "label": "Machinery Loan 2 from Ugro Capital"},
+            "lt_axis_ml3":       {"row": 11, "label": "Axis Bank Machinery Loan A/C 3"},
+            "lt_axis_ml4":       {"row": 12, "label": "Axis Bank Machinery Loan A/C 4"},
+            "lt_topup_car":      {"row": 13, "label": "Top up Loan on Car"},
+            "lt_total_a":        {"row": 15, "formula": "=SUM(D8:D14)"},
+            "lt_total_b":        {"row": 22, "formula": "=SUM(D19:D21)"},
+            "lt_total_ab":       {"row": 23, "formula": "=D15+D22"},
 
-            # OCL (Note 5) — exact row per label
-            "ocl_esi":                     {"row": 59, "label": "E.S.I Payable"},
-            "ocl_wages":                   {"row": 60, "label": "Wages Payable"},
-            "ocl_tds":                     {"row": 61, "label": "TDS Payable"},
-            "ocl_lww":                     {"row": 62, "label": "Leave with Wages"},
-            "ocl_bonus":                   {"row": 63, "label": "Bonus Payable"},
-            "ocl_audit":                   {"row": 64, "label": "Audit Fees"},
-            "ocl_professional":            {"row": 65, "label": "Professional Charges Payable"},
-            "ocl_salary":                  {"row": 66, "label": "Salary payable"},
-            "ocl_total":                   {"row": 67, "formula": "=SUM(D59:D66)"},
+            # OCL
+            "ocl_esi":           {"row": 59, "label": "E.S.I Payable"},
+            "ocl_wages":         {"row": 60, "label": "Wages Payable"},
+            "ocl_tds":           {"row": 61, "label": "TDS Payable"},
+            "ocl_lww":           {"row": 62, "label": "Leave with Wages"},
+            "ocl_bonus":         {"row": 63, "label": "Bonus Payable"},
+            "ocl_audit":         {"row": 64, "label": "Audit Fees"},
+            "ocl_professional":  {"row": 65, "label": "Professional Charges Payable"},
+            "ocl_salary":        {"row": 66, "label": "Salary payable"},
+            "ocl_total":         {"row": 67, "formula": "=SUM(D59:D66)"},
 
-            # Cash & Bank (Note 10)
-            "cash_in_hand":                {"row": 99,  "label": "(a) Cash in hand"},
-            "bank_uco":                    {"row": 103, "label": "UCO Bank A/c"},
-            "cash_total_a":                {"row": 100, "formula": "=SUM(D99:D99)"},
-            "cash_total_b":                {"row": 104, "formula": "=SUM(D103:D103)"},
-            "cash_total_ab":               {"row": 105, "formula": "=D100+D104"},
+            # Cash & Bank
+            "cash_in_hand":      {"row": 99,  "label": "(a) Cash in hand"},
+            "bank_uco":          {"row": 103, "label": "UCO Bank A/c"},
+            "cash_total_a":      {"row": 100, "formula": "=SUM(D99:D99)"},
+            "cash_total_b":      {"row": 104, "formula": "=SUM(D103:D103)"},
+            "cash_total_ab":     {"row": 105, "formula": "=D100+D104"},
 
-            # Trade Receivables (Note 9) — via Details
-            "trade_rec_lt6_unsecured":     {"row": 84,  "formula": "=Details!D62"},
-            "trade_rec_gt6_unsecured":     {"row": 90,  "formula": "=Details!D69"},
-            "trade_rec_total_a":           {"row": 86,  "formula": "=SUM(D83:D85)"},
-            "trade_rec_total_b":           {"row": 92,  "formula": "=SUM(D89:D91)"},
-            "trade_rec_total_ab":          {"row": 94,  "formula": "=D86+D92"},
+            # Trade Receivables
+            "trade_rec_lt6_unsecured": {"row": 84,  "formula": "=Details!D62"},
+            "trade_rec_gt6_unsecured": {"row": 90,  "formula": "=Details!D71"},
+            "trade_rec_total_a":       {"row": 86,  "formula": "=SUM(D83:D85)"},
+            "trade_rec_total_b":       {"row": 92,  "formula": "=SUM(D89:D91)"},
+            "trade_rec_total_ab":      {"row": 94,  "formula": "=D86+D92"},
 
-            # STLA (Note 11) — exact rows per TB account
-            "stla_tcs_2324":               {"row": 127, "label": "TCS 23-24"},
-            "stla_tds_2324":               {"row": 128, "label": "TDS Deducted 2023-2024"},
-            "stla_gst_cgst":               {"row": 129, "label": "GST Credit Ledger CGST"},
-            "stla_gst_igst":               {"row": 130, "label": "GST Credit Ledger IGST"},
-            "stla_gst_sgst":               {"row": 131, "label": "GST Credit Ledger SGST"},
-            "stla_tds_2425":               {"row": 132, "label": "TDS Deducted 2024-25"},
-            "stla_gst_tds_2425":           {"row": 133, "label": "GST TDS 2024-25"},
-            "stla_total_c":                {"row": 134, "formula": "=SUM(D127:D133)"},
-            "stla_total_a":                {"row": 122, "formula": "=D121"},
-            "stla_total_b":                {"row": 125, "formula": "=D124"},
-            "stla_total_abc":              {"row": 136, "formula": "=D134+D125+D122"},
+            # STLA
+            "stla_tcs_2324":     {"row": 127, "label": "TCS 23-24"},
+            "stla_tds_2324":     {"row": 128, "label": "TDS Deducted 2023-2024"},
+            "stla_gst_cgst":     {"row": 129, "label": "GST Credit Ledger CGST"},
+            "stla_gst_igst":     {"row": 130, "label": "GST Credit Ledger IGST"},
+            "stla_gst_sgst":     {"row": 131, "label": "GST Credit Ledger SGST"},
+            "stla_tds_2425":     {"row": 132, "label": "TDS Deducted 2024-25"},
+            "stla_gst_tds_2425": {"row": 133, "label": "GST TDS 2024-25"},
+            "stla_total_c":      {"row": 134, "formula": "=SUM(D127:D133)"},
+            "stla_total_a":      {"row": 122, "formula": "=D121"},
+            "stla_total_b":      {"row": 125, "formula": "=D124"},
+            "stla_total_abc":    {"row": 136, "formula": "=D134+D125+D122"},
         },
 
         "notes_pl": {
@@ -280,68 +279,68 @@ TEMPLATE_CONFIGS = {
             "col_py": 5,
 
             # Revenue (Note 13)
-            "revenue_12_within":           {"row": 7},
-            "revenue_18_within":           {"row": 8},
-            "revenue_total":               {"row": 10, "formula": "=SUM(D7:D9)"},
+            "revenue_12_within":     {"row": 7},
+            "revenue_18_within":     {"row": 8},
+            "revenue_total":         {"row": 10, "formula": "=SUM(D7:D9)"},
 
             # Other Income (Note 14)
-            "other_inc_tax_refund":        {"row": 14},
-            "other_inc_rebate":            {"row": 15},
-            "other_inc_total":             {"row": 16, "formula": "=SUM(D14:D15)"},
+            "other_inc_tax_refund":  {"row": 14},
+            "other_inc_rebate":      {"row": 15},
+            "other_inc_total":       {"row": 16, "formula": "=SUM(D14:D15)"},
 
-            # Purchases / Direct Expenses (Note 15)
-            "purch_repair":                {"row": 24},
-            "purch_18_within":             {"row": 25},
-            "purch_workshop":              {"row": 26},
-            "purch_jobwork":               {"row": 27},
-            "direct_electricity":          {"row": 30},
-            "direct_oil_lub":              {"row": 31},
-            "direct_wages":                {"row": 32},
-            "com_closing_stock":           {"row": 34},
-            "com_total":                   {"row": 36, "formula": "=SUM(D21:D32)-D34"},
+            # CoM (Note 15)
+            "purch_repair":          {"row": 24},
+            "purch_18_within":       {"row": 25},
+            "purch_workshop":        {"row": 26},
+            "purch_jobwork":         {"row": 27},
+            "direct_electricity":    {"row": 30},
+            "direct_oil_lub":        {"row": 31},
+            "direct_wages":          {"row": 32},
+            "com_closing_stock":     {"row": 34},
+            "com_total":             {"row": 36, "formula": "=SUM(D21:D32)-D34"},
 
-            # Employee Expenses (Note 16)
-            "emp_esi":                     {"row": 41},
-            "emp_labour_refreshment":      {"row": 42},
-            "emp_salary":                  {"row": 43},
-            "emp_bonus":                   {"row": 44},
-            "emp_lww":                     {"row": 45},
-            "emp_total":                   {"row": 46, "formula": "=SUM(D41:D45)"},
+            # Employee (Note 16)
+            "emp_esi":               {"row": 41},
+            "emp_labour_refreshment":{"row": 42},
+            "emp_salary":            {"row": 43},
+            "emp_bonus":             {"row": 44},
+            "emp_lww":               {"row": 45},
+            "emp_total":             {"row": 46, "formula": "=SUM(D41:D45)"},
 
-            # Finance Cost (Note 17)
-            "fin_car_loan":                {"row": 50},
-            "fin_ml1":                     {"row": 51},
-            "fin_ml2":                     {"row": 52},
-            "fin_ml3":                     {"row": 53},
-            "fin_ml4":                     {"row": 54},
-            "fin_topup":                   {"row": 55},
-            "fin_total":                   {"row": 56, "formula": "=SUM(D50:D55)"},
+            # Finance (Note 17)
+            "fin_car_loan":          {"row": 50},
+            "fin_ml1":               {"row": 51},
+            "fin_ml2":               {"row": 52},
+            "fin_ml3":               {"row": 53},
+            "fin_ml4":               {"row": 54},
+            "fin_topup":             {"row": 55},
+            "fin_total":             {"row": 56, "formula": "=SUM(D50:D55)"},
 
             # Depreciation (Note 18)
-            "dep_tangible":                {"row": 68, "formula": "='Fixed Assets C. Yr.'!H29"},
-            "dep_total":                   {"row": 69, "formula": "=SUM(D68:D68)"},
+            "dep_tangible":          {"row": 68},
+            "dep_total":             {"row": 69, "formula": "=SUM(D68:D68)"},
 
             # Other Expenses (Note 19)
-            "other_audit":                 {"row": 73},
-            "other_bank_charges":          {"row": 74},
-            "other_car_insurance":         {"row": 75},
-            "other_cartage":               {"row": 76},
-            "other_cersai":                {"row": 77},
-            "other_commission":            {"row": 78},
-            "other_conveyance":            {"row": 79},
-            "other_diwali":                {"row": 80},
-            "other_gen_insurance":         {"row": 81},
-            "other_legal":                 {"row": 82},
-            "other_life_insurance":        {"row": 83},
-            "other_partner_interest":      {"row": 84},
-            "other_partner_salary":        {"row": 85},
-            "other_printing":              {"row": 86},
-            "other_processing_fees":       {"row": 87},
-            "other_professional":          {"row": 88},
-            "other_rebate":                {"row": 89},
-            "other_rent":                  {"row": 90},
-            "other_telephone":             {"row": 91},
-            "other_total":                 {"row": 93, "formula": "=SUM(D73:D91)"},
+            "other_audit":           {"row": 73},
+            "other_bank_charges":    {"row": 74},
+            "other_car_insurance":   {"row": 75},
+            "other_cartage":         {"row": 76},
+            "other_cersai":          {"row": 77},
+            "other_commission":      {"row": 78},
+            "other_conveyance":      {"row": 79},
+            "other_diwali":          {"row": 80},
+            "other_gen_insurance":   {"row": 81},
+            "other_legal":           {"row": 82},
+            "other_life_insurance":  {"row": 83},
+            "other_partner_interest":{"row": 84},
+            "other_partner_salary":  {"row": 85},
+            "other_printing":        {"row": 86},
+            "other_processing_fees": {"row": 87},
+            "other_professional":    {"row": 88},
+            "other_rebate":          {"row": 89},
+            "other_rent":            {"row": 90},
+            "other_telephone":       {"row": 91},
+            "other_total":           {"row": 93, "formula": "=SUM(D73:D91)"},
         },
 
         "details": {
@@ -349,53 +348,34 @@ TEMPLATE_CONFIGS = {
             "col_cy": 4,
             "col_py": 5,
 
-            # Unsecured loans
-            "loan_related_rows":           list(range(7, 9)),
-            "loan_related_total":          {"row": 9,  "formula": "=SUM(D7:D8)"},
-            "loan_other_rows":             list(range(12, 13)),
-            "loan_other_total":            {"row": 14, "formula": "=SUM(D12:D12)"},
+            "creditor_rows":          list(range(20, 30)),
+            "creditor_sum":           {"row": 39, "formula": "=SUM(D20:D33)"},
+            "creditor_msme_total":    {"row": 37, "formula": "=SUM(D36:D36)"},
+            "creditor_grand_total":   {"row": 39, "formula": "=SUM(D20:D33)"},
+            "advance_cust_rows":      [32, 33],
 
-            # Sundry Creditors (D20:D33 — includes advance from customers D32/D33)
-            "creditor_rows":               list(range(20, 30)),  # D20:D29 only (10 creditors)
-            "creditor_sum":                {"row": 34, "formula": "=SUM(D20:D33)"},
-            "creditor_msme_total":         {"row": 37, "formula": "=SUM(D36:D36)"},
-            "creditor_grand_total":        {"row": 39, "formula": "=D34+D37"},
-
-            # Advance from Customers (inside creditor section, separate rows)
-            "advance_cust_rows":           [32, 33],  # Meera Forging, Toolman Industries
-
-            # Trade Receivables <6 months
-            "debtor_lt6_rows":             list(range(45, 62)),  # D45:D61
-            "debtor_lt6_total":            {"row": 62, "formula": "=SUM(D45:D61)"},
-
-            # Trade Receivables >6 months
-            "debtor_gt6_rows":             [67],
-            "debtor_gt6_total":            {"row": 69, "formula": "=SUM(D67:D67)"},
+            "debtor_lt6_rows":        list(range(74, 88)),
+            "debtor_lt6_total":       {"row": 62},
+            "debtor_gt6_rows":        [67],
+            "debtor_gt6_total":       {"row": 71, "formula": "=SUM(D67:D67)"},
         },
 
         "gross_profit": {
             "sheet": "GROSS PROFIT",
-            "col_sales_cy":   6,   # F = CY sales
-            "col_sales_py":   7,   # G = PY sales
-            "col_purch_cy":   2,   # B = CY purchases
-            "col_purch_py":   3,   # C = PY purchases
-
-            # Sales via notes to p&l formulas (auto from notes injection)
+            "col_sales_cy":  6,
+            "col_sales_py":  7,
+            "col_purch_cy":  2,
+            "col_purch_py":  3,
             "sales_12_within": {"row": 10, "col": 6},
             "sales_18_within": {"row": 11, "col": 6},
-
-            # Closing stock
-            "closing_stock":   {"row": 17, "col": 6},  # F17
+            "closing_stock":   {"row": 16, "col": 6},
         },
     },
 }
 
 
 def detect_template(wb) -> str | None:
-    """
-    Detect which template config to use by scanning bs!A1 and bs!B8 for match strings.
-    Returns config key ('fashion_adda', 'shree_craft') or None.
-    """
+    """Detect which template config to use by scanning bs sheet text."""
     try:
         ws = wb['bs']
         text = " ".join(
@@ -410,8 +390,8 @@ def detect_template(wb) -> str | None:
     return None
 
 
-def get_config(wb) -> tuple[str | None, dict | None]:
-    """Return (template_key, config_dict) or (None, None) if unknown template."""
+def get_config(wb) -> tuple:
+    """Return (template_key, config_dict) or (None, None) if unknown."""
     key = detect_template(wb)
     if key:
         return key, TEMPLATE_CONFIGS[key]
