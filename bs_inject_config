@@ -424,6 +424,22 @@ def inject_with_config(tb_path: str,
     from tb_processor2_fixed import _fuzzy_match_name
     written_cred = set()
 
+    # Clear all creditor CY cells first (remove stale dates / old values)
+    # Also clear rows beyond cred_rows but within the SUM range (e.g. R30-R33)
+    _cred_sum_entry = det.get("creditor_sum")
+    if _cred_sum_entry:
+        _sum_formula = _cred_sum_entry.get("formula","")
+        import re as _re
+        _m = _re.search(r'SUM\(D(\d+):D(\d+)\)', _sum_formula)
+        if _m:
+            for r in range(int(_m.group(1)), int(_m.group(2))+1):
+                ws_det.cell(r, det["col_cy"]).value = None
+    else:
+        for r in cred_rows:
+            ws_det.cell(r, det["col_cy"]).value = None
+    for r in det.get("advance_cust_rows", []):
+        ws_det.cell(r, det["col_cy"]).value = 0
+
     for a in cred_accts:
         net  = abs(a["net"])
         name = a["name"]
@@ -457,36 +473,83 @@ def inject_with_config(tb_path: str,
         [a for a in accounts if a.get("bs_head") == "trade_rec" and a["net"] > 0],
         key=lambda a: -len(a["name"])
     )
-    written_debt = set()
 
+    # Clear all debtor rows before writing (remove stale PY values from template)
+    for r in lt6_rows + gt6_rows:
+        ws_det.cell(r, det["col_cy"]).value = None
+
+    # First pass: match gt6 debtors to gt6 rows by label
+    gt6_placed = set()
     for a in debtor_accts:
+        for r in gt6_rows:
+            b = ws_det.cell(r, 2).value
+            if b and _fuzzy_match_name(a["name"], str(b)):
+                _w(ws_det, r, det["col_cy"], abs(a["net"]), log, f"Debt gt6:{a['name']}")
+                gt6_placed.add(a["name"])
+                break
+
+    # Second pass: write remaining debtors to lt6 rows (skip gt6-placed ones)
+    written_debt_lt6 = set()
+    for a in debtor_accts:
+        if a["name"] in gt6_placed: continue
         net  = abs(a["net"])
         name = a["name"]
         matched = False
-        for r in lt6_rows + gt6_rows:
-            if r in written_debt: continue
+        for r in lt6_rows:
+            if r in written_debt_lt6: continue
             b = ws_det.cell(r, 2).value
             if b and _fuzzy_match_name(name, str(b)):
-                _w(ws_det, r, det["col_cy"], net, log, f"Debt:{name}")
-                written_debt.add(r)
+                _w(ws_det, r, det["col_cy"], net, log, f"Debt lt6:{name}")
+                written_debt_lt6.add(r)
                 matched = True
                 break
         if not matched:
             for r in lt6_rows:
-                if r in written_debt: continue
+                if r in written_debt_lt6: continue
                 d = ws_det.cell(r, det["col_cy"]).value
                 if d is None or d == 0:
-                    _w(ws_det, r, det["col_cy"], net, log, f"Debt new:{name}")
-                    written_debt.add(r)
+                    _w(ws_det, r, det["col_cy"], net, log, f"Debt lt6 new:{name}")
+                    written_debt_lt6.add(r)
                     matched = True
                     break
         if not matched:
             log.append(f"  Debt: no row for '{name}' — skipped")
 
+    # Write debtor totals to Details sheet
+    lt6_rows = det.get("debtor_lt6_rows", [])
+    lt6_sum = sum((ws_det.cell(r,det["col_cy"]).value or 0) for r in lt6_rows
+                  if isinstance(ws_det.cell(r,det["col_cy"]).value,(int,float)))
+    # lt6_net = lt6_sum directly (Chandela excluded via gt6, Meera excluded via net<0 filter)
+    lt6_net = lt6_sum
+    _dt_lt6 = det.get("debtor_lt6_total")
+    if _dt_lt6:
+        ws_det.cell(_dt_lt6["row"], det["col_cy"]).value = lt6_net  # force overwrite formula
+        log.append(f"  DET lt6 total R{_dt_lt6['row']} = {lt6_net:,.2f}")
+    _dt_gt6 = det.get("debtor_gt6_total")
+    if _dt_gt6:
+        gt6_sum = sum((ws_det.cell(r,det["col_cy"]).value or 0) for r in det.get("debtor_gt6_rows",[])
+                      if isinstance(ws_det.cell(r,det["col_cy"]).value,(int,float)))
+        ws_det.cell(_dt_gt6["row"], det["col_cy"]).value = gt6_sum
+        log.append(f"  DET gt6 total = {gt6_sum:,.2f}")
     # Ensure trade rec formulas
     for fkey in ["trade_rec_lt6_unsecured","trade_rec_gt6_unsecured",
                  "trade_rec_total_a","trade_rec_total_b","trade_rec_total_ab"]:
         _ensure_formula(n_cfg, fkey, ws_n, log)
+
+    # ── 5b. SC other income items (Income Tax Refund, Rebate — bypass normal classification) ──
+    _OTH_INC_KWS = {
+        "income tax refund": "other_inc_tax_refund",
+        "rebate & discount":  "other_inc_rebate",
+        "rebate and discount":"other_inc_rebate",
+    }
+    for a in accounts:
+        if abs(a.get("net",0)) == 0: continue
+        for kw, pk in _OTH_INC_KWS.items():
+            if kw in a["name"].lower() and pk in pl_cfg:
+                ws_npl.cell(pl_cfg[pk]["row"], pl_cy).value = abs(a["net"])
+                log.append(f"  SC OthInc {a['name']} → R{pl_cfg[pk]['row']} = {abs(a['net']):,.2f}")
+                break
+    _ensure_formula(pl_cfg, "other_inc_total", ws_npl, log)
 
     # ── 6. Details: Advance from customers ──
     log.append("\n[DET] Advance from customers")
@@ -519,6 +582,12 @@ def inject_with_config(tb_path: str,
 
     # ── 7. OCL ──
     log.append("\n[OCL] Other Current Liabilities")
+    # Clear all OCL data rows first to remove stale template values
+    for _ok in [k for k in n_cfg if k.startswith("ocl_") and k != "ocl_total"
+                and isinstance(n_cfg.get(k), dict) and "row" in n_cfg[k]]:
+        _r = n_cfg[_ok]["row"]
+        if not (isinstance(ws_n.cell(_r,cy).value, str) and ws_n.cell(_r,cy).value.strip().startswith("=")):
+            ws_n.cell(_r, cy).value = None
     cat_totals: dict[str, float] = {}
 
     for a in accounts:
@@ -765,12 +834,19 @@ def inject_with_config(tb_path: str,
         if key: continue   # already handled above
         okey = _other_exp_key_for(a["name"])
         if okey and okey in pl_cfg:
-            existing = ws_npl.cell(pl_cfg[okey]["row"], pl_cy).value
-            base = float(existing) if isinstance(existing, (int,float)) else 0
-            ws_npl.cell(pl_cfg[okey]["row"], pl_cy).value = base + abs(a["net"])
-            log.append(f"  FIN→OTH2 R{pl_cfg[okey]['row']} = {base+abs(a['net']):,.2f}  [{okey}]")
+            # Accumulate in a dict first, write once — do NOT add to stale template value
+            _fot2_acc = getattr(ws_npl, '_fot2_acc', {})
+            _fot2_acc[okey] = _fot2_acc.get(okey, 0) + abs(a["net"])
+            ws_npl._fot2_acc = _fot2_acc
+            log.append(f"  FIN→OTH2 acc {okey} += {abs(a['net']):,.2f}")
 
     _ensure_formula(pl_cfg, "fin_total", ws_npl, log)
+    # Write FIN→OTH2 accumulated values (fresh write, not accumulate on template)
+    for _okey, _total in getattr(ws_npl, '_fot2_acc', {}).items():
+        if _okey in pl_cfg:
+            ws_npl.cell(pl_cfg[_okey]["row"], pl_cy).value = _total
+            log.append(f"  FIN→OTH2 write R{pl_cfg[_okey]['row']} = {_total:,.2f}  [{_okey}]")
+    ws_npl._fot2_acc = {}
 
     # ── 15. Notes to P&L: Other Expenses ──
     log.append("\n[OTH] Other expenses")
@@ -808,7 +884,18 @@ def inject_with_config(tb_path: str,
                 log.append(f"  DE R{pl_cfg[dkey]['row']} = {abs(a['net']):,.2f}  [{dkey}]")
                 break
 
+    _ensure_formula(pl_cfg, "com_purchases", ws_npl, log)   # fix B14:B18 → B14:B19
     _ensure_formula(pl_cfg, "com_total", ws_npl, log)
+
+    # ── 16b. Overwrite depreciation with exact TB value (prevents FA sheet rounding) ──
+    for a in accounts:
+        if "depreciation" in a.get("name","").lower():
+            _dv = abs(a.get("net",0))
+            if _dv > 0 and "dep_tangible" in pl_cfg:
+                ws_npl.cell(pl_cfg["dep_tangible"]["row"], pl_cy).value = int(_dv)
+                ws_npl.cell(pl_cfg["dep_total"]["row"],    pl_cy).value = int(_dv)
+                log.append(f"  DEP exact {_dv:,.0f} → R{pl_cfg['dep_tangible']['row']}")
+            break
 
     # ── 17. GROSS PROFIT: #REF! killer + formula fixes ──
     for r in range(1, 30):
