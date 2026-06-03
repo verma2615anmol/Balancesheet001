@@ -2922,8 +2922,35 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
     wb.close()
 
     # ── FORMULA CORRECTION PASS ──────────────────────────────────────────────
-    # The heuristic injector writes stale formula ranges (E11:E14, B14:B18) that
-    # miss 2 sale rows. This pass rewrites all 7 affected cells with correct ranges.
+    # For KNOWN templates (Shree Craft, Fashion Adda): call inject_with_config
+    # which has the exact config-driven injection. This overrides the heuristic output.
+    try:
+        import importlib.util as _ilu, os as _os
+        _inj_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "bs_inject_config.py")
+        if _os.path.exists(_inj_path):
+            _spec = _ilu.spec_from_file_location("_bsic_corr", _inj_path)
+            _bsic = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_bsic)
+            # Check if this is a known template
+            from openpyxl import load_workbook as _lwb0
+            _wb0 = _lwb0(bs_template_path)
+            _tk, _cfg = _bsic.get_config(_wb0) if hasattr(_bsic, 'get_config') else (None, None)
+            _wb0.close()
+            if _tk:
+                # Known template — run full config-driven injection (replaces heuristic output)
+                _bsic.inject_with_config(
+                    tb_path  = tb_path,
+                    template = bs_template_path,
+                    output   = output_path,
+                )
+                # Skip the manual fixes below — inject_with_config handled everything
+                raise StopIteration("config injection done")
+    except StopIteration:
+        pass  # clean exit after config injection
+    except Exception as _ce:
+        pass  # config injection failed, fall through to manual fixes
+
+    # Manual formula fixes for unknown templates (Fashion Adda fallback)
     try:
         from openpyxl import load_workbook as _lwb
         _wb2 = _lwb(output_path)
