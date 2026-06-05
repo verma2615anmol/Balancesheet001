@@ -279,11 +279,13 @@ BS_HEADS = {
             "car loan interest", "machine loan interest", "machinery loan interest",
             "top up loan interest", "top up car loan interest",
             "interest to partner", "interest on unsecured",
+            "intt on tempu", "interest on tempu", "interest on hdfc",
+            "interest on term loan", "term loan interest",
             "interest on term loan", "interest on secured",
             "processing fee", "cersai charge",
             "life insurance machinery loan",
         ],
-        "negative_keywords": ["interest received", "interest income", "intt paid on late payment", "bank charges and interest", "bank charges"],
+        "negative_keywords": ["interest received", "interest income", "intt paid on late payment", "bank charges and interest", "bank charges", "processing fee"],
     },
     "other_expenses": {
         "label": "Other Expenses / Indirect Expenses",
@@ -440,7 +442,100 @@ def parse_tb_pdf(pdf_path):
     accounts = []
     running_group = ""
 
+    # ── Detect Group-Wise Trial Balance format (plain text, no tables) ──
+    _is_group_wise = False
     try:
+        with pdfplumber.open(pdf_path) as _pdf_detect:
+            _ft = _pdf_detect.pages[0].extract_text() or ""
+            if "Group Wise Trial Balance" in _ft or "Group wise Trial Balance" in _ft:
+                _is_group_wise = True
+    except Exception:
+        pass
+
+    if _is_group_wise:
+        import re as _re_gw
+        _GROUP_SIDE_GW = {
+            'CURRENT LIABILITIES': 'credit', 'DUTIES AND TAXES': 'credit',
+            'SUNDRY CREDITORS': 'credit', 'SUNDRY PAYABLE': 'credit',
+            'CAPITAL ACCOUNT': 'credit', 'SECURED LOANS': 'credit',
+            'UNSECURED LOANS': 'credit', 'ADVANCE FROM CUSTOMERS': 'credit',
+            'SALES ACCOUNTS': 'credit', 'INDIRECT INCOME': 'credit',
+            'BANK ACCOUNTS': 'both',      # ← BEFORE 'CURRENT ASSETS' so it matches first
+            'CURRENT ASSETS': 'debit', 'CASH-IN-HAND': 'debit',
+            'STOCK-IN-HAND': 'debit', 'SUNDRY DEBTORS': 'debit',
+            'FIXED ASSETS': 'debit', 'PURCHASE ACCOUNTS': 'debit',
+            'DIRECT EXPENSES': 'debit', 'INDIRECT EXPENSES': 'debit',
+        }
+        _SKIP_GW  = ['Group Wise', 'Closing Balance', 'P a r t i c u l',
+                     'Debit  Credit', 'Debit\tCredit', 'Total :', 'Grand Total',
+                     'Continue to next', 'Station', 'Page:',
+                     'A.S.TRADERS', 'A.S. TRADERS', '321-I', 'BRS NAGAR',
+                     'FOCAL POINT', 'FASHION ADDA', 'SHREE CRAFT']
+        _KNOWN_GRP_WORDS = ['LIABILIT','ASSET','LOAN','EXPENSE','INCOME','ACCOUNT',
+                            'CREDITOR','DEBTOR','CAPITAL','SALES','PURCHASE',
+                            'STOCK','CASH','BANK','FIXED','ADVANCE','PAYABLE']
+        _amt_re_gw = _re_gw.compile(r'^(.+?)\s+([\d,]+\.\d{2})\s*(?:([\d,]+\.\d{2}))?\s*$')
+        _grp_re_gw = _re_gw.compile(r'^([A-Z][A-Z\s&\./\(\)\-0-9,\']+?)(?:\s*-{3,}\s*\(\s*(.+?)\s*\))?\s*$')
+        _cg = "UNKNOWN"; _cs = 'debit'
+
+        def _pi_gw(s):
+            return float(s.replace(',', '').strip())
+
+        def _side_gw(grp):
+            gu = grp.upper()
+            for k, s in _GROUP_SIDE_GW.items():
+                if k in gu: return s
+            return 'debit'
+
+        with pdfplumber.open(pdf_path) as _pdf_gw:
+            for _page_gw in _pdf_gw.pages:
+                for _ln in (_page_gw.extract_text() or "").split('\n'):
+                    _ln = _ln.strip()
+                    if not _ln: continue
+                    if any(sk in _ln for sk in _SKIP_GW): continue
+                    _am_gw = _amt_re_gw.match(_ln)
+                    if _am_gw:
+                        _name_gw = _am_gw.group(1).strip()
+                        _f = _pi_gw(_am_gw.group(2))
+                        _s = _pi_gw(_am_gw.group(3)) if _am_gw.group(3) else None
+                        if _s is not None:
+                            _d, _c = _f, _s
+                        elif _cs == 'credit':
+                            _d, _c = 0, _f
+                        elif _cs == 'both':
+                            # CC A/C with large balance = overdraft (liability) → credit side
+                            # Small CC balance (< 50,000) = positive deposit → debit
+                            _nl = _name_gw.lower()
+                            if ('cc a/c' in _nl or 'cc a/c no' in _nl) and _f > 50000:
+                                _d, _c = 0, _f   # large CC = overdraft liability
+                            else:
+                                _d, _c = _f, 0   # small balance or regular account = asset
+                        else:
+                            _d, _c = _f, 0
+                        accounts.append({
+                            "name": _name_gw, "group": _cg,
+                            "debit": _d, "credit": _c,
+                            "net": _d - _c,
+                        })
+                    else:
+                        _gm_gw = _grp_re_gw.match(_ln)
+                        if _gm_gw and not _ln.startswith('('):
+                            _mn = _gm_gw.group(1).strip()
+                            _sb = (_gm_gw.group(2) or "").strip()
+                            _proposed = f"{_mn} ({_sb})" if _sb else _mn
+                            # Only accept as group if it has a financial keyword
+                            if any(w in _proposed.upper() for w in _KNOWN_GRP_WORDS):
+                                _cg = _proposed
+                                _cs = _side_gw(_cg)
+                            # else: keep previous group (company header line)
+        # Skip the table-based parser
+        import sys as _sys_gw
+        _gw_parsed = True
+    else:
+        _gw_parsed = False
+
+    if not _gw_parsed:
+      try:
         with pdfplumber.open(pdf_path) as pdf:
             for page in pdf.pages:
                 # Text lines on this page (used only for group-header tracking)
@@ -518,7 +613,7 @@ def parse_tb_pdf(pdf_path):
                     })
 
                 running_group = page_group
-    except Exception:
+      except Exception:
         # Fall back to text-only parser if pdfplumber table extraction fails
         try:
             return _parse_tb_pdf_text_fallback(pdf_path)
@@ -526,7 +621,7 @@ def parse_tb_pdf(pdf_path):
             return None
 
     # If table extraction found no rows (PDFs without ruled lines), fall back
-    if not accounts:
+    if not accounts and not _gw_parsed:
         try:
             return _parse_tb_pdf_text_fallback(pdf_path)
         except Exception:
@@ -1037,8 +1132,11 @@ GROUP_HEAD_MAP = {
     "loans and advances":        "stla",
     "deposits (asset)":          "stla",
     "deposits":                  "stla",
-    "duties & taxes":            "stla",
-    "duties and taxes":          "stla",
+    "duties & taxes":            "other_cl",   # GST payable = current liability
+    "duties and taxes":          "other_cl",
+    "duties & taxes (gst)":      "other_cl",
+    "duties and taxes (gst)":    "other_cl",
+    "advance from customers":    "other_cl",   # advance received = current liability
     "misc. expenses (asset)":    "misc_expenditure",
     "miscellaneous expenses":    "misc_expenditure",
     "profit & loss account":     "capital",
@@ -1138,6 +1236,24 @@ def _classify_single(name, net_amount, group=None):
         for kw in BS_HEADS["finance_cost"]["keywords"]:
             if kw in name_lower:
                 return "finance_cost", "high"
+
+    # Step 1a: Group-based override for compound group names (group-wise TBs)
+    if group_lower:
+        # CURRENT LIABILITIES (DUTIES AND TAXES) → other_cl
+        if "current liabilit" in group_lower and "sundry creditor" not in group_lower:
+            return "other_cl", "high"
+        # ADVANCE FROM CUSTOMERS → other_cl (advance received = current liability)
+        if "advance from customer" in group_lower:
+            return "other_cl", "high"
+        # SUNDRY PAYABLE → other_cl
+        if "sundry payable" in group_lower:
+            return "other_cl", "high"
+        # SUNDRY CREDITORS → trade_payables
+        if "sundry creditor" in group_lower:
+            return "trade_payables", "high"
+        # SUNDRY DEBTORS → trade_rec
+        if "sundry debtor" in group_lower:
+            return "trade_rec", "high"
 
     # Step 1: Check if group header directly maps to a head
     if group_lower and group_lower in GROUP_HEAD_MAP:
@@ -2710,6 +2826,8 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                            "machine loan", "top up", "bank cc intt", "bank cc",
                            "bank interest", "cc interest", "bank od interest",
                            "overdraft interest", "interest on unsecured",
+            "intt on tempu", "interest on tempu", "interest on hdfc",
+            "interest on term loan", "term loan interest",
                            "interest on loan", "interest on term",
                            "interest paid to", "interest to partner"]
         
@@ -2765,7 +2883,9 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                              "bank od interest", "overdraft interest", "bank charges"]
         LOAN_INT_KEYWORDS = ["loan interest", "car loan interest", "machine loan",
                              "top up", "interest on loan", "interest on term",
-                             "interest on unsecured", "interest paid to",
+                             "interest on unsecured",
+            "intt on tempu", "interest on tempu", "interest on hdfc",
+            "interest on term loan", "term loan interest", "interest paid to",
                              "interest to partner"]
         FINANCE_KEYWORDS = set(BANK_INT_KEYWORDS + LOAN_INT_KEYWORDS)
         finance_acct_names = {a["name"].lower() for a in finance_accounts}
