@@ -89,6 +89,15 @@ _OCL_KEYWORD_MAP = [
     ("chq issued",               "ocl_cheques_issued"),
     ("not presented",            "ocl_cheques_issued"),
     ("not cleared",              "ocl_cheques_issued"),
+    # AS Traders
+    ("shree ganesh",             "ocl_shree_ganesh"),
+    ("shri ganesh",              "ocl_shree_ganesh"),
+    ("accounts fees payable",    "ocl_accounts_fees"),
+    ("account fees payable",     "ocl_accounts_fees"),
+    ("cgst rcm",                 "ocl_cgst_rcm"),
+    ("sgst rcm",                 "ocl_sgst_rcm"),
+    ("igst rcm",                 "ocl_igst_rcm"),
+    ("gst tax",                  "ocl_gst_tax"),
 ]
 
 def _ocl_key_for(account_name: str) -> str | None:
@@ -117,6 +126,11 @@ _STLA_KEYWORD_MAP = [
     ("igst",                     "stla_gst_igst"),
     ("gst tds 2024",             "stla_gst_tds_2425"),
     ("gst tds",                  "stla_gst_tds_2425"),
+    # AS Traders
+    ("gst input",                "stla_gst_input"),
+    ("tcs collection",           "stla_tcs"),
+    ("tds receivable",           "stla_tds"),
+    ("vat receivable",           "stla_vat"),
     ("tcs gst",                  "stla_tcs_gst"),   # must be before generic "gst "
     ("gst refund",               "stla_gst_refund"),
     ("gst ",                     "stla_gst_refund"),
@@ -152,6 +166,11 @@ _FIN_KEYWORD_MAP = [
     ("interest on unsecured",    "fin_unsecured_loan"),
     ("interest to partner",      "other_partner_interest"),   # → other expenses
     ("interest to partners",     "other_partner_interest"),
+    # AS Traders
+    ("intt on tempu",            "fin_tempu_interest"),
+    ("interest on tempu",        "fin_tempu_interest"),
+    ("interest on hdfc bank term","fin_hdfc_tl_interest"),
+    ("interest on hdfc",         "fin_hdfc_tl_interest"),
 ]
 
 def _fin_key_for(account_name: str) -> str | None:
@@ -215,6 +234,14 @@ _OTHER_EXP_KEYWORD_MAP = [
     ("processing fees",          "other_processing_fees"),
     ("professional charges",     "other_professional"),
     ("rent",                     "other_rent"),
+    # AS Traders
+    ("accounting charges",       "other_accounting"),
+    ("account charge",           "other_accounting"),
+    ("sale promotion",           "other_sale_promotion"),
+    ("sales promotion",          "other_sale_promotion"),
+    ("shop exp",                 "other_shop_exp"),
+    ("insurance premium",        "other_insurance"),
+    ("insurance",                "other_insurance"),
 ]
 
 def _other_exp_key_for(account_name: str) -> str | None:
@@ -244,6 +271,12 @@ _LT_KEYWORD_MAP = [
     ("machinery loan 3",         "lt_axis_ml3"),
     ("machinery loan 4",         "lt_axis_ml4"),
     ("richa",                    "lt_unsecured_other"),
+    # AS Traders secured LT
+    ("hdfc bank loan",           "lt_hdfc_loan"),
+    ("hdfc bank tl",             "lt_hdfc_tl"),
+    ("hdfc bank term loan",      "lt_hdfc_tl"),
+    ("hdfc tempu",               "lt_hdfc_tempu"),
+    ("hdfc bank tempu",          "lt_hdfc_tempu"),
 ]
 
 def _lt_key_for(account_name: str) -> str | None:
@@ -393,6 +426,18 @@ def inject_with_config(tb_path: str,
         net = abs(a["net"])
         if net == 0: continue
         name = a["name"]
+
+        # CC A/C overdraft accounts (credit balance) = STB, not LT
+        if "cc a/c" in name.lower() and a.get("net", 0) < 0:
+            for _sk in [k for k in n_cfg if k.startswith("stb_") and "total" not in k]:
+                _e = n_cfg[_sk]
+                if "label" in _e and any(w in _e["label"].lower()
+                                         for w in name.lower().split() if len(w) > 3):
+                    ws_n.cell(_e["row"], cy).value = net
+                    log.append(f"  STB(CC) R{_e['row']} = {net:,.2f}  [{name}]")
+                    break
+            continue  # skip normal LT injection
+
         key  = _lt_key_for(name)
 
         # Ugro ML2 disambiguation: if ML1 already written, use ML2 key
@@ -551,6 +596,30 @@ def inject_with_config(tb_path: str,
                 break
     _ensure_formula(pl_cfg, "other_inc_total", ws_npl, log)
 
+    # Single-row revenue (AS Traders): aggregate all sales into one row
+    if "revenue_total" in pl_cfg and "revenue_grand_total" in pl_cfg:
+        _rev_total = sum(abs(a["net"]) for a in accounts
+                        if a.get("bs_head") == "revenue" and a["net"] < 0)
+        if _rev_total > 0:
+            ws_npl.cell(pl_cfg["revenue_total"]["row"], pl_cy).value = _rev_total
+            log.append(f"  REV aggregate R{pl_cfg['revenue_total']['row']} = {_rev_total:,.2f}")
+            _ensure_formula(pl_cfg, "revenue_grand_total", ws_npl, log)
+
+    # ── 5c. Short-term borrowings — credit-balance bank accounts ──
+    for a in accounts:
+        if abs(a.get("net",0)) == 0: continue
+        if a.get("bs_head") == "cash_bank" and a.get("net",0) < 0:
+            for _sk in [k for k in n_cfg if k.startswith("stb_") and "total" not in k]:
+                _e = n_cfg[_sk]
+                if "label" in _e:
+                    _lbl_words = [w for w in _e["label"].lower().split() if len(w)>3]
+                    if any(w in a["name"].lower() for w in _lbl_words):
+                        ws_n.cell(_e["row"], cy).value = abs(a["net"])
+                        log.append(f"  STB R{_e['row']} = {abs(a['net']):,.2f}  [{a['name']}]")
+                        break
+    for _fk in ["stb_total_a","stb_total_b","stb_total_ab"]:
+        _ensure_formula(n_cfg, _fk, ws_n, log)
+
     # ── 6. Details: Advance from customers ──
     log.append("\n[DET] Advance from customers")
     adv_rows = det.get("advance_cust_rows", [])
@@ -654,13 +723,22 @@ def inject_with_config(tb_path: str,
     stla_written: dict[str, float] = {}
 
     for a in accounts:
-        if a.get("bs_head") != "stla" or abs(a["net"]) == 0: continue
+        # Handle both 'stla' and 'other_current_assets' (TCS, Prepaid etc.)
+        if a.get("bs_head") not in ("stla", "other_current_assets") or abs(a["net"]) == 0: continue
         name = a["name"]
         key  = _stla_key_for(name)
         if not key:
-            log.append(f"  STLA: no key for '{name}'")
+            # Try matching by label in n_cfg for other_current_assets
+            for _k, _e in n_cfg.items():
+                if isinstance(_e, dict) and "label" in _e and "row" in _e:
+                    _lbl = _e["label"].lower().replace("-","").strip()
+                    _words = [w for w in name.lower().split() if len(w) > 3]
+                    if any(w in _lbl for w in _words):
+                        stla_written[_k] = stla_written.get(_k, 0) + abs(a["net"])
+                        break
+            else:
+                log.append(f"  STLA: no key for '{name}'")
             continue
-        # Accumulate (in case multiple accounts map to same row, e.g. CGST+SGST separate rows)
         stla_written[key] = stla_written.get(key, 0) + abs(a["net"])
 
     for key, total in stla_written.items():
@@ -732,6 +810,17 @@ def inject_with_config(tb_path: str,
     # ── 11. GROSS PROFIT: Purchases ──
     log.append("\n[GP] Purchases")
     _PURCH_KEY_MAP = [
+        # AS Traders (must be BEFORE generic patterns that are substrings)
+        ("purchase gst 12% local",       "purch_12_local"),
+        ("purchase gst 18% local",       "purch_18_local"),
+        ("purchase gst 5% local",        "purch_5_local"),
+        ("purchase gst central 0%",      "purch_0_central"),
+        ("purchase gst central 12%",     "purch_12_central"),
+        ("purchase gst central 18%",     "purch_18_central"),
+        ("purchase gst central 5%",      "purch_5_central"),
+        ("purchase gst 0%",              "purch_0_central"),
+        ("freight charges",              "direct_freight"),
+        # Generic patterns
         ("purchase gst 12% interstate",  "purch_12_interstate"),
         ("purchase gst 12% within",      "purch_12_intrastate"),
         ("purchase gst 18%",             "purch_18_intrastate"),
@@ -747,7 +836,7 @@ def inject_with_config(tb_path: str,
         ("rent gst",                     "other_rent"),
     ]
     for a in accounts:
-        if a.get("bs_head") not in ("purchases",): continue
+        if a.get("bs_head") not in ("purchases", "direct_expenses"): continue
         if a["net"] == 0: continue
         name_l = a["name"].lower()
         net    = abs(a["net"])
