@@ -6105,10 +6105,24 @@ async function doProcess(){
   }
 
   btn.disabled=true;sp.style.display='inline-block';bt.textContent='Processing…';
-  showStatus('','');dl.style.display='none';
+  showStatus('info','⏳ Processing — this may take 30–60 seconds for large ZIP files…');
+  dl.style.display='none';
+
+  // Live counter so user knows it's working
+  let _secs=0;
+  const _timer=setInterval(()=>{
+    _secs++;
+    bt.textContent=`Processing… ${_secs}s`;
+  },1000);
+
+  // 3-minute timeout (large ZIPs with many states can take time)
+  const _ctrl=new AbortController();
+  const _tout=setTimeout(()=>_ctrl.abort(),180000);
 
   try{
-    const res=await fetch('/gst-process',{method:'POST',body:fd,credentials:'include'});
+    const res=await fetch('/gst-process',{method:'POST',body:fd,
+      credentials:'include',signal:_ctrl.signal});
+    clearTimeout(_tout);
     const ct=res.headers.get('content-type')||'';
     if(!ct.includes('application/json')){
       showStatus('error','✗ Server error (not JSON). Please try again.');return;
@@ -6116,13 +6130,23 @@ async function doProcess(){
     const data=await res.json();
     if(data.status==='success'){
       const logHtml='<ul class="log-list">'+data.log.map(l=>`<li>${l}</li>`).join('')+'</ul>';
-      showStatus('success','✓ Reconciliation complete!'+logHtml);
+      showStatus('success','✓ Reconciliation complete! ('+_secs+'s)'+logHtml);
       dl.href='/download/'+data.file_id+'?fn='+encodeURIComponent(data.filename);dl.download=data.filename;
       dl.textContent='⬇  Download — '+data.filename;dl.style.display='block';
       toast('Reconciliation done!');
     }else{showStatus('error','✗ '+data.message);}
-  }catch(e){showStatus('error','✗ Network error: '+e.message);}
-  finally{btn.disabled=false;sp.style.display='none';bt.textContent='⚡ Process & Download';}
+  }catch(e){
+    clearTimeout(_tout);
+    if(e.name==='AbortError'){
+      showStatus('error','✗ Timed out after 3 minutes. Try with a smaller ZIP or contact support.');
+    }else{
+      showStatus('error','✗ Network error: '+e.message);
+    }
+  }
+  finally{
+    clearInterval(_timer);
+    btn.disabled=false;sp.style.display='none';bt.textContent='⚡ Process & Download';
+  }
 }
 </script>
 <a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
@@ -6315,35 +6339,48 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
         with zf.ZipFile(gst_zip_path, 'r') as z:
             z.extractall(tmpdir)
 
-        # Walk extracted files looking for PDFs
+        # Collect all PDF paths first
+        pdf_tasks = []
         for root_dir, dirs, files in os.walk(tmpdir):
             for fname in files:
                 if not fname.lower().endswith('.pdf'):
                     continue
                 if 'certificate' in root_dir.lower():
                     continue
-                pdf_path = os.path.join(root_dir, fname)
-                result = _parse_gstr3b_pdf(pdf_path)
+                pdf_tasks.append((os.path.join(root_dir, fname), fname))
+
+        log.append(f"Found {len(pdf_tasks)} GSTR 3B PDFs — parsing in parallel...")
+
+        # Parse all PDFs in parallel (4 workers — keeps memory low on free tier)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        def _parse_task(args):
+            pdf_path, fname = args
+            return fname, _parse_gstr3b_pdf(pdf_path)
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(_parse_task, t): t for t in pdf_tasks}
+            for future in as_completed(futures):
+                try:
+                    fname, result = future.result(timeout=30)
+                except Exception as _e:
+                    log.append(f"  ⚠ PDF parse error: {_e}")
+                    continue
+
                 if result and result['state_code'] and result['period']:
                     sc = result['state_code']
 
                     # ── CRITICAL FIX: derive month from FILENAME not PDF period ──
-                    # Quarterly filers: file "032026.pdf" but PDF says period "Jan"
-                    # (Jan = quarter start for Q4 Jan-Feb-Mar).
-                    # Filename MMYYYY is authoritative for the filing month.
-                    # e.g. GSTR3B_06AACCL_032026.pdf → month=March 2026 → "mar-26"
                     mk = None
-                    fn_base = os.path.splitext(fname)[0]   # "GSTR3B_07AACCL9465D1ZE_032026"
+                    fn_base = os.path.splitext(fname)[0]
                     fn_parts = fn_base.split('_')
-                    fn_mmyyyy = fn_parts[-1] if fn_parts else ''  # "032026"
+                    fn_mmyyyy = fn_parts[-1] if fn_parts else ''
                     if len(fn_mmyyyy) == 6 and fn_mmyyyy.isdigit():
-                        mm   = int(fn_mmyyyy[:2])   # 03
-                        yyyy = int(fn_mmyyyy[2:])   # 2026
+                        mm   = int(fn_mmyyyy[:2])
+                        yyyy = int(fn_mmyyyy[2:])
                         _MNAMES = {1:'January',2:'February',3:'March',4:'April',
                                    5:'May',6:'June',7:'July',8:'August',
                                    9:'September',10:'October',11:'November',12:'December'}
                         fn_period = _MNAMES.get(mm, result['period'])
-                        # Reconstruct FY from YYYY: March 2026 → FY 2025-26
                         fn_fy_start = yyyy - 1 if mm <= 3 else yyyy
                         fn_fy = f"{fn_fy_start}-{str(fn_fy_start+1)[2:]}"
                         mk = _month_key(fn_period, fn_fy)
@@ -6351,15 +6388,12 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
                             log.append(f"  ℹ Quarterly filer: PDF says '{result['period']}' "
                                        f"but filename says {fn_period} → using '{mk}'")
 
-                    # Fallback to PDF period if filename parse failed
                     if not mk:
                         mk = _month_key(result['period'], result['year'] or '')
 
                     if mk:
                         if sc not in gst_data:
                             gst_data[sc] = {}
-                        # Accumulate: quarterly filer may cover multiple months in one PDF
-                        # so we add to existing entry if already present
                         if mk in gst_data[sc]:
                             existing = gst_data[sc][mk]
                             existing['taxable_value'] += result['taxable_value']
@@ -6744,6 +6778,8 @@ def tool_gst_reconciliation():
     return render_template_string(GST_RECON_T, **user_ctx(user))
 
 
+# NOTE: gunicorn timeout should be >= 180s for large ZIPs.
+# In gunicorn.conf.py set: timeout = 180
 @app.route("/gst-process", methods=["POST"])
 @login_required
 def gst_process():
