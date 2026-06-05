@@ -371,6 +371,177 @@ TEMPLATE_CONFIGS = {
             "closing_stock":   {"row": 16, "col": 6},
         },
     },
+
+    # ─────────────────────────────────────────────────────────
+    # A.S. TRADERS (Proprietorship)
+    # ─────────────────────────────────────────────────────────
+    "as_traders": {
+        "name": "A.S. TRADERS",
+        "match_strings": ["A.S. TRADERS", "A.S.TRADERS", "SHIVAM GOEL", "AS TRADERS"],
+
+        "bs": {
+            "col_cy": 5,
+            "col_py": 6,
+            "lt_borrowings":   "='notes to bs'!D22",
+            "stb":             "='notes to bs'!D36",
+            "trade_pay_msme":  "='notes to bs'!D40",
+            "trade_pay_other": "='notes to bs'!D41",
+            "other_cl":        "='notes to bs'!D61",
+            "st_provisions":   "='notes to bs'!D67",
+            "trade_rec":       "='notes to bs'!D90",
+            "cash_bank":       "='notes to bs'!D102",
+            "stla":            "='notes to bs'!D120",
+            "other_ca":        "='notes to bs'!D126",
+        },
+
+        "notes_bs": {
+            "sheet": "notes to bs",
+            "col_cy": 4,
+            "col_py": 5,
+
+            # LT Borrowings (secured)
+            "lt_hdfc_loan":    {"row": 8,  "label": "-HDFC Bank Loan"},
+            "lt_hdfc_tl":      {"row": 9,  "label": "-HDFC Bank Term loan"},
+            "lt_hdfc_tempu":   {"row": 10, "label": "-HDFC Bank Tempu Loan"},
+            "lt_total_a":      {"row": 13, "formula": "=SUM(D8:D12)"},
+            "lt_unsecured_rel":{"row": 18, "formula": "=Details!D16"},
+            "lt_unsecured_oth":{"row": 19, "formula": "=Details!D22"},
+            "lt_total_b":      {"row": 21, "formula": "=SUM(D18:D20)"},
+            "lt_total_ab":     {"row": 22, "formula": "=+D21+D13"},
+
+            # Short-term borrowings
+            "stb_hdfc_cc":     {"row": 28, "label": "HDFC Bank CC A/c"},
+            "stb_total_a":     {"row": 31, "formula": "=SUM(D28:D30)"},
+            "stb_total_b":     {"row": 35, "formula": "=SUM(D34:D34)"},
+            "stb_total_ab":    {"row": 36, "formula": "=+D35+D31"},
+
+            # OCL
+            "ocl_shree_ganesh":{"row": 56, "label": "Shree Ganesh Ji"},
+            "ocl_accounts_fees":{"row": 57,"label": "Account fees Payable"},
+            "ocl_cgst_rcm":    {"row": 58, "label": "CGST RCM Payable"},
+            "ocl_sgst_rcm":    {"row": 59, "label": "SGST RCM Payable"},
+            "ocl_igst_rcm":    {"row": 60, "label": "IGST RCM Payable"},
+            "ocl_total":       {"row": 61, "formula": "=SUM(D56:D60)"},
+
+            # Trade Receivables
+            "trade_rec_lt6_unsecured": {"row": 80, "formula": "=Details!D178"},
+            "trade_rec_gt6_unsecured": {"row": 86, "formula": "=Details!D183"},
+            "trade_rec_total_a":       {"row": 82, "formula": "=SUM(D79:D81)"},
+            "trade_rec_total_b":       {"row": 88, "formula": "=SUM(D85:D87)"},
+            "trade_rec_total_ab":      {"row": 90, "formula": "=D82+D88"},
+
+            # Cash & Bank
+            "cash_in_hand":    {"row": 95, "label": "(a) Cash on hand"},
+            "bank_hdfc_82120": {"row": 99, "label": "(a) HDFC Bank "},
+            "bank_hdfc_98637": {"row": 100,"label": "(b) HDFC Bank CC A/c 98637"},
+            "cash_total_a":    {"row": 96, "formula": "=SUM(D95:D95)"},
+            "cash_total_b":    {"row": 101,"formula": "=SUM(D99:D100)"},
+            "cash_total_ab":   {"row": 102,"formula": "=D96+D101"},
+
+            # STLA
+            "stla_gst_input":  {"row": 115,"label": "-GST Input"},
+            "stla_tcs":        {"row": 116,"label": "-TCS Collection"},
+            "stla_tds":        {"row": 117,"label": "-TDS Receivable"},
+            "stla_vat":        {"row": 118,"label": "-VAT"},
+            "stla_loans_rel":  {"row": 110,"formula": "=D109"},
+            "stla_loans_oth":  {"row": 113,"formula": "=D112"},
+            "stla_total_c":    {"row": 119,"formula": "=SUM(D115:D118)"},
+            "stla_total_abc":  {"row": 120,"formula": "=D110+D113+D119"},
+
+            # Other Current Assets
+            "oca_prepaid":     {"row": 124,"label": "Prepaid Insurance"},
+            "oca_total":       {"row": 126,"formula": "=SUM(D124:D125)"},
+        },
+
+        "notes_pl": {
+            "sheet": "notes to p&l",
+            "col_cy": 4,
+            "col_py": 5,
+
+            # Revenue
+            "revenue_total":          {"row": 6},   # aggregate all sales into one row
+            "revenue_grand_total":    {"row": 8, "formula": "=D6"},
+
+            # Other Income
+            "other_inc_rebate":       {"row": 12},
+            "other_inc_total":        {"row": 14, "formula": "=SUM(D12:D13)"},
+
+            # CoM
+            "com_opening_stock":      {"row": 19},
+            "purch_12_local":         {"row": 22},
+            "purch_18_local":         {"row": 23},  # mapped to closest row
+            "purch_5_local":          {"row": 24},
+            "purch_12_central":       {"row": 25},
+            "purch_18_central":       {"row": 26},
+            "purch_5_central":        {"row": 27},
+            "purch_0_central":        {"row": 28},
+            "purch_0_local":          {"row": 29},
+            "direct_freight":         {"row": 32},
+            "com_closing_stock":      {"row": 34},
+            "com_total":              {"row": 36, "formula": "=SUM(D19:D33)-D34"},
+
+            # Employee
+            "emp_salary":             {"row": 41},
+            "emp_bonus":              {"row": 42},
+            "emp_welfare":            {"row": 43},
+            "emp_total":              {"row": 44, "formula": "=SUM(D41:D43)"},
+
+            # Finance
+            "fin_bank_interest":      {"row": 48},
+            "fin_tempu_interest":     {"row": 49},
+            "fin_hdfc_tl_interest":   {"row": 50},
+            "fin_total":              {"row": 51, "formula": "=SUM(D48:D50)"},
+
+            # Other Expenses
+            "other_accounting":       {"row": 68},
+            "other_bank_charges":     {"row": 69},
+            "other_electricity":      {"row": 70},
+            "other_insurance":        {"row": 71},
+            "other_petrol":           {"row": 72},
+            "other_processing_fees":  {"row": 73},
+            "other_sale_promotion":   {"row": 74},
+            "other_shop_exp":         {"row": 75},
+            "other_repair":           {"row": 76},
+            "other_rebate":           {"row": 77},
+            "other_rent":             {"row": 78},
+            "other_telephone":        {"row": 79},
+            "other_travelling":       {"row": 80},
+            "other_total":            {"row": 82, "formula": "=SUM(D68:D81)"},
+        },
+
+        "details": {
+            "sheet": "Details",
+            "col_cy": 4,
+            "col_py": 5,
+
+            # Unsecured loans from related parties (D7-D15, total D16)
+            "loan_related_rows":     list(range(7, 16)),
+            "loan_related_total":    {"row": 16, "formula": "=SUM(D7:D15)"},
+            "loan_other_rows":       [19],
+            "loan_other_total":      {"row": 22, "formula": "=SUM(D19:D21)"},
+
+            # Sundry Creditors (D28-D42, total D52)
+            "creditor_rows":         list(range(28, 43)),
+            "creditor_sum":          {"row": 52, "formula": "=SUM(D28:D51)"},
+            "creditor_msme_total":   {"row": 54, "formula": "=SUM(D54:D54)"},
+            "creditor_grand_total":  {"row": 57, "formula": "=D52+D54"},
+            "advance_cust_rows":     [43, 44, 45, 46, 47, 48, 49, 50],
+
+            # Trade Rec lt6 — CY debtors at D91-D176 (many rows)
+            "debtor_lt6_rows":       list(range(91, 177)),
+            "debtor_lt6_total":      {"row": 178},
+            "debtor_gt6_rows":       [181],
+            "debtor_gt6_total":      {"row": 183},
+        },
+
+        "gross_profit": {
+            "sheet": "GROSS PROFIT",
+            "col_sales_cy": 5,
+            "col_sales_py": 6,
+            "col_purch_cy": 2,
+            "col_purch_py": 3,
+        },
+    },
 }
 
 
