@@ -7326,11 +7326,11 @@ def _rollover_fixed_assets(output_path, cy_year, log):
         if "01.04" in row_str or "31.03" in row_str:
             date_row = r
 
-        if "greater" in row_str and "180" in row_str:
+        if "greater" in row_str or ("addition" in row_str and "sale" in row_str):
             data_start = r + 1
             for ci, v in enumerate(vals, 1):
-                if "greater" in v and "180" in v: ag_col = ci
-                elif "less" in v and "180" in v:   al_col = ci
+                if "greater" in v: ag_col = ci
+                elif "less" in v and v != "less":   al_col = ci
                 elif v in ("sale", "sales"):        sl_col = ci
 
     # ── Collect all resolved values from CY sheet ─────────────────────────
