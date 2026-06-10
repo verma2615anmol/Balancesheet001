@@ -528,8 +528,8 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
                     "cy_profit":     cy_vals_cap.get(6),
                     "cy_closing":    cy_vals_cap.get(7),
                 }
-    finally:
-        wb2.close()
+    except Exception:
+        pass
 
     return sizes, shift_map, cy_values, cy_formulas, cap_data
 
@@ -589,9 +589,25 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                     # is currently a formula.
                     changes[ref] = ("set_v_overwrite", _fmt_num(vals[rn]))
                 else:
-                    # BUG 6 FIX: CY is empty for this row — clear the PY cell
-                    # so stale PY data (like old FDR amounts) doesn't persist
-                    changes[ref] = ("clear_v", None)
+                    # BUG 6 FIX: Only clear PY cell when CY cell is TRULY empty
+                    # (has no <v> tag at all). Skip if CY has a string value
+                    # (shared string ref like date headers) — those get updated
+                    # by _update_inline_strings separately.
+                    cy_ref = f"{cy_l}{rn}"
+                    cy_cell_el = None
+                    for _row_el in sd:
+                        for _cell_el in _row_el:
+                            if _cell_el.get("r") == cy_ref:
+                                cy_cell_el = _cell_el
+                                break
+                        if cy_cell_el is not None: break
+                    # Only clear PY if CY cell has NO value at all
+                    cy_has_any_value = (
+                        cy_cell_el is not None and
+                        cy_cell_el.find(f"{{{_NS}}}v") is not None
+                    )
+                    if not cy_has_any_value:
+                        changes[ref] = ("clear_v", None)
 
             if cl in cy_letters:
                 _, vals, frows = col_info[cl]
