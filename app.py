@@ -7313,7 +7313,7 @@ def _rollover_fixed_assets(output_path, cy_year, log):
     ws_cy_do = wb_do[cy_sn]
 
     # ── Detect column positions from header rows ──────────────────────────
-    ag_col = 3; al_col = 4; sl_col = 5; date_row = 7; data_start = 9
+    ag_col = 3; al_col = 4; sl_col = 5; rt_col = 7; date_row = 7; data_start = 9
 
     for r in range(1, 15):
         vals = []
@@ -7332,6 +7332,7 @@ def _rollover_fixed_assets(output_path, cy_year, log):
                 if "greater" in v: ag_col = ci
                 elif "less" in v and v != "less":   al_col = ci
                 elif v in ("sale", "sales"):        sl_col = ci
+                elif v in ("%", "rate", "rate %"):  rt_col = ci
 
     # ── Collect all resolved values from CY sheet ─────────────────────────
     cy_all_rows = {}
@@ -7391,27 +7392,26 @@ def _rollover_fixed_assets(output_path, cy_year, log):
             log.append(f"\u26a0 FA PY dates: {_e}")
 
     # ── Step 2: Clear additions and sale in CY ────────────────────────────
+    # Only clear rows that are actual ASSET rows, identified by having a numeric
+    # value in the RATE column (rt_col) — category headers and blank rows have no rate.
     cleared = 0
-    for r in range(data_start, ws_cy.max_row + 1):
-        nm_cell = ws_cy.cell(r, 1)
-        if isinstance(nm_cell, _MC): continue
-        nm = str(nm_cell.value or "").strip()
-        if not nm or len(nm) < 2: continue
-        if nm.lower() in ("total", "grand total"): continue
-        # Only process rows that have numeric data in the relevant columns
-        # Clear additions and sale for every actual asset row
-        # Guard: skip header/category rows (no numeric data in ANY column 2-9)
-        has_any_num = any(
-            isinstance(ws_cy.cell(r, c).value, (int, float))
-            for c in range(2, 10)
-        )
-        if not has_any_num: continue
+    for r in range(1, ws_cy.max_row + 1):
+        # Asset row = has a numeric RATE value (15, 10, 40, 0 etc.)
+        rate_cell = ws_cy.cell(r, rt_col)
+        if isinstance(rate_cell, _MC): continue
+        if not isinstance(rate_cell.value, (int, float)): continue
+
+        # Skip total rows
+        nm = str(ws_cy.cell(r, 1).value or "").strip().lower()
+        if nm in ("total", "grand total"): continue
+
+        # Clear additions (ag_col, al_col) and sale (sl_col) — blank for new year
         for col in [ag_col, al_col, sl_col]:
             cell = ws_cy.cell(r, col)
             if isinstance(cell, _MC): continue
-            v = cell.value
-            if v is not None:  # clear both zero and non-zero values
-                cell.value = None; cleared += 1
+            if cell.value is not None:
+                cell.value = None
+                cleared += 1
 
     # ── Step 3: Update CY dates ───────────────────────────────────────────
     try:
