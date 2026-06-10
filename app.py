@@ -7280,16 +7280,20 @@ def tb_read_bs():
 
 def _rollover_fixed_assets(output_path, cy_year, log):
     """
-    Year-end Fixed Assets rollover:
-    1. Read closing WDV from PY sheet col 9 (authoritative source)
-    2. CY sheet: set opening WDV = PY closing, clear additions/sale, update dates
-    3. PY sheet: copy complete CY data, write computed closing WDV, update dates
+    Year-end Fixed Assets rollover — works with ANY template structure:
+
+    1. FA P. Yr.: overwrite entirely with resolved values from FA C. Yr.
+       (direct copy of actuals — no WDV computation needed)
+    2. FA C. Yr.: clear additions (>180d, <180d) and sale columns for every
+       asset row; opening stays (formula to PY closing auto-recalculates)
+    3. Update date headers in both sheets
     """
     from openpyxl import load_workbook as _lwb
     from openpyxl.cell import MergedCell as _MC
     import re as _re
 
-    wb = _lwb(output_path)
+    wb    = _lwb(output_path)
+    wb_do = _lwb(output_path, data_only=True)
 
     # ── Find FA sheets ────────────────────────────────────────────────────
     cy_sn = py_sn = None
@@ -7303,130 +7307,77 @@ def _rollover_fixed_assets(output_path, cy_year, log):
 
     if not cy_sn:
         log.append("\u26a0 FA C.Yr. sheet not found")
-        wb.close(); return
+        wb.close(); wb_do.close(); return
 
-    ws_cy = wb[cy_sn]
+    ws_cy    = wb[cy_sn]
+    ws_cy_do = wb_do[cy_sn]
 
-    # ── Detect column layout from header rows ────────────────────────────
-    op_col = 2; cl_col = 9; ag_col = 3; al_col = 4; sl_col = 5; rt_col = 7
-    dt_row = 7; d_start = 9
+    # ── Detect column positions from header rows ──────────────────────────
+    ag_col = 3; al_col = 4; sl_col = 5; date_row = 7; data_start = 9
 
-    for r in range(1, 12):
+    for r in range(1, 15):
         vals = []
         for c in range(1, 12):
             cell = ws_cy.cell(r, c)
-            vals.append("" if isinstance(cell, _MC) else str(cell.value or "").lower().strip())
-        rs = " ".join(vals)
-        if _re.search(r"01[./]04[./]\d{2,4}", rs):
-            dt_row = r
-            for ci, v in enumerate(vals, 1):
-                if _re.search(r"01[./]04", v): op_col = ci
-                if _re.search(r"31[./]03", v): cl_col = ci
-        if "particular" in rs and "addition" in rs:
-            d_start = r + 1
+            v = "" if isinstance(cell, _MC) else str(cell.value or "").lower().strip()
+            vals.append(v)
+        row_str = " ".join(vals)
+
+        if "01.04" in row_str or "31.03" in row_str:
+            date_row = r
+
+        if "greater" in row_str and "180" in row_str:
+            data_start = r + 1
             for ci, v in enumerate(vals, 1):
                 if "greater" in v and "180" in v: ag_col = ci
-                elif "less" in v and "180" in v:  al_col = ci
-                elif v in ("sale", "sales"):       sl_col = ci
-                elif v in ("%", "rate"):           rt_col = ci
+                elif "less" in v and "180" in v:   al_col = ci
+                elif v in ("sale", "sales"):        sl_col = ci
 
-    # ── Read PY closing WDV (col 9 = authoritative closing of PY year) ──
-    py_closing = {}  # {name_lower: closing_wdv}
-    if py_sn:
-        wb_do = _lwb(output_path, data_only=True)
-        ws_py_do = wb_do[py_sn]
-        # Find closing col in PY sheet
-        py_cl_col = 9
-        for r in range(1, 10):
-            rs2 = " ".join(str(ws_py_do.cell(r,c).value or "").lower() for c in range(1,12))
-            if _re.search(r"31[./]03[./]\d{2,4}", rs2):
-                for ci in range(1, 12):
-                    v2 = str(ws_py_do.cell(r, ci).value or "").lower()
-                    if _re.search(r"31[./]03", v2):
-                        py_cl_col = ci
-                        break
-                break
-        _skip = {"total","grand total","particular","w.d.v","amount","addition",
-                 "depreciation","rate","as on","detail","property"}
-        for r in range(1, 50):
-            nm = str(ws_py_do.cell(r, 1).value or "").strip()
-            if not nm or len(nm) < 2: continue
-            if nm.lower() in ("total","grand total"): continue
-            if nm.isupper() and not any(isinstance(ws_py_do.cell(r,c).value,(int,float))
-                                        for c in range(2,py_cl_col+1)): continue
-            if any(sw in nm.lower() for sw in _skip): continue
-            cv = ws_py_do.cell(r, py_cl_col).value
-            if isinstance(cv, (int, float)):
-                py_closing[nm.lower().strip()] = float(cv)
-        wb_do.close()
+    # ── Collect all resolved values from CY sheet ─────────────────────────
+    cy_all_rows = {}
+    for r in range(1, ws_cy.max_row + 1):
+        row_data = {}
+        for c in range(1, ws_cy.max_column + 1):
+            cy_c  = ws_cy.cell(r, c)
+            cy_do = ws_cy_do.cell(r, c)
+            if isinstance(cy_c, _MC): continue
+            v_raw = cy_c.value
+            v_do  = cy_do.value
+            if v_raw is None: continue
+            if isinstance(v_do, (int, float)):
+                row_data[c] = v_do
+            elif isinstance(v_raw, str) and not v_raw.startswith("="):
+                row_data[c] = v_raw
+            elif isinstance(v_raw, str) and v_raw.startswith("="):
+                if isinstance(v_do, (int, float)):
+                    row_data[c] = v_do
+                elif v_do is not None:
+                    row_data[c] = v_do
+        if row_data:
+            cy_all_rows[r] = row_data
 
-    # ── Compute closing WDV for CY assets ────────────────────────────────
-    def _gv(r, c):
-        cell = ws_cy.cell(r, c)
-        if isinstance(cell, _MC): return 0.0
-        v = cell.value
-        return float(v) if isinstance(v, (int, float)) else 0.0
+    wb_do.close()
 
-    cy_closings = {}  # {row: closing_wdv}
-    _skip2 = {"total","grand total","particular","amount","w.d.v","addition",
-              "depreciation","rate","as on","detail of fixed"}
-
-    for r in range(d_start, ws_cy.max_row + 1):
-        nm_cell = ws_cy.cell(r, 1)
-        if isinstance(nm_cell, _MC): continue
-        nm = str(nm_cell.value or "").strip()
-        if not nm or len(nm) < 2: continue
-        if nm.lower().strip() in ("total","grand total"): break
-        if any(sw in nm.lower() for sw in _skip2): continue
-        if nm.isupper():
-            if not any(isinstance(ws_cy.cell(r,c).value,(int,float))
-                       for c in range(2, cl_col+1)): continue
-
-        # Opening WDV: use PY closing (most accurate) else CY col B
-        opening = py_closing.get(nm.lower().strip(), None)
-        if opening is None:
-            v = ws_cy.cell(r, op_col).value
-            opening = float(v) if isinstance(v,(int,float)) else 0.0
-
-        ag = _gv(r, ag_col); al = _gv(r, al_col)
-        sl = _gv(r, sl_col); rt = _gv(r, rt_col)
-        if opening == 0 and ag == 0 and al == 0: continue
-
-        total    = opening + ag + al - sl
-        dep_base = opening + ag + al*0.5 - sl*0.5
-        dep      = round(max(dep_base * rt / 100.0, 0), 2) if rt > 0 else 0.0
-        closing  = round(max(total - dep, 0), 2)
-        cy_closings[r] = closing
-
-    # ── Step 1: Update PY with FY2025 data (asset-by-asset match) ───────
+    # ── Step 1: Overwrite PY with CY actuals ──────────────────────────────
     if py_sn:
         ws_py = wb[py_sn]
-        for r, wdv_close in cy_closings.items():
-            nm_cy = str(ws_cy.cell(r, 1).value or "").strip().lower()
-            # Find matching row in PY by asset name
-            py_row = None
-            for pr in range(1, ws_py.max_row + 1):
-                if str(ws_py.cell(pr, 1).value or "").strip().lower() == nm_cy and nm_cy:
-                    py_row = pr; break
-            if py_row is None: continue
-            # PY opening = FY2025 opening = FY2024 closing (from py_closing)
-            opening_fy25 = py_closing.get(nm_cy, 0.0)
-            add_gt = _gv(r, ag_col); add_lt = _gv(r, al_col); sale = _gv(r, sl_col)
-            # Write FY2025 data to PY row
-            oc = ws_py.cell(py_row, op_col)
-            if not isinstance(oc, _MC): oc.value = round(opening_fy25, 2)
-            for col, val in [(ag_col, add_gt), (al_col, add_lt), (sl_col, sale)]:
-                pc = ws_py.cell(py_row, col)
-                if not isinstance(pc, _MC):
-                    pc.value = round(val, 2) if val else None
-            cc = ws_py.cell(py_row, cl_col)
-            if not isinstance(cc, _MC): cc.value = round(wdv_close, 2)
-
-        # Update PY dates: one year before CY
+        # Clear existing PY data
+        for r in range(1, ws_py.max_row + 1):
+            for c in range(1, ws_py.max_column + 1):
+                cell = ws_py.cell(r, c)
+                if not isinstance(cell, _MC) and cell.value is not None:
+                    cell.value = None
+        # Write CY resolved values to PY
+        for r, row_data in cy_all_rows.items():
+            for c, val in row_data.items():
+                py_cell = ws_py.cell(r, c)
+                if not isinstance(py_cell, _MC):
+                    py_cell.value = val
+        # Update PY dates (one year back)
         try:
-            py_oy = int(cy_year) - 2   # e.g. 2024
-            py_cy2 = int(cy_year) - 1  # e.g. 2025
-            for r in range(1, 30):
+            py_oy  = int(cy_year) - 2
+            py_cy2 = int(cy_year) - 1
+            for r in range(1, min(ws_py.max_row + 1, 15)):
                 for c in range(1, 12):
                     cell = ws_py.cell(r, c)
                     if isinstance(cell, _MC): continue
@@ -7439,24 +7390,38 @@ def _rollover_fixed_assets(output_path, cy_year, log):
         except Exception as _e:
             log.append(f"\u26a0 FA PY dates: {_e}")
 
-    # ── Step 2: Update CY sheet ──────────────────────────────────────────
-    for r, wdv in cy_closings.items():
-        # a) Set opening WDV = PY closing WDV
-        oc = ws_cy.cell(r, op_col)
-        if not isinstance(oc, _MC): oc.value = round(wdv, 2)
-        # b) Clear additions and sale
+    # ── Step 2: Clear additions and sale in CY ────────────────────────────
+    cleared = 0
+    for r in range(data_start, ws_cy.max_row + 1):
+        nm_cell = ws_cy.cell(r, 1)
+        if isinstance(nm_cell, _MC): continue
+        nm = str(nm_cell.value or "").strip()
+        if not nm or len(nm) < 2: continue
+        if nm.lower() in ("total", "grand total"): continue
+        # Only process rows that have numeric data in the relevant columns
+        has_nonzero = any(
+            isinstance(ws_cy.cell(r, c).value, (int, float)) and ws_cy.cell(r, c).value != 0
+            for c in [ag_col, al_col, sl_col]
+        )
+        has_formula = any(
+            isinstance(ws_cy.cell(r, c).value, str) and ws_cy.cell(r, c).value.startswith("=")
+            for c in [ag_col, al_col, sl_col]
+        )
+        if not has_nonzero and not has_formula: continue
         for col in [ag_col, al_col, sl_col]:
             cell = ws_cy.cell(r, col)
             if isinstance(cell, _MC): continue
-            if isinstance(cell.value, str) and cell.value.startswith("="): continue
-            cell.value = None
+            v = cell.value
+            if isinstance(v, (int, float)) and v != 0:
+                cell.value = None; cleared += 1
+            elif isinstance(v, str) and v.startswith("="):
+                cell.value = None; cleared += 1
 
-    # c) Update CY dates directly using detected positions
+    # ── Step 3: Update CY dates ───────────────────────────────────────────
     try:
-        new_oy = int(cy_year) - 1   # e.g. 2025
-        new_cy = int(cy_year)       # e.g. 2026
-        # Write directly to known date positions
-        for r in range(1, max(d_start, dt_row) + 2):
+        new_oy = int(cy_year) - 1
+        new_cy = int(cy_year)
+        for r in range(1, max(date_row, data_start) + 2):
             for c in range(1, 12):
                 cell = ws_cy.cell(r, c)
                 if isinstance(cell, _MC): continue
@@ -7465,13 +7430,14 @@ def _rollover_fixed_assets(output_path, cy_year, log):
                     cell.value = f"01.04.{new_oy}"
                 elif _re.fullmatch(r"\d{1,2}[./]03[./]\d{4}", v):
                     cell.value = f"31.03.{new_cy}"
-        log.append(f"\u2713 FA CY: {len(cy_closings)} assets | 01.04.{new_oy} \u2192 31.03.{new_cy}")
+        log.append(f"\u2713 FA CY: {cleared} cleared | 01.04.{new_oy} \u2192 31.03.{new_cy}")
     except Exception as _de:
         log.append(f"\u26a0 FA CY dates: {_de}")
 
     wb.save(output_path)
     wb.close()
-    log.append(f"\u2713 FA rollover done: {len(cy_closings)} assets")
+    log.append(f"\u2713 FA rollover complete")
+
 
 def _inject_cap_fa(output_path, cap_entries, fa_entries, log):
     """Inject user-entered Capital A/c and Fixed Assets values into the output BS."""
