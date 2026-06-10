@@ -58,6 +58,9 @@ TEXT_ONLY_SHEETS = {s.strip().lower() for s in [
     "acc policies",
 ]}
 
+# Capital sheets need special year-shift logic (Bugs 4 & 5)
+CAPITAL_SHEET_NAMES = {"capital"}
+
 # Sheets whose data must never be touched (raw transaction dumps etc.)
 RAW_DATA_SHEETS = {s.strip().lower() for s in [
     "new trial", "summary trial", "purchase report", "sale report",
@@ -444,7 +447,91 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
     finally:
         wb.close()
 
-    return sizes, shift_map, cy_values, cy_formulas
+    # ── Step 4: Scan capital sheet for CY/PY row data (Bugs 4 & 5) ──────
+    cap_data = {}
+    wb2 = load_workbook(filepath, read_only=True, data_only=True)
+    try:
+        for sn in wb2.sheetnames:
+            if sn.strip().lower() not in CAPITAL_SHEET_NAMES:
+                continue
+            ws_cap = wb2[sn]
+            # Find CY data row: row with Name of Proprietor + opening balance
+            # and PY row: row starting with "Previous Year (PY)"
+            cy_row = py_row = None
+            cy_vals_cap = {}
+            py_vals_cap = {}
+            # First pass: find cy_row (proprietor name + numeric data)
+            # (done in second pass below — collect PY AFTER cy_row)
+            # Temporary: scan for cy_row first, then find py_row after it
+            _cy_row_tmp = None
+            for row in ws_cap.iter_rows(min_row=1, max_row=50):
+                for cell in row:
+                    if isinstance(cell, MergedCell): continue
+                    v = cell.value
+                    if isinstance(v, (int, float)) and cell.column >= 3:
+                        nm = ws_cap.cell(cell.row, 2).value
+                        if nm and isinstance(nm, str) and len(nm.strip()) > 2:
+                            if nm.strip().lower() not in ("name of proprietor",
+                                                           "particulars", "sr. no."):
+                                _cy_row_tmp = cell.row
+                                break
+                if _cy_row_tmp:
+                    break
+
+            # Find PY row: first "Previous Year" text AFTER cy_row
+            for row in ws_cap.iter_rows(min_row=(_cy_row_tmp or 1), max_row=50):
+                for cell in row:
+                    if isinstance(cell, MergedCell): continue
+                    v = cell.value
+                    if isinstance(v, str):
+                        vl = v.strip().lower()
+                        if "previous year" in vl or vl in ("py",):
+                            py_row = cell.row
+                            break
+                if py_row:
+                    break
+
+            # Second pass: find CY data row (proprietor name in col 2 + numeric data)
+            for row in ws_cap.iter_rows(min_row=1, max_row=50):
+                for cell in row:
+                    if isinstance(cell, MergedCell): continue
+                    v = cell.value
+                    if isinstance(v, (int, float)) and cell.column >= 3:
+                        nm = ws_cap.cell(cell.row, 2).value
+                        if nm and isinstance(nm, str) and len(nm.strip()) > 2:
+                            if nm.strip().lower() not in ("name of proprietor",
+                                                           "particulars", "sr. no."):
+                                cy_row = cell.row
+                                break
+                if cy_row:
+                    break
+
+            if cy_row:
+                for col_num in range(3, 9):
+                    v = ws_cap.cell(cy_row, col_num).value
+                    if isinstance(v, (int, float)):
+                        cy_vals_cap[col_num] = float(v)
+
+            if py_row:
+                for col_num in range(3, 9):
+                    v = ws_cap.cell(py_row, col_num).value
+                    if isinstance(v, (int, float)):
+                        py_vals_cap[col_num] = float(v)
+
+            if cy_vals_cap:
+                cap_data[sn] = {
+                    "cy_row":        cy_row,
+                    "py_row":        py_row,
+                    "cy_opening":    cy_vals_cap.get(3),
+                    "cy_introduced": cy_vals_cap.get(4),
+                    "cy_withdrawals":cy_vals_cap.get(5),
+                    "cy_profit":     cy_vals_cap.get(6),
+                    "cy_closing":    cy_vals_cap.get(7),
+                }
+    finally:
+        wb2.close()
+
+    return sizes, shift_map, cy_values, cy_formulas, cap_data
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -499,10 +586,12 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                 py_l, vals, frows = col_info[cy_l]
                 if rn in vals:
                     # BUG 3 FIX: Write CY value to PY cell even if PY cell
-                    # is currently a formula. PY column should be hardcoded
-                    # actuals (last year's numbers), not live formula refs.
-                    # This also fixes BS E→F where both cols are formulas.
+                    # is currently a formula.
                     changes[ref] = ("set_v_overwrite", _fmt_num(vals[rn]))
+                else:
+                    # BUG 6 FIX: CY is empty for this row — clear the PY cell
+                    # so stale PY data (like old FDR amounts) doesn't persist
+                    changes[ref] = ("clear_v", None)
 
             if cl in cy_letters:
                 _, vals, frows = col_info[cl]
@@ -515,7 +604,25 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                         # Constant cell: remove <v> entirely
                         changes[ref] = ("clear_v", None)
 
-    if not changes:
+    # BUG 1 FIX: Build insertions dict for PY cells that don't exist in XML
+    # These are CY values where there's no existing PY <c> element to overwrite
+    insertions = {}  # {row_num: {py_letter: val_str}}
+    existing_py_refs = set()
+    for row_el in sd:
+        for cell_el in row_el:
+            ref = cell_el.get("r", "")
+            m2 = _COL_RE.match(ref)
+            if m2 and m2.group(1) in py_letters:
+                existing_py_refs.add(ref)
+
+    for cy_l, (py_l, vals, frows) in col_info.items():
+        for rn, val in vals.items():
+            py_ref = f"{py_l}{rn}"
+            if py_ref not in existing_py_refs:
+                # PY cell doesn't exist — need to insert it
+                insertions.setdefault(rn, {})[py_l] = _fmt_num(val)
+
+    if not changes and not insertions:
         return xml_bytes
 
     # Apply changes via regex on the raw text — row by row for safety
@@ -541,8 +648,12 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
         elif action in ("set_v", "set_v_overwrite"):
             if action == "set_v_overwrite":
                 # Remove any <f>...</f> formula tag first (convert formula → value)
-                full = re.sub(r'<f[^>]*>.*?</f>', '', full, flags=re.DOTALL)
-                full = re.sub(r'<f[^>]*/>', '', full)
+                full = re.sub(r'<f\b[^>]*>.*?</f>', '', full, flags=re.DOTALL)
+                full = re.sub(r'<f\b[^>]*/>', '', full)
+            # BUG 1 FIX: self-closing empty cells (<c r="E16" s="814"/>) end with />
+            # not </c>, so replace('</c>', ...) silently fails. Convert to paired tag.
+            if full.rstrip().endswith('/>'):
+                full = re.sub(r'/>\s*$', '></c>', full.rstrip())
             if '<v>' in full:
                 full = re.sub(r'<v>[^<]*</v>', f'<v>{new_val}</v>', full)
             else:
@@ -558,6 +669,22 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
             r'<c\b[^>]*/>\s*|<c\b[^>]*>.*?</c>\s*',
             _fix_cell, row_xml, flags=re.DOTALL
         )
+        # BUG 1 FIX: Insert new PY cells for rows where PY cell doesn't exist in XML
+        # Get current row number from the row element
+        row_num_m = re.search(r'<row\b[^>]*\br="(\d+)"', row_xml)
+        if row_num_m:
+            rn = int(row_num_m.group(1))
+            if rn in insertions:
+                # For each PY letter that needs a new cell in this row
+                existing_refs = set(re.findall(r'r="([A-Z]+\d+)"', row_xml))
+                new_cells = ""
+                for py_l, val_str in sorted(insertions[rn].items(),
+                                            key=lambda x: _col_idx(x[0])):
+                    ref = f"{py_l}{rn}"
+                    if ref not in existing_refs:
+                        new_cells += f'<c r="{ref}"><v>{val_str}</v></c>'
+                if new_cells:
+                    row_xml = row_xml.replace("</row>", new_cells + "</row>")
         return row_xml
 
     text = re.sub(r'<row\b[^>]*>.*?</row>', _fix_row, text, flags=re.DOTALL)
@@ -574,6 +701,110 @@ def _fmt_num_for_py(v: float) -> str:
     """Format CY value for writing to PY cell. Zero stays as zero (not dash) 
     because PY column may have its own dash formatting via cell format."""
     return _fmt_num(v)
+
+
+def _process_capital_sheet(xml_bytes: bytes, cap_data: dict) -> bytes:
+    """
+    Special handler for capital sheet (Bugs 4 & 5):
+    
+    cap_data keys:
+      cy_opening, cy_introduced, cy_withdrawals, cy_profit, cy_closing (= new opening)
+      cy_row, py_row  (row numbers of CY data row and PY data row)
+      cy_col_opening(3), cy_col_introduced(4), cy_col_withdrawals(5),
+      cy_col_profit(6), cy_col_closing(7)
+    
+    Actions:
+      1. PY row: overwrite with old CY values
+      2. CY row: set opening = old CY closing, CLEAR introduced/withdrawals/profit
+    """
+    if not cap_data:
+        return xml_bytes
+
+    # Build changes dict: {cell_ref: ("set_v_overwrite", val) | ("clear_v", None)}
+    changes = {}
+
+    cy_row = cap_data.get("cy_row")
+    py_row = cap_data.get("py_row")
+
+    col_map = {
+        3: "opening",
+        4: "introduced",
+        5: "withdrawals",
+        6: "profit",
+        7: "closing",
+    }
+
+    if py_row:
+        # PY row: overwrite with old CY values
+        for col_num, key in col_map.items():
+            col_letter = get_column_letter(col_num)
+            ref = f"{col_letter}{py_row}"
+            val = cap_data.get(f"cy_{key}")
+            if val is not None:
+                changes[ref] = ("set_v_overwrite", _fmt_num(float(val)))
+            elif key not in ("introduced",):  # keep introduced as-is if missing
+                changes[ref] = ("clear_v", None)
+
+    if cy_row:
+        # CY row: opening = old closing, clear introduced/withdrawals/profit
+        cy_closing = cap_data.get("cy_closing")
+        if cy_closing is not None:
+            changes[f"C{cy_row}"] = ("set_v_overwrite", _fmt_num(float(cy_closing)))
+        # Clear introduced, withdrawals, profit, closing in CY row
+        for col_num in [4, 5, 6, 7]:
+            ref = f"{get_column_letter(col_num)}{cy_row}"
+            changes[ref] = ("clear_v", None)
+
+    if not changes:
+        return xml_bytes
+
+    text = xml_bytes.decode("utf-8", errors="replace")
+
+    def _fix_cap_cell(cm):
+        full = cm.group(0)
+        ref_m = re.search(r'\br="([A-Z]+\d+)"', full)
+        if not ref_m:
+            return full
+        ref = ref_m.group(1)
+        if ref not in changes:
+            return full
+        action, new_val = changes[ref]
+        if action == "clear_v":
+            full = re.sub(r'<v>[^<]*</v>', '', full)
+            full = re.sub(r'<v\s*/>', '', full)
+        elif action == "set_v_overwrite":
+            full = re.sub(r'<f\b[^>]*>.*?</f>', '', full, flags=re.DOTALL)
+            full = re.sub(r'<f\b[^>]*/>', '', full)
+            if '<v>' in full:
+                full = re.sub(r'<v>[^<]*</v>', f'<v>{new_val}</v>', full)
+            else:
+                full = full.replace('</c>', f'<v>{new_val}</v></c>')
+            full = re.sub(r'\s*t="s"', '', full)
+        return full
+
+    def _fix_cap_row(rm):
+        row_xml = rm.group(0)
+        row_xml = re.sub(
+            r'<c\b[^>]*/> *|<c\b[^>]*>.*?</c> *',
+            _fix_cap_cell, row_xml, flags=re.DOTALL
+        )
+        # Insert new cells for refs in changes that didn't exist
+        row_num_m = re.search(r'<row\b[^>]*\br="(\d+)"', row_xml)
+        if row_num_m:
+            rn = int(row_num_m.group(1))
+            existing = set(re.findall(r'r="([A-Z]+\d+)"', row_xml))
+            new_cells = ""
+            for ref, (action, val) in changes.items():
+                r_m = re.match(r'([A-Z]+)(\d+)', ref)
+                if r_m and int(r_m.group(2)) == rn and ref not in existing:
+                    if action == "set_v_overwrite" and val:
+                        new_cells += f'<c r="{ref}"><v>{val}</v></c>'
+            if new_cells:
+                row_xml = row_xml.replace("</row>", new_cells + "</row>")
+        return row_xml
+
+    text = re.sub(r'<row\b[^>]*>.*?</row>', _fix_cap_row, text, flags=re.DOTALL)
+    return text.encode("utf-8")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -764,7 +995,7 @@ def process(input_path: str, output_path: str,
     log   = []
 
     # ── Single-pass scan ──────────────────────────────────────────────────────
-    sizes, shift_map, cy_values, cy_formulas = _scan_workbook(input_path, closing_year)
+    sizes, shift_map, cy_values, cy_formulas, cap_data = _scan_workbook(input_path, closing_year)
     big_names = {n for n, (r, c) in sizes.items() if r > BIG_ROWS or c > BIG_COLS}
 
     ext_count = 0   # track external refs cleaned
@@ -818,6 +1049,16 @@ def process(input_path: str, output_path: str,
                     elif sheet_name and sl in RAW_DATA_SHEETS:
                         # Don't touch raw data sheets at all
                         log.append(f"— {sheet_name}: skipped (raw data sheet)")
+                    elif sheet_name and sheet_name.strip().lower() in CAPITAL_SHEET_NAMES:
+                        # Capital sheet: special CY/PY row shift (Bugs 4 & 5)
+                        cap_info = cap_data.get(sheet_name, {})
+                        if cap_info:
+                            data = _process_capital_sheet(data, cap_info)
+                            log.append(
+                                f"✓ {sheet_name}: capital CY→PY shifted, "
+                                f"CY opening updated, additions/withdrawals cleared"
+                            )
+                        data = _update_inline_strings(data, pairs)
                     elif sheet_name and sheet_name not in big_names:
                         # Small sheet with no CY/PY columns — just update dates
                         data = _update_inline_strings(data, pairs)
