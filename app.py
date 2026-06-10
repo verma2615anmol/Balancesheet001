@@ -7392,14 +7392,39 @@ def _rollover_fixed_assets(output_path, cy_year, log):
             log.append(f"\u26a0 FA PY dates: {_e}")
 
     # ── Step 2: Clear additions and sale in CY ────────────────────────────
-    # Only clear rows that are actual ASSET rows, identified by having a numeric
-    # value in the RATE column (rt_col) — category headers and blank rows have no rate.
+    # Auto-detect rate column if not found in header scan (fallback: scan cols 6-10
+    # for the column that has only numeric values like 10, 15, 20, 25, 40).
+    if rt_col == 7:  # verify rt_col has actual rate values, not just default
+        rate_values_found = sum(
+            1 for r in range(1, min(ws_cy.max_row + 1, 50))
+            if isinstance(ws_cy.cell(r, rt_col).value, (int, float))
+            and ws_cy.cell(r, rt_col).value in (5, 10, 15, 20, 25, 30, 40, 60, 100, 0)
+        )
+        if rate_values_found == 0:
+            # rt_col default didn't work — scan cols 6-10 for rate column
+            for try_col in range(6, 11):
+                cnt = sum(
+                    1 for r in range(1, min(ws_cy.max_row + 1, 50))
+                    if isinstance(ws_cy.cell(r, try_col).value, (int, float))
+                    and ws_cy.cell(r, try_col).value in (5, 10, 15, 20, 25, 30, 40, 60, 100, 0)
+                    and ws_cy.cell(r, try_col).value > 0
+                )
+                if cnt >= 2:
+                    rt_col = try_col
+                    log.append(f"  FA: rate col auto-corrected to C{rt_col}")
+                    break
+
     cleared = 0
     for r in range(1, ws_cy.max_row + 1):
-        # Asset row = has a numeric RATE value (15, 10, 40, 0 etc.)
+        # Asset row = has a numeric RATE value (15, 10, 40 etc.)
         rate_cell = ws_cy.cell(r, rt_col)
         if isinstance(rate_cell, _MC): continue
-        if not isinstance(rate_cell.value, (int, float)): continue
+        # Accept both numeric and string-numeric rate values
+        rate_v = rate_cell.value
+        if isinstance(rate_v, str):
+            try: rate_v = float(rate_v)
+            except: rate_v = None
+        if not isinstance(rate_v, (int, float)): continue
 
         # Skip total rows
         nm = str(ws_cy.cell(r, 1).value or "").strip().lower()
