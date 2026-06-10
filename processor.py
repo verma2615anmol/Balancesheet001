@@ -767,11 +767,13 @@ def _process_capital_sheet(xml_bytes: bytes, cap_data: dict) -> bytes:
         if cy_closing is not None:
             changes[f"C{cy_row}"] = ("set_v_overwrite", _fmt_num(float(cy_closing)))
         # Clear ONLY introduced (col 4) and withdrawals (col 5)
+        # Use clear_fv to remove both formula AND value (some templates have
+        # formulas like =1832211+34292 in withdrawals which need full removal)
         # Keep profit (col 6) — formula links to P&L, auto-recalculates
         # Keep closing (col 7) — formula =C+D-E+F, auto-recalculates
         for col_num in [4, 5]:
             ref = f"{get_column_letter(col_num)}{cy_row}"
-            changes[ref] = ("clear_v", None)
+            changes[ref] = ("clear_fv", None)
 
     if not changes:
         return xml_bytes
@@ -788,6 +790,12 @@ def _process_capital_sheet(xml_bytes: bytes, cap_data: dict) -> bytes:
             return full
         action, new_val = changes[ref]
         if action == "clear_v":
+            full = re.sub(r'<v>[^<]*</v>', '', full)
+            full = re.sub(r'<v\s*/>', '', full)
+        elif action == "clear_fv":
+            # Remove BOTH formula and cached value (for CY intro/withdrawals)
+            full = re.sub(r'<f\b[^>]*>.*?</f>', '', full, flags=re.DOTALL)
+            full = re.sub(r'<f\b[^>]*/>', '', full)
             full = re.sub(r'<v>[^<]*</v>', '', full)
             full = re.sub(r'<v\s*/>', '', full)
         elif action == "set_v_overwrite":
