@@ -7399,22 +7399,18 @@ def _rollover_fixed_assets(output_path, cy_year, log):
         if not nm or len(nm) < 2: continue
         if nm.lower() in ("total", "grand total"): continue
         # Only process rows that have numeric data in the relevant columns
-        has_nonzero = any(
-            isinstance(ws_cy.cell(r, c).value, (int, float)) and ws_cy.cell(r, c).value != 0
-            for c in [ag_col, al_col, sl_col]
+        # Clear additions and sale for every actual asset row
+        # Guard: skip header/category rows (no numeric data in ANY column 2-9)
+        has_any_num = any(
+            isinstance(ws_cy.cell(r, c).value, (int, float))
+            for c in range(2, 10)
         )
-        has_formula = any(
-            isinstance(ws_cy.cell(r, c).value, str) and ws_cy.cell(r, c).value.startswith("=")
-            for c in [ag_col, al_col, sl_col]
-        )
-        if not has_nonzero and not has_formula: continue
+        if not has_any_num: continue
         for col in [ag_col, al_col, sl_col]:
             cell = ws_cy.cell(r, col)
             if isinstance(cell, _MC): continue
             v = cell.value
-            if isinstance(v, (int, float)) and v != 0:
-                cell.value = None; cleared += 1
-            elif isinstance(v, str) and v.startswith("="):
+            if v is not None:  # clear both zero and non-zero values
                 cell.value = None; cleared += 1
 
     # ── Step 3: Update CY dates ───────────────────────────────────────────
@@ -7433,6 +7429,20 @@ def _rollover_fixed_assets(output_path, cy_year, log):
         log.append(f"\u2713 FA CY: {cleared} cleared | 01.04.{new_oy} \u2192 31.03.{new_cy}")
     except Exception as _de:
         log.append(f"\u26a0 FA CY dates: {_de}")
+
+    # ── #REF cleaner (merged here to avoid extra open/save) ─────────────
+    ref_count = 0
+    for _sn in wb.sheetnames:
+        _ws = wb[_sn]
+        for _r in range(1, min(_ws.max_row + 1, 300)):
+            for _c in range(1, min(_ws.max_column + 1, 15)):
+                _cell = _ws.cell(_r, _c)
+                if isinstance(_cell, _MC): continue
+                if "#REF!" in str(_cell.value or ""):
+                    _cell.value = None
+                    ref_count += 1
+    if ref_count:
+        log.append(f"\u2713 Cleared {ref_count} #REF! cells")
 
     wb.save(output_path)
     wb.close()
@@ -7588,27 +7598,6 @@ def tb_process():
 
         # ── FA year-end rollover (always runs) ──────────────────────────
         _rollover_fixed_assets(out_path, cy_year, result.get("log", []))
-
-        # ── Clear all #REF! errors ────────────────────────────────────────
-        try:
-            from openpyxl import load_workbook as _lwb2
-            from openpyxl.cell import MergedCell as _MC2
-            _wb2 = _lwb2(out_path)
-            _n = 0
-            for _sn2 in _wb2.sheetnames:
-                _ws2 = _wb2[_sn2]
-                for _r2 in range(1, min(_ws2.max_row+1, 300)):
-                    for _c2 in range(1, min(_ws2.max_column+1, 15)):
-                        _cl2 = _ws2.cell(_r2, _c2)
-                        if isinstance(_cl2, _MC2): continue
-                        if "#REF!" in str(_cl2.value or ""):
-                            _cl2.value = None; _n += 1
-            if _n:
-                _wb2.save(out_path)
-                result.get("log", []).append(f"\u2713 Cleared {_n} #REF! errors")
-            _wb2.close()
-        except Exception:
-            pass
 
         # ── Inject Capital & FA user entries ──────────────────────────────
         if cap_entries or fa_entries:
