@@ -746,12 +746,14 @@ def _process_capital_sheet(xml_bytes: bytes, cap_data: dict) -> bytes:
                 changes[ref] = ("clear_v", None)
 
     if cy_row:
-        # CY row: opening = old closing, clear introduced/withdrawals/profit
+        # CY row: opening = old closing (will be new year opening)
         cy_closing = cap_data.get("cy_closing")
         if cy_closing is not None:
             changes[f"C{cy_row}"] = ("set_v_overwrite", _fmt_num(float(cy_closing)))
-        # Clear introduced, withdrawals, profit, closing in CY row
-        for col_num in [4, 5, 6, 7]:
+        # Clear ONLY introduced (col 4) and withdrawals (col 5)
+        # Keep profit (col 6) — formula links to P&L, auto-recalculates
+        # Keep closing (col 7) — formula =C+D-E+F, auto-recalculates
+        for col_num in [4, 5]:
             ref = f"{get_column_letter(col_num)}{cy_row}"
             changes[ref] = ("clear_v", None)
 
