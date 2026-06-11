@@ -269,9 +269,26 @@ nav{background:var(--white);border-bottom:1px solid var(--border);padding:0 24px
 .b-standard{background:#EFF6FF;color:var(--brand)}
 .b-pro{background:#FFFBEB;color:#92400E}
 .b-firm{background:#F5F3FF;color:#5B21B6}
-footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:24px;font-size:12px}
-footer a{color:#6B7280;text-decoration:none}
-.footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:6px}
+footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
+.ft-main{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:40px;padding:40px 48px;max-width:1200px;margin:0 auto}
+.ft-brand-name{color:#fff;font-size:18px;font-weight:800;margin-bottom:12px}
+.ft-brand-desc{font-size:12.5px;line-height:1.75;color:#9CA3AF;max-width:340px;text-align:justify}
+.ft-col-title{color:#fff;font-size:14px;font-weight:700;margin-bottom:14px}
+.ft-links{list-style:none;padding:0;margin:0}
+.ft-links li{margin-bottom:8px}
+.ft-links a{color:#9CA3AF;text-decoration:none;font-size:13px;transition:color .2s}
+.ft-links a:hover{color:#fff}
+.ft-contact-name{color:#fff;font-weight:700;font-size:13px;margin-bottom:6px}
+.ft-contact-addr{color:#9CA3AF;font-size:12px;line-height:1.7;margin-bottom:10px}
+.ft-contact-line{color:#9CA3AF;font-size:12px;margin-bottom:4px}
+.ft-socials{display:flex;gap:14px;margin-top:12px}
+.ft-socials a{color:#9CA3AF;transition:color .2s}
+.ft-socials a:hover{color:#fff}
+.ft-socials svg{width:20px;height:20px;fill:currentColor}
+.ft-bottom{background:#0a1422;border-top:1px solid #1e2d42;padding:12px 48px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.ft-bottom-left{font-size:11px;color:#6B7280}
+.ft-bottom-right{font-size:11px;color:#6B7280}
+@media(max-width:768px){.ft-main{grid-template-columns:1fr;padding:28px 20px;gap:24px}.ft-bottom{padding:12px 20px;flex-direction:column;text-align:center}}
 /* WhatsApp floating button */
 .wa-float{position:fixed;bottom:24px;left:24px;width:52px;height:52px;background:#25D366;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:999;text-decoration:none;transition:transform .2s,box-shadow .2s}
 .wa-float:hover{transform:scale(1.1);box-shadow:0 6px 24px rgba(0,0,0,.25)}
@@ -534,15 +551,35 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 </div>
 
 <footer>
-  <p class="footer-brand">CA Toolkit</p>
-  <p>Built for Indian Chartered Accountants · Saves hours every year</p>
-  <p style="margin-top:6px">Created by CA Article · Ludhiana, Punjab</p>
-  <p style="margin-top:12px;font-size:11px;line-height:1.8;max-width:700px;margin-left:auto;margin-right:auto;color:#9CA3AF">
-    ⚠️ <strong style="color:#D1D5DB">Disclaimer:</strong> All tools on this platform are for estimation and reference purposes only and do not constitute professional advice. Results may vary based on specific facts and applicable laws. Always consult a qualified Chartered Accountant before making financial or tax decisions.<br/>
-    🔒 <strong style="color:#D1D5DB">Privacy:</strong> Your uploaded files are processed in memory and never stored on our servers permanently. Files are auto-deleted within minutes of processing.<br/>
-    📌 <strong style="color:#D1D5DB">Platform Notice:</strong> CA Toolkit is a utility tools platform for CA professionals and is not a registered CA firm. Use of the word "CA" refers to the target audience, not the service provider.
-  </p>
-  <p style="margin-top:10px;font-size:11px">© 2026 CA Toolkit · <a href="/privacy" style="color:#6B7280">Privacy Policy</a> · <span style="color:#EF4444">No refund after first upload is used</span></p>
+  <div class="ft-main">
+    <div>
+      <div class="ft-brand-name">CA Toolkit</div>
+      <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
+    </div>
+    <div>
+      <div class="ft-col-title">Know More</div>
+      <ul class="ft-links">
+        <li><a href="/">Home</a></li>
+        <li><a href="/bs-shift">BS Year Shift</a></li>
+        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/privacy">Privacy Policy</a></li>
+      </ul>
+    </div>
+    <div>
+      <div class="ft-col-title">Contact Us</div>
+      <div class="ft-contact-name">CA Toolkit</div>
+      <div class="ft-contact-addr">Built for Indian Chartered Accountants<br/>Created by CA Article · Ludhiana, Punjab</div>
+      <div class="ft-contact-line">Support · <a href="https://wa.me/918427651580" style="color:#9CA3AF">WhatsApp Chat</a></div>
+      <div class="ft-socials">
+        <a href="https://wa.me/918427651580" target="_blank" title="WhatsApp"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
+      </div>
+    </div>
+  </div>
+  <div class="ft-bottom">
+    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved · <a href="/privacy" style="color:#6B7280;text-decoration:none">Privacy Policy</a> · <span style="color:#EF4444">No refund after first upload is used</span></span>
+    <span class="ft-bottom-right">Built for Indian CAs · Ludhiana, Punjab</span>
+  </div>
 </footer>
 <a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support">
   <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
@@ -938,10 +975,35 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
 </section>
 
 <footer>
-  <p class="footer-brand">CA Toolkit</p>
-  <p>Built for Indian Chartered Accountants · Saves hours every year</p>
-  <p style="margin-top:6px">Created by CA Article</p>
-  <p style="margin-top:12px;font-size:11px">© 2026 CA Toolkit · Your data is never stored · <span style="color:#EF4444">No refund after first upload is used</span></p>
+  <div class="ft-main">
+    <div>
+      <div class="ft-brand-name">CA Toolkit</div>
+      <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
+    </div>
+    <div>
+      <div class="ft-col-title">Know More</div>
+      <ul class="ft-links">
+        <li><a href="/">Home</a></li>
+        <li><a href="/bs-shift">BS Year Shift</a></li>
+        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/privacy">Privacy Policy</a></li>
+      </ul>
+    </div>
+    <div>
+      <div class="ft-col-title">Contact Us</div>
+      <div class="ft-contact-name">CA Toolkit</div>
+      <div class="ft-contact-addr">Built for Indian Chartered Accountants<br/>Created by CA Article · Ludhiana, Punjab</div>
+      <div class="ft-contact-line">Support · <a href="https://wa.me/918427651580" style="color:#9CA3AF">WhatsApp Chat</a></div>
+      <div class="ft-socials">
+        <a href="https://wa.me/918427651580" target="_blank" title="WhatsApp"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
+      </div>
+    </div>
+  </div>
+  <div class="ft-bottom">
+    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved · <a href="/privacy" style="color:#6B7280;text-decoration:none">Privacy Policy</a> · <span style="color:#EF4444">No refund after first upload is used</span></span>
+    <span class="ft-bottom-right">Built for Indian CAs · Ludhiana, Punjab</span>
+  </div>
 </footer>
 <div class="toast" id="toast"></div>
 
@@ -1968,10 +2030,31 @@ nav.scrolled{box-shadow:0 4px 24px rgba(0,0,0,.10)}
 </div>
 
 <footer>
-  <p class="footer-brand">CA Toolkit</p>
-  <p>Built for Indian Chartered Accountants · Saves hours every year</p>
-  <p style="margin-top:6px">Created by CA Article</p>
-  <p style="margin-top:12px;font-size:11px">© 2026 CA Toolkit · <span style="color:var(--accent)">Income Tax Calculator — PY 2023-24 to PY 2026-27</span></p>
+  <div class="ft-main">
+    <div>
+      <div class="ft-brand-name">CA Toolkit</div>
+      <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
+    </div>
+    <div>
+      <div class="ft-col-title">Know More</div>
+      <ul class="ft-links">
+        <li><a href="/">Home</a></li>
+        <li><a href="/bs-shift">BS Year Shift</a></li>
+        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/privacy">Privacy Policy</a></li>
+      </ul>
+    </div>
+    <div>
+      <div class="ft-col-title">Contact Us</div>
+      <div class="ft-contact-name">CA Toolkit</div>
+      <div class="ft-contact-addr">Built for Indian Chartered Accountants<br/>Created by CA Article · Ludhiana, Punjab</div>
+    </div>
+  </div>
+  <div class="ft-bottom">
+    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved</span>
+    <span class="ft-bottom-right">Built for Indian CAs · Ludhiana, Punjab</span>
+  </div>
 </footer>
 <div class="toast" id="toast"></div>
 
@@ -3472,8 +3555,26 @@ select:focus,input:focus{border-color:var(--brand)}
       padding:1px 5px;border-radius:4px;font-family:monospace;white-space:nowrap}
 .tcs-code{background:#F5F3FF;color:#5B21B6;font-size:10px;font-weight:700;
           padding:1px 5px;border-radius:4px;font-family:monospace;white-space:nowrap}
-footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-size:12px}
-.footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:4px}
+footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
+.ft-main{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:40px;padding:40px 48px;max-width:1200px;margin:0 auto}
+.ft-brand-name{color:#fff;font-size:18px;font-weight:800;margin-bottom:12px}
+.ft-brand-desc{font-size:12.5px;line-height:1.75;color:#9CA3AF;max-width:340px;text-align:justify}
+.ft-col-title{color:#fff;font-size:14px;font-weight:700;margin-bottom:14px}
+.ft-links{list-style:none;padding:0;margin:0}
+.ft-links li{margin-bottom:8px}
+.ft-links a{color:#9CA3AF;text-decoration:none;font-size:13px;transition:color .2s}
+.ft-links a:hover{color:#fff}
+.ft-contact-name{color:#fff;font-weight:700;font-size:13px;margin-bottom:6px}
+.ft-contact-addr{color:#9CA3AF;font-size:12px;line-height:1.7;margin-bottom:10px}
+.ft-contact-line{color:#9CA3AF;font-size:12px;margin-bottom:4px}
+.ft-socials{display:flex;gap:14px;margin-top:12px}
+.ft-socials a{color:#9CA3AF;transition:color .2s}
+.ft-socials a:hover{color:#fff}
+.ft-socials svg{width:20px;height:20px;fill:currentColor}
+.ft-bottom{background:#0a1422;border-top:1px solid #1e2d42;padding:12px 48px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.ft-bottom-left{font-size:11px;color:#6B7280}
+.ft-bottom-right{font-size:11px;color:#6B7280}
+@media(max-width:768px){.ft-main{grid-template-columns:1fr;padding:28px 20px;gap:24px}.ft-bottom{padding:12px 20px;flex-direction:column;text-align:center}}
 </style></head><body>
 
 <nav>
@@ -3717,9 +3818,31 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
 </div>
 
 <footer>
-  <p class="footer-brand">CA Toolkit</p>
-  <p>Built for Indian CAs · Created by CA Article</p>
-  <p style="margin-top:8px;font-size:11px">© 2026 CA Toolkit · For reference only — verify with latest CBDT circulars</p>
+  <div class="ft-main">
+    <div>
+      <div class="ft-brand-name">CA Toolkit</div>
+      <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
+    </div>
+    <div>
+      <div class="ft-col-title">Know More</div>
+      <ul class="ft-links">
+        <li><a href="/">Home</a></li>
+        <li><a href="/bs-shift">BS Year Shift</a></li>
+        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/privacy">Privacy Policy</a></li>
+      </ul>
+    </div>
+    <div>
+      <div class="ft-col-title">Contact Us</div>
+      <div class="ft-contact-name">CA Toolkit</div>
+      <div class="ft-contact-addr">Built for Indian Chartered Accountants<br/>Created by CA Article · Ludhiana, Punjab</div>
+    </div>
+  </div>
+  <div class="ft-bottom">
+    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved</span>
+    <span class="ft-bottom-right">Built for Indian CAs · Ludhiana, Punjab</span>
+  </div>
 </footer>
 
 <script>
@@ -4082,8 +4205,26 @@ td:not(:first-child){text-align:right}
         padding:2px 7px;border-radius:99px}
 .tag-ca{background:#F5F3FF;color:#5B21B6;font-size:10px;font-weight:700;
         padding:2px 7px;border-radius:99px}
-footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-size:12px}
-.footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:4px}
+footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
+.ft-main{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:40px;padding:40px 48px;max-width:1200px;margin:0 auto}
+.ft-brand-name{color:#fff;font-size:18px;font-weight:800;margin-bottom:12px}
+.ft-brand-desc{font-size:12.5px;line-height:1.75;color:#9CA3AF;max-width:340px;text-align:justify}
+.ft-col-title{color:#fff;font-size:14px;font-weight:700;margin-bottom:14px}
+.ft-links{list-style:none;padding:0;margin:0}
+.ft-links li{margin-bottom:8px}
+.ft-links a{color:#9CA3AF;text-decoration:none;font-size:13px;transition:color .2s}
+.ft-links a:hover{color:#fff}
+.ft-contact-name{color:#fff;font-weight:700;font-size:13px;margin-bottom:6px}
+.ft-contact-addr{color:#9CA3AF;font-size:12px;line-height:1.7;margin-bottom:10px}
+.ft-contact-line{color:#9CA3AF;font-size:12px;margin-bottom:4px}
+.ft-socials{display:flex;gap:14px;margin-top:12px}
+.ft-socials a{color:#9CA3AF;transition:color .2s}
+.ft-socials a:hover{color:#fff}
+.ft-socials svg{width:20px;height:20px;fill:currentColor}
+.ft-bottom{background:#0a1422;border-top:1px solid #1e2d42;padding:12px 48px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.ft-bottom-left{font-size:11px;color:#6B7280}
+.ft-bottom-right{font-size:11px;color:#6B7280}
+@media(max-width:768px){.ft-main{grid-template-columns:1fr;padding:28px 20px;gap:24px}.ft-bottom{padding:12px 20px;flex-direction:column;text-align:center}}
 </style></head><body>
 
 <nav>
@@ -4212,9 +4353,31 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
 </div>
 
 <footer>
-  <p class="footer-brand">CA Toolkit</p>
-  <p>Built for Indian Chartered Accountants · Created by CA Article</p>
-  <p style="margin-top:10px;font-size:11px">© 2026 CA Toolkit · For reference only — verify with latest MCA/CBDT notifications</p>
+  <div class="ft-main">
+    <div>
+      <div class="ft-brand-name">CA Toolkit</div>
+      <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
+    </div>
+    <div>
+      <div class="ft-col-title">Know More</div>
+      <ul class="ft-links">
+        <li><a href="/">Home</a></li>
+        <li><a href="/bs-shift">BS Year Shift</a></li>
+        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/privacy">Privacy Policy</a></li>
+      </ul>
+    </div>
+    <div>
+      <div class="ft-col-title">Contact Us</div>
+      <div class="ft-contact-name">CA Toolkit</div>
+      <div class="ft-contact-addr">Built for Indian Chartered Accountants<br/>Created by CA Article · Ludhiana, Punjab</div>
+    </div>
+  </div>
+  <div class="ft-bottom">
+    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved</span>
+    <span class="ft-bottom-right">Built for Indian CAs · Ludhiana, Punjab</span>
+  </div>
 </footer>
 
 <script>
@@ -4387,8 +4550,26 @@ input:focus{border-color:var(--brand)}
           font-size:12px;color:#1e40af;margin-bottom:16px;line-height:1.7}
 .dl-btn{background:var(--green);color:#fff;border:none;border-radius:8px;padding:8px 16px;
         font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;margin-left:8px}
-footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-size:12px}
-.footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:4px}
+footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
+.ft-main{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:40px;padding:40px 48px;max-width:1200px;margin:0 auto}
+.ft-brand-name{color:#fff;font-size:18px;font-weight:800;margin-bottom:12px}
+.ft-brand-desc{font-size:12.5px;line-height:1.75;color:#9CA3AF;max-width:340px;text-align:justify}
+.ft-col-title{color:#fff;font-size:14px;font-weight:700;margin-bottom:14px}
+.ft-links{list-style:none;padding:0;margin:0}
+.ft-links li{margin-bottom:8px}
+.ft-links a{color:#9CA3AF;text-decoration:none;font-size:13px;transition:color .2s}
+.ft-links a:hover{color:#fff}
+.ft-contact-name{color:#fff;font-weight:700;font-size:13px;margin-bottom:6px}
+.ft-contact-addr{color:#9CA3AF;font-size:12px;line-height:1.7;margin-bottom:10px}
+.ft-contact-line{color:#9CA3AF;font-size:12px;margin-bottom:4px}
+.ft-socials{display:flex;gap:14px;margin-top:12px}
+.ft-socials a{color:#9CA3AF;transition:color .2s}
+.ft-socials a:hover{color:#fff}
+.ft-socials svg{width:20px;height:20px;fill:currentColor}
+.ft-bottom{background:#0a1422;border-top:1px solid #1e2d42;padding:12px 48px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.ft-bottom-left{font-size:11px;color:#6B7280}
+.ft-bottom-right{font-size:11px;color:#6B7280}
+@media(max-width:768px){.ft-main{grid-template-columns:1fr;padding:28px 20px;gap:24px}.ft-bottom{padding:12px 20px;flex-direction:column;text-align:center}}
 </style></head><body>
 
 <nav>
@@ -4497,9 +4678,31 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
 </div>
 
 <footer>
-  <p class="footer-brand">CA Toolkit</p>
-  <p>Built for Indian CAs · Created by CA Article</p>
-  <p style="margin-top:8px;font-size:11px">© 2026 CA Toolkit · For reference only · Verify with actual books of accounts</p>
+  <div class="ft-main">
+    <div>
+      <div class="ft-brand-name">CA Toolkit</div>
+      <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
+    </div>
+    <div>
+      <div class="ft-col-title">Know More</div>
+      <ul class="ft-links">
+        <li><a href="/">Home</a></li>
+        <li><a href="/bs-shift">BS Year Shift</a></li>
+        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/privacy">Privacy Policy</a></li>
+      </ul>
+    </div>
+    <div>
+      <div class="ft-col-title">Contact Us</div>
+      <div class="ft-contact-name">CA Toolkit</div>
+      <div class="ft-contact-addr">Built for Indian Chartered Accountants<br/>Created by CA Article · Ludhiana, Punjab</div>
+    </div>
+  </div>
+  <div class="ft-bottom">
+    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved</span>
+    <span class="ft-bottom-right">Built for Indian CAs · Ludhiana, Punjab</span>
+  </div>
 </footer>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -4764,8 +4967,26 @@ select:focus,input:focus{border-color:var(--brand)}
 .cii-table tr:last-child td{border:none}
 .cii-table tr:hover td{background:#F9FAFB}
 .cii-table .highlight{background:#EFF6FF;font-weight:700}
-footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-size:12px}
-.footer-brand{color:#D1D5DB;font-weight:700;font-size:14px;margin-bottom:4px}
+footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
+.ft-main{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:40px;padding:40px 48px;max-width:1200px;margin:0 auto}
+.ft-brand-name{color:#fff;font-size:18px;font-weight:800;margin-bottom:12px}
+.ft-brand-desc{font-size:12.5px;line-height:1.75;color:#9CA3AF;max-width:340px;text-align:justify}
+.ft-col-title{color:#fff;font-size:14px;font-weight:700;margin-bottom:14px}
+.ft-links{list-style:none;padding:0;margin:0}
+.ft-links li{margin-bottom:8px}
+.ft-links a{color:#9CA3AF;text-decoration:none;font-size:13px;transition:color .2s}
+.ft-links a:hover{color:#fff}
+.ft-contact-name{color:#fff;font-weight:700;font-size:13px;margin-bottom:6px}
+.ft-contact-addr{color:#9CA3AF;font-size:12px;line-height:1.7;margin-bottom:10px}
+.ft-contact-line{color:#9CA3AF;font-size:12px;margin-bottom:4px}
+.ft-socials{display:flex;gap:14px;margin-top:12px}
+.ft-socials a{color:#9CA3AF;transition:color .2s}
+.ft-socials a:hover{color:#fff}
+.ft-socials svg{width:20px;height:20px;fill:currentColor}
+.ft-bottom{background:#0a1422;border-top:1px solid #1e2d42;padding:12px 48px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.ft-bottom-left{font-size:11px;color:#6B7280}
+.ft-bottom-right{font-size:11px;color:#6B7280}
+@media(max-width:768px){.ft-main{grid-template-columns:1fr;padding:28px 20px;gap:24px}.ft-bottom{padding:12px 20px;flex-direction:column;text-align:center}}
 </style></head><body>
 
 <nav>
@@ -4981,9 +5202,31 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
 </div>
 
 <footer>
-  <p class="footer-brand">CA Toolkit</p>
-  <p>Built for Indian CAs · Created by CA Article</p>
-  <p style="margin-top:8px;font-size:11px">© 2026 CA Toolkit · For reference only — consult a CA before making decisions</p>
+  <div class="ft-main">
+    <div>
+      <div class="ft-brand-name">CA Toolkit</div>
+      <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
+    </div>
+    <div>
+      <div class="ft-col-title">Know More</div>
+      <ul class="ft-links">
+        <li><a href="/">Home</a></li>
+        <li><a href="/bs-shift">BS Year Shift</a></li>
+        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/privacy">Privacy Policy</a></li>
+      </ul>
+    </div>
+    <div>
+      <div class="ft-col-title">Contact Us</div>
+      <div class="ft-contact-name">CA Toolkit</div>
+      <div class="ft-contact-addr">Built for Indian Chartered Accountants<br/>Created by CA Article · Ludhiana, Punjab</div>
+    </div>
+  </div>
+  <div class="ft-bottom">
+    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved</span>
+    <span class="ft-bottom-right">Built for Indian CAs · Ludhiana, Punjab</span>
+  </div>
 </footer>
 
 <script>
@@ -5365,8 +5608,9 @@ tr:hover td{background:#F9FAFB}
   </div>
 </div>
 <footer>
-  <p class="footer-brand">CA Toolkit — Admin</p>
-  <p>Created by CA Article</p>
+  <div class="ft-bottom" style="justify-content:center">
+    <span class="ft-bottom-left">©2026 CA Toolkit · Admin Panel · All Rights Reserved</span>
+  </div>
 </footer>
 <a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
 </body></html>"""
@@ -7892,7 +8136,26 @@ select:focus,input:focus{outline:none;border-color:var(--brand)}
 .tlbl{color:var(--muted);font-weight:500}
 .tval{font-weight:700}
 .note-box{font-size:11px;color:var(--muted);line-height:1.7;padding:10px 14px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;margin-top:12px}
-footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-size:11px}
+footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
+.ft-main{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:40px;padding:40px 48px;max-width:1200px;margin:0 auto}
+.ft-brand-name{color:#fff;font-size:18px;font-weight:800;margin-bottom:12px}
+.ft-brand-desc{font-size:12.5px;line-height:1.75;color:#9CA3AF;max-width:340px;text-align:justify}
+.ft-col-title{color:#fff;font-size:14px;font-weight:700;margin-bottom:14px}
+.ft-links{list-style:none;padding:0;margin:0}
+.ft-links li{margin-bottom:8px}
+.ft-links a{color:#9CA3AF;text-decoration:none;font-size:13px;transition:color .2s}
+.ft-links a:hover{color:#fff}
+.ft-contact-name{color:#fff;font-weight:700;font-size:13px;margin-bottom:6px}
+.ft-contact-addr{color:#9CA3AF;font-size:12px;line-height:1.7;margin-bottom:10px}
+.ft-contact-line{color:#9CA3AF;font-size:12px;margin-bottom:4px}
+.ft-socials{display:flex;gap:14px;margin-top:12px}
+.ft-socials a{color:#9CA3AF;transition:color .2s}
+.ft-socials a:hover{color:#fff}
+.ft-socials svg{width:20px;height:20px;fill:currentColor}
+.ft-bottom{background:#0a1422;border-top:1px solid #1e2d42;padding:12px 48px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.ft-bottom-left{font-size:11px;color:#6B7280}
+.ft-bottom-right{font-size:11px;color:#6B7280}
+@media(max-width:768px){.ft-main{grid-template-columns:1fr;padding:28px 20px;gap:24px}.ft-bottom{padding:12px 20px;flex-direction:column;text-align:center}}
 @media(max-width:600px){.row2{grid-template-columns:1fr}.steps{flex-direction:column}}
 </style></head><body>
 <nav>
@@ -8072,8 +8335,37 @@ footer{background:var(--ink);color:#9CA3AF;text-align:center;padding:20px;font-s
   </div>
 </div>
 
-<footer><p style="font-weight:700;color:#D1D5DB;margin-bottom:4px">CA Toolkit</p>
-<p>Tools are for estimation only — not professional advice. Platform is not a registered CA firm. Files auto-deleted after download.</p></footer>
+<footer>
+  <div class="ft-main">
+    <div>
+      <div class="ft-brand-name">CA Toolkit</div>
+      <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
+    </div>
+    <div>
+      <div class="ft-col-title">Know More</div>
+      <ul class="ft-links">
+        <li><a href="/">Home</a></li>
+        <li><a href="/bs-shift">BS Year Shift</a></li>
+        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/privacy">Privacy Policy</a></li>
+      </ul>
+    </div>
+    <div>
+      <div class="ft-col-title">Contact Us</div>
+      <div class="ft-contact-name">CA Toolkit</div>
+      <div class="ft-contact-addr">Built for Indian Chartered Accountants<br/>Created by CA Article · Ludhiana, Punjab</div>
+      <div class="ft-contact-line">Support · <a href="https://wa.me/918427651580" style="color:#9CA3AF">WhatsApp Chat</a></div>
+      <div class="ft-socials">
+        <a href="https://wa.me/918427651580" target="_blank" title="WhatsApp"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
+      </div>
+    </div>
+  </div>
+  <div class="ft-bottom">
+    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved · <a href="/privacy" style="color:#6B7280;text-decoration:none">Privacy Policy</a> · <span style="color:#EF4444">No refund after first upload is used</span></span>
+    <span class="ft-bottom-right">Built for Indian CAs · Ludhiana, Punjab</span>
+  </div>
+</footer>
 
 <script>
 // ═══════════════════════════════════════
