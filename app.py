@@ -293,6 +293,21 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
 .wa-float{position:fixed;bottom:24px;left:24px;width:52px;height:52px;background:#25D366;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:999;text-decoration:none;transition:transform .2s,box-shadow .2s}
 .wa-float:hover{transform:scale(1.1);box-shadow:0 6px 24px rgba(0,0,0,.25)}
 .wa-float svg{width:28px;height:28px;fill:#fff}
+/* How-to-use help modal */
+.help-btn{position:fixed;bottom:86px;right:20px;width:44px;height:44px;background:var(--brand);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;cursor:pointer;box-shadow:0 4px 14px rgba(29,78,216,.35);z-index:998;border:none;transition:transform .2s,box-shadow .2s;text-decoration:none}
+.help-btn:hover{transform:scale(1.1);box-shadow:0 6px 20px rgba(29,78,216,.45)}
+.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1001;align-items:center;justify-content:center;padding:16px}
+.help-overlay.open{display:flex}
+.help-modal{background:#fff;border-radius:16px;max-width:540px;width:100%;max-height:82vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.2)}
+.help-modal-head{padding:20px 24px 16px;border-bottom:1px solid #E5E7EB;display:flex;justify-content:space-between;align-items:center}
+.help-modal-head h3{font-size:16px;font-weight:800;color:#111827}
+.help-close{background:none;border:none;font-size:22px;cursor:pointer;color:#6B7280;line-height:1}
+.help-modal-body{padding:20px 24px}
+.help-step{display:flex;gap:14px;margin-bottom:18px;align-items:flex-start}
+.help-step-num{min-width:28px;height:28px;background:var(--brand);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0;margin-top:1px}
+.help-step-body h4{font-size:13px;font-weight:700;margin-bottom:3px;color:#111827}
+.help-step-body p{font-size:12px;color:#6B7280;line-height:1.6;margin:0}
+.help-tip{background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:10px 14px;font-size:12px;color:#1E40AF;margin-top:4px;line-height:1.6}
 /* Animations */
 @keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
@@ -303,6 +318,46 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
 # ══════════════════════════════════════════════════════════════════════════════
 #  LOGIN PAGE
 # ══════════════════════════════════════════════════════════════════════════════
+
+PRIVACY_TEMPLATE = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Privacy Policy – CA Toolkit</title>
+<style>
+""" + BASE_CSS + """
+.pp-wrap{max-width:760px;margin:40px auto;padding:0 24px 60px}
+.pp-wrap h1{font-size:22px;font-weight:800;margin-bottom:6px}
+.pp-wrap h2{font-size:15px;font-weight:700;margin:28px 0 8px;color:var(--brand)}
+.pp-wrap p,.pp-wrap li{font-size:13px;line-height:1.8;color:#374151}
+.pp-wrap ul{padding-left:20px;margin-bottom:12px}
+.pp-date{font-size:11px;color:var(--muted);margin-bottom:24px}
+</style></head><body>
+<nav class="nav"><a href="/" class="nav-brand">CA Toolkit</a></nav>
+<div class="pp-wrap">
+  <h1>Privacy Policy</h1>
+  <p class="pp-date">Last updated: June 2026</p>
+  <h2>1. Data We Collect</h2>
+  <p>We collect only the minimum information necessary to operate the platform: your email/username for account creation, and uploaded Excel files solely for processing your request.</p>
+  <h2>2. File Handling</h2>
+  <ul>
+    <li>Uploaded files are processed in memory on our servers.</li>
+    <li>Files are automatically deleted within minutes of processing — we do not store them permanently.</li>
+    <li>We never read, analyse, or share the contents of your financial files with any third party.</li>
+  </ul>
+  <h2>3. No Ads · No Tracking</h2>
+  <p>CA Toolkit does not serve advertisements and does not use third-party tracking or analytics cookies. We do not sell your data.</p>
+  <h2>4. Account Data</h2>
+  <p>Your username and plan information are stored securely in our database. We do not store any payment card details — all payments are handled via UPI or direct bank transfer.</p>
+  <h2>5. Refund Policy</h2>
+  <p style="color:#B91C1C;font-weight:600">No refund is issued once the first upload of a paid plan has been used. Unused credits on free plans are non-transferable.</p>
+  <h2>6. Contact</h2>
+  <p>For any privacy concerns, contact us on <a href="https://wa.me/918427651580">WhatsApp</a>.</p>
+</div>
+<footer>
+  <div class="ft-bottom" style="justify-content:center">
+    <span class="ft-bottom-left">&copy;2026 CA Toolkit &middot; All Rights Reserved &middot; <a href="/privacy" style="color:#6B7280;text-decoration:none">Privacy Policy</a></span>
+  </div>
+</footer>
+</body></html>"""
 
 LOGIN_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -560,9 +615,9 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       <div class="ft-col-title">Know More</div>
       <ul class="ft-links">
         <li><a href="/">Home</a></li>
-        <li><a href="/bs-shift">BS Year Shift</a></li>
-        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
-        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/">BS Year Shift</a></li>
+        <li><a href="/tool/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tool/tax-calculator">Tax Calculator</a></li>
         <li><a href="/privacy">Privacy Policy</a></li>
       </ul>
     </div>
@@ -984,9 +1039,9 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
       <div class="ft-col-title">Know More</div>
       <ul class="ft-links">
         <li><a href="/">Home</a></li>
-        <li><a href="/bs-shift">BS Year Shift</a></li>
-        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
-        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/">BS Year Shift</a></li>
+        <li><a href="/tool/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tool/tax-calculator">Tax Calculator</a></li>
         <li><a href="/privacy">Privacy Policy</a></li>
       </ul>
     </div>
@@ -1052,6 +1107,15 @@ function showStatus(t,m){const e=document.getElementById('status');e.className=t
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3000);}
 </script>
 <a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
+
+<button class="help-btn" onclick="openHelp()" title="How to use this tool">?</button>
+<div class="help-overlay" id="helpOverlay">
+  <div class="help-modal">
+    <div class="help-modal-head"><h3>How to Use — Balance Sheet Year Shift</h3><button class="help-close" onclick="closeHelp()">&#10005;</button></div>
+    <div class="help-modal-body"><div class="help-step"><div class="help-step-num">1</div><div class="help-step-body"><h4>Upload BS File</h4><p>Click or drag-drop your comparative Excel balance sheet (.xlsx). It needs CY and PY columns with date headers like '31.03.2025'.</p></div></div><div class="help-step"><div class="help-step-num">2</div><div class="help-step-body"><h4>Enter Years</h4><p>Set Closing Year (e.g. 2025) and New Year (2026). New Year = Closing Year + 1.</p></div></div><div class="help-step"><div class="help-step-num">3</div><div class="help-step-body"><h4>Optional: Custom Filename</h4><p>Enter a custom output name, or leave blank for auto-naming.</p></div></div><div class="help-step"><div class="help-step-num">4</div><div class="help-step-body"><h4>Click Process</h4><p>The tool shifts CY→PY, clears CY columns, updates all dates, and rolls over Fixed Assets automatically.</p></div></div><div class="help-step"><div class="help-step-num">5</div><div class="help-step-body"><h4>Download</h4><p>Download the result. Your file is auto-deleted from our server within minutes.</p></div></div><div class="help-tip">✅ Works with DP Thapar, HFPL, Atultex, and most Indian CA firm templates. Formulas in PY are preserved.</div></div>
+  </div>
+</div>
+<script>function openHelp(){document.getElementById('helpOverlay').classList.add('open')}function closeHelp(){document.getElementById('helpOverlay').classList.remove('open')}document.getElementById('helpOverlay').addEventListener('click',function(e){if(e.target===this)closeHelp()})</script>
 </body></html>"""
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2039,9 +2103,9 @@ nav.scrolled{box-shadow:0 4px 24px rgba(0,0,0,.10)}
       <div class="ft-col-title">Know More</div>
       <ul class="ft-links">
         <li><a href="/">Home</a></li>
-        <li><a href="/bs-shift">BS Year Shift</a></li>
-        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
-        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/">BS Year Shift</a></li>
+        <li><a href="/tool/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tool/tax-calculator">Tax Calculator</a></li>
         <li><a href="/privacy">Privacy Policy</a></li>
       </ul>
     </div>
@@ -3464,6 +3528,15 @@ const _origCalculateTaxInner = window.calculateTax;
 
 </script>
 <a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
+
+<button class="help-btn" onclick="openHelp()" title="How to use this tool">?</button>
+<div class="help-overlay" id="helpOverlay">
+  <div class="help-modal">
+    <div class="help-modal-head"><h3>How to Use — Income Tax Calculator</h3><button class="help-close" onclick="closeHelp()">&#10005;</button></div>
+    <div class="help-modal-body"><div class="help-step"><div class="help-step-num">1</div><div class="help-step-body"><h4>Select Year</h4><p>Choose the Assessment Year and assessee type (Individual, HUF, Firm, Company, etc.).</p></div></div><div class="help-step"><div class="help-step-num">2</div><div class="help-step-body"><h4>Enter Income</h4><p>Fill income under Salary, House Property, Business/Profession, Capital Gains, and Other Sources.</p></div></div><div class="help-step"><div class="help-step-num">3</div><div class="help-step-body"><h4>Add Deductions</h4><p>Enter 80C, 80D, HRA, and other deductions (applicable under old regime).</p></div></div><div class="help-step"><div class="help-step-num">4</div><div class="help-step-body"><h4>View Result</h4><p>Tax under old and new regime is compared automatically side by side.</p></div></div><div class="help-step"><div class="help-step-num">5</div><div class="help-step-body"><h4>Advance Tax</h4><p>Scroll down to see the quarterly advance tax schedule.</p></div></div><div class="help-tip">⚠️ For estimation only. Verify with the latest CBDT notifications and consult a CA for complex cases.</div></div>
+  </div>
+</div>
+<script>function openHelp(){document.getElementById('helpOverlay').classList.add('open')}function closeHelp(){document.getElementById('helpOverlay').classList.remove('open')}document.getElementById('helpOverlay').addEventListener('click',function(e){if(e.target===this)closeHelp()})</script>
 </body></html>"""
 
 
@@ -3827,9 +3900,9 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
       <div class="ft-col-title">Know More</div>
       <ul class="ft-links">
         <li><a href="/">Home</a></li>
-        <li><a href="/bs-shift">BS Year Shift</a></li>
-        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
-        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/">BS Year Shift</a></li>
+        <li><a href="/tool/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tool/tax-calculator">Tax Calculator</a></li>
         <li><a href="/privacy">Privacy Policy</a></li>
       </ul>
     </div>
@@ -4151,6 +4224,15 @@ function calculate(){
 document.getElementById("mainSection").innerHTML = buildTDSOptions();
 </script>
 <a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
+
+<button class="help-btn" onclick="openHelp()" title="How to use this tool">?</button>
+<div class="help-overlay" id="helpOverlay">
+  <div class="help-modal">
+    <div class="help-modal-head"><h3>How to Use — TDS/TCS Calculator</h3><button class="help-close" onclick="closeHelp()">&#10005;</button></div>
+    <div class="help-modal-body"><div class="help-step"><div class="help-step-num">1</div><div class="help-step-body"><h4>Select Section</h4><p>Choose the TDS/TCS section (e.g. 194C, 194J, 206C etc.).</p></div></div><div class="help-step"><div class="help-step-num">2</div><div class="help-step-body"><h4>Enter Amount</h4><p>Enter the payment/receipt amount.</p></div></div><div class="help-step"><div class="help-step-num">3</div><div class="help-step-body"><h4>Check Threshold</h4><p>The tool shows whether TDS is applicable based on annual threshold.</p></div></div><div class="help-step"><div class="help-step-num">4</div><div class="help-step-body"><h4>View Rate</h4><p>See applicable TDS/TCS rate, deductible amount, and net payable.</p></div></div><div class="help-tip">💡 Updated for IT Act 2025 new payment codes (Sections 393/394).</div></div>
+  </div>
+</div>
+<script>function openHelp(){document.getElementById('helpOverlay').classList.add('open')}function closeHelp(){document.getElementById('helpOverlay').classList.remove('open')}document.getElementById('helpOverlay').addEventListener('click',function(e){if(e.target===this)closeHelp()})</script>
 </body></html>"""
 
 
@@ -4362,9 +4444,9 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
       <div class="ft-col-title">Know More</div>
       <ul class="ft-links">
         <li><a href="/">Home</a></li>
-        <li><a href="/bs-shift">BS Year Shift</a></li>
-        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
-        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/">BS Year Shift</a></li>
+        <li><a href="/tool/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tool/tax-calculator">Tax Calculator</a></li>
         <li><a href="/privacy">Privacy Policy</a></li>
       </ul>
     </div>
@@ -4687,9 +4769,9 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
       <div class="ft-col-title">Know More</div>
       <ul class="ft-links">
         <li><a href="/">Home</a></li>
-        <li><a href="/bs-shift">BS Year Shift</a></li>
-        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
-        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/">BS Year Shift</a></li>
+        <li><a href="/tool/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tool/tax-calculator">Tax Calculator</a></li>
         <li><a href="/privacy">Privacy Policy</a></li>
       </ul>
     </div>
@@ -5211,9 +5293,9 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
       <div class="ft-col-title">Know More</div>
       <ul class="ft-links">
         <li><a href="/">Home</a></li>
-        <li><a href="/bs-shift">BS Year Shift</a></li>
-        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
-        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/">BS Year Shift</a></li>
+        <li><a href="/tool/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tool/tax-calculator">Tax Calculator</a></li>
         <li><a href="/privacy">Privacy Policy</a></li>
       </ul>
     </div>
@@ -5679,6 +5761,23 @@ def dashboard():
             contact_upi=CONTACT_UPI,
         )
     return render_template_string(DASHBOARD_T, **ctx)
+
+
+@app.route("/bs-shift")
+def bs_shift_redirect():
+    return redirect("/")
+
+@app.route("/privacy")
+def privacy_page():
+    if "uid" in session:
+        user = get_user_by_id(session["uid"])
+        ctx = user_ctx(user)
+    else:
+        ctx = dict(username=None, plan="free", plan_label="Free",
+            is_admin=False, uploads_used=0, uploads_total=2,
+            uploads_left=2, uploads_remaining=2, bar_pct=0,
+            validity_end=None, contact_email=CONTACT_EMAIL, contact_upi=CONTACT_UPI)
+    return render_template_string(PRIVACY_TEMPLATE, **ctx)
 
 @app.route("/tool/converter")
 @login_required
@@ -6410,6 +6509,15 @@ async function doProcess(){
 }
 </script>
 <a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
+
+<button class="help-btn" onclick="openHelp()" title="How to use this tool">?</button>
+<div class="help-overlay" id="helpOverlay">
+  <div class="help-modal">
+    <div class="help-modal-head"><h3>How to Use — GST Reconciliation</h3><button class="help-close" onclick="closeHelp()">&#10005;</button></div>
+    <div class="help-modal-body"><div class="help-step"><div class="help-step-num">1</div><div class="help-step-body"><h4>Upload Sales Excel</h4><p>Upload your books sales summary Excel with month-wise, state-wise data.</p></div></div><div class="help-step"><div class="help-step-num">2</div><div class="help-step-body"><h4>Upload GSTR-3B ZIP</h4><p>Zip all your GSTR-3B PDFs (one per month) and upload the ZIP file.</p></div></div><div class="help-step"><div class="help-step-num">3</div><div class="help-step-body"><h4>Review Mappings</h4><p>Map your Excel column headers to the required fields on screen.</p></div></div><div class="help-step"><div class="help-step-num">4</div><div class="help-step-body"><h4>Process</h4><p>Click Process to generate the reconciliation report.</p></div></div><div class="help-step"><div class="help-step-num">5</div><div class="help-step-body"><h4>Download Report</h4><p>Download the Excel report with month-wise and state-wise differences highlighted.</p></div></div><div class="help-tip">📌 Export GSTR-3B PDFs from the GST portal and ZIP them before uploading.</div></div>
+  </div>
+</div>
+<script>function openHelp(){document.getElementById('helpOverlay').classList.add('open')}function closeHelp(){document.getElementById('helpOverlay').classList.remove('open')}document.getElementById('helpOverlay').addEventListener('click',function(e){if(e.target===this)closeHelp()})</script>
 </body></html>"""
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -7771,12 +7879,20 @@ def _rollover_fixed_assets(output_path, cy_year, log):
             if isinstance(v, str) and "sum" in vs.lower(): continue  # keep =SUM()
 
             if is_data_row:
-                # In main data rows: only clear hardcoded numbers (not formulas)
-                # Formulas like =+C55 reference input rows; those will recalc to 0
+                # In main data rows: clear hardcoded numbers AND arithmetic-only formulas
+                # like =155312.5+59400 (no cell refs — these ARE the additions input).
+                # Keep cross-ref formulas like =+C55 or ='Sheet'!X — they recalculate.
                 if isinstance(v, (int, float)):
                     cell.value = None
                     cleared += 1
-                # Do NOT clear formula cells (=+C55 etc.) — let them recalculate
+                elif isinstance(v, str) and v.startswith("="):
+                    body = v[1:].strip()
+                    import re as _re2
+                    is_arithmetic = _re2.sub(r'[\d\s\.\+\-\*\/\(\)]+', '', body) == ''
+                    if is_arithmetic:
+                        cell.value = None
+                        cleared += 1
+                    # else: keep =+C55 / ='Sheet'!X / =SUM() — real cross-refs
             else:
                 # In input/detail rows: clear both numbers AND date strings
                 # (these are the per-item purchase entries like "18.04.2024", 35156.25)
@@ -8345,9 +8461,9 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
       <div class="ft-col-title">Know More</div>
       <ul class="ft-links">
         <li><a href="/">Home</a></li>
-        <li><a href="/bs-shift">BS Year Shift</a></li>
-        <li><a href="/tb-to-bs">TB → Balance Sheet</a></li>
-        <li><a href="/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/">BS Year Shift</a></li>
+        <li><a href="/tool/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tool/tax-calculator">Tax Calculator</a></li>
         <li><a href="/privacy">Privacy Policy</a></li>
       </ul>
     </div>
@@ -9105,6 +9221,15 @@ function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&
   });
 });
 </script><a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
+
+<button class="help-btn" onclick="openHelp()" title="How to use this tool">?</button>
+<div class="help-overlay" id="helpOverlay">
+  <div class="help-modal">
+    <div class="help-modal-head"><h3>How to Use — Trial Balance → Balance Sheet</h3><button class="help-close" onclick="closeHelp()">&#10005;</button></div>
+    <div class="help-modal-body"><div class="help-step"><div class="help-step-num">1</div><div class="help-step-body"><h4>Upload Trial Balance</h4><p>Upload your Excel trial balance with account names and debit/credit balances.</p></div></div><div class="help-step"><div class="help-step-num">2</div><div class="help-step-body"><h4>Upload BS Template</h4><p>Upload your existing Balance Sheet template with CY column cells ready to fill.</p></div></div><div class="help-step"><div class="help-step-num">3</div><div class="help-step-body"><h4>Enter Details</h4><p>Set client name, financial year, and review auto-mapped accounts.</p></div></div><div class="help-step"><div class="help-step-num">4</div><div class="help-step-body"><h4>Fixed Assets & Capital</h4><p>Enter additions, sales, and capital account movements if prompted.</p></div></div><div class="help-step"><div class="help-step-num">5</div><div class="help-step-body"><h4>Generate & Download</h4><p>Click Generate — CY figures are injected into your BS template. Download instantly.</p></div></div><div class="help-tip">💡 Your BS template's formatting and formulas are never changed — only the CY figures are filled in.</div></div>
+  </div>
+</div>
+<script>function openHelp(){document.getElementById('helpOverlay').classList.add('open')}function closeHelp(){document.getElementById('helpOverlay').classList.remove('open')}document.getElementById('helpOverlay').addEventListener('click',function(e){if(e.target===this)closeHelp()})</script>
 </body></html>"""
 
 
