@@ -5644,7 +5644,19 @@ def process_file():
             if xls_tmp:
                 try: os.remove(xls_tmp)
                 except: pass
-        fname = f"{on or os.path.splitext(f.filename)[0]}_{ny}.xlsx"
+        # Build clean output filename: strip year suffixes like "2024-25", "2025-26", "2026"
+        # so Atultex_Industries_2024-25_2026 → Atultex_Industries_2026.xlsx
+        if on:
+            base_name = on
+        else:
+            raw = os.path.splitext(f.filename)[0]
+            import re as _re
+            base_name = raw
+            # Strip trailing year patterns repeatedly (handles double suffixes)
+            for _ in range(3):
+                base_name = _re.sub(r'[_\-]+\d{4}[-_]\d{2,4}$', '', base_name).strip('_- ')
+                base_name = _re.sub(r'[_\-]+\d{4}$', '', base_name).strip('_- ')
+        fname = f"{base_name}_{ny}.xlsx"
         try:
             result = process(ip, op, cy, ny)
         except Exception as e:
@@ -7394,36 +7406,37 @@ def _rollover_fixed_assets(output_path, cy_year, log):
     # ── Step 2: Clear additions and sale in CY ────────────────────────────
     # Auto-detect rate column if not found in header scan (fallback: scan cols 6-10
     # for the column that has only numeric values like 10, 15, 20, 25, 40).
-    if rt_col == 7:  # verify rt_col has actual rate values, not just default
-        rate_values_found = sum(
-            1 for r in range(1, min(ws_cy.max_row + 1, 50))
-            if isinstance(ws_cy.cell(r, rt_col).value, (int, float))
-            and ws_cy.cell(r, rt_col).value in (5, 10, 15, 20, 25, 30, 40, 60, 100, 0)
-        )
-        if rate_values_found == 0:
-            # rt_col default didn't work — scan cols 6-10 for rate column
-            for try_col in range(6, 11):
-                cnt = sum(
-                    1 for r in range(1, min(ws_cy.max_row + 1, 50))
-                    if isinstance(ws_cy.cell(r, try_col).value, (int, float))
-                    and ws_cy.cell(r, try_col).value in (5, 10, 15, 20, 25, 30, 40, 60, 100, 0)
-                    and ws_cy.cell(r, try_col).value > 0
-                )
-                if cnt >= 2:
-                    rt_col = try_col
-                    log.append(f"  FA: rate col auto-corrected to C{rt_col}")
-                    break
+    # Use data_only workbook to check resolved rate values (handles formula-based rate cols)
+    rate_values_found = sum(
+        1 for r in range(1, min(ws_cy.max_row + 1, 50))
+        if isinstance(ws_cy_do.cell(r, rt_col).value, (int, float))
+        and ws_cy_do.cell(r, rt_col).value in (5, 10, 15, 20, 25, 30, 40, 60, 100, 0)
+    )
+    if rate_values_found == 0:
+        # rt_col default wrong — find correct rate column using data_only values
+        for try_col in range(6, 11):
+            cnt = sum(
+                1 for r in range(1, min(ws_cy.max_row + 1, 50))
+                if isinstance(ws_cy_do.cell(r, try_col).value, (int, float))
+                and ws_cy_do.cell(r, try_col).value in (5, 10, 15, 20, 25, 30, 40, 60, 100, 0)
+                and ws_cy_do.cell(r, try_col).value > 0
+            )
+            if cnt >= 2:
+                rt_col = try_col
+                log.append(f"  FA: rate col auto-corrected to C{rt_col}")
+                break
 
     cleared = 0
     for r in range(1, ws_cy.max_row + 1):
-        # Asset row = has a numeric RATE value (15, 10, 40 etc.)
-        rate_cell = ws_cy.cell(r, rt_col)
-        if isinstance(rate_cell, _MC): continue
-        # Accept both numeric and string-numeric rate values
-        rate_v = rate_cell.value
-        if isinstance(rate_v, str):
-            try: rate_v = float(rate_v)
-            except: rate_v = None
+        # Asset row = has a numeric RATE value — check data_only for resolved values
+        if isinstance(ws_cy.cell(r, rt_col), _MC): continue
+        rate_v = ws_cy_do.cell(r, rt_col).value  # resolved value from data_only
+        if rate_v is None:
+            # Fallback: try formula view (for templates with plain numeric rates)
+            rate_v = ws_cy.cell(r, rt_col).value
+            if isinstance(rate_v, str):
+                try: rate_v = float(rate_v)
+                except: rate_v = None
         if not isinstance(rate_v, (int, float)): continue
 
         # Skip total rows
@@ -7435,6 +7448,25 @@ def _rollover_fixed_assets(output_path, cy_year, log):
             cell = ws_cy.cell(r, col)
             if isinstance(cell, _MC): continue
             if cell.value is not None:
+                cell.value = None
+                cleared += 1
+
+    # ── Also clear addition input rows (e.g. per-item input section below total) ──
+    # Some templates have an additions input area below the main asset table
+    # (e.g. Atultex: R49+ with individual purchase dates and amounts).
+    # Clear any remaining numeric values in ag/al/sl cols across ALL rows.
+    _header_skip = {"additions", "greater than", "less than", "sale",
+                    "180 days", "amount in rs.", "particulars", "w.d.v"}
+    for r in range(1, ws_cy.max_row + 1):
+        for col in [ag_col, al_col, sl_col]:
+            cell = ws_cy.cell(r, col)
+            if isinstance(cell, _MC): continue
+            v = cell.value
+            if v is None: continue
+            vs = str(v).strip().lower()
+            if vs in _header_skip: continue  # keep header text
+            if isinstance(v, str) and "sum" in vs: continue  # keep =SUM() totals
+            if isinstance(v, (int, float)) or (isinstance(v, str) and v.startswith("=")):
                 cell.value = None
                 cleared += 1
 
