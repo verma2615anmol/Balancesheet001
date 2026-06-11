@@ -7296,13 +7296,19 @@ def tb_read_bs():
 
 def _rollover_fixed_assets(output_path, cy_year, log):
     """
-    Year-end Fixed Assets rollover — works with ANY template structure:
+    Year-end Fixed Assets rollover:
 
-    1. FA P. Yr.: overwrite entirely with resolved values from FA C. Yr.
-       (direct copy of actuals — no WDV computation needed)
-    2. FA C. Yr.: clear additions (>180d, <180d) and sale columns for every
-       asset row; opening stays (formula to PY closing auto-recalculates)
-    3. Update date headers in both sheets
+    1. FA P. Yr.: update ONLY the opening-WDV column (col B) for each data row
+       with the CY closing-WDV value (col I); all formulas (TOTAL, DEP, CLOSING)
+       are preserved intact so the sheet recalculates correctly.
+       Clear additions/sale columns so PY shows 0 additions (last year's actuals
+       already captured via opening WDV).
+    2. FA C. Yr.: clear ONLY hardcoded numeric values in the additions-input area
+       (rows below data_start where there are no rate values — i.e. the per-item
+       date/amount input rows). Formula cells in the main data table (=+C55 etc.)
+       are left untouched; they will auto-recalculate to 0 once their source cells
+       are cleared.
+    3. Update date headers in both sheets.
     """
     from openpyxl import load_workbook as _lwb
     from openpyxl.cell import MergedCell as _MC
@@ -7329,7 +7335,12 @@ def _rollover_fixed_assets(output_path, cy_year, log):
     ws_cy_do = wb_do[cy_sn]
 
     # ── Detect column positions from header rows ──────────────────────────
-    ag_col = 3; al_col = 4; sl_col = 5; rt_col = 7; date_row = 7; data_start = 9
+    # op_col = opening WDV (B), ag_col = additions>180d (C), al_col = additions<180d (D)
+    # sl_col = sale (E), tt_col = total (F), rt_col = rate (G), dp_col = dep (H),
+    # cl_col = closing WDV (I)
+    op_col = 2; ag_col = 3; al_col = 4; sl_col = 5; tt_col = 6
+    rt_col = 7; dp_col = 8; cl_col = 9
+    date_row = 7; data_start = 9
 
     for r in range(1, 15):
         vals = []
@@ -7345,52 +7356,136 @@ def _rollover_fixed_assets(output_path, cy_year, log):
         if "greater" in row_str or ("addition" in row_str and "sale" in row_str):
             data_start = r + 1
             for ci, v in enumerate(vals, 1):
-                if "greater" in v: ag_col = ci
-                elif "less" in v and v != "less":   al_col = ci
-                elif v in ("sale", "sales"):        sl_col = ci
-                elif v in ("%", "rate", "rate %"):  rt_col = ci
+                if "w.d.v" in v and ci < 3:        op_col = ci
+                elif "greater" in v:               ag_col = ci
+                elif "less" in v and v != "less":  al_col = ci
+                elif v in ("sale", "sales"):       sl_col = ci
+                elif v in ("total",):              tt_col = ci
+                elif v in ("%", "rate", "rate %"): rt_col = ci
+                elif "depreciation" in v:          dp_col = ci
+                elif "w.d.v" in v and ci > 5:      cl_col = ci
 
-    # ── Collect all resolved values from CY sheet ─────────────────────────
-    cy_all_rows = {}
-    for r in range(1, ws_cy.max_row + 1):
-        row_data = {}
-        for c in range(1, ws_cy.max_column + 1):
-            cy_c  = ws_cy.cell(r, c)
-            cy_do = ws_cy_do.cell(r, c)
-            if isinstance(cy_c, _MC): continue
-            v_raw = cy_c.value
-            v_do  = cy_do.value
-            if v_raw is None: continue
-            if isinstance(v_do, (int, float)):
-                row_data[c] = v_do
-            elif isinstance(v_raw, str) and not v_raw.startswith("="):
-                row_data[c] = v_raw
-            elif isinstance(v_raw, str) and v_raw.startswith("="):
-                if isinstance(v_do, (int, float)):
-                    row_data[c] = v_do
-                elif v_do is not None:
-                    row_data[c] = v_do
-        if row_data:
-            cy_all_rows[r] = row_data
+    # ── Collect resolved CY closing-WDV per data row ──────────────────────
+    # We read the data_only workbook for resolved formula values.
+    # For each asset data row: record (opening_WDV, closing_WDV, rate).
+    cy_closing = {}   # {row: closing_wdv_float}
+    cy_opening = {}   # {row: opening_wdv_float}  (for PY new opening = CY closing)
+
+    # Auto-detect rate column if header scan missed it
+    rate_values_found = sum(
+        1 for r in range(data_start, min(ws_cy.max_row + 1, data_start + 40))
+        if isinstance(ws_cy_do.cell(r, rt_col).value, (int, float))
+        and ws_cy_do.cell(r, rt_col).value in (5, 10, 15, 20, 25, 30, 40, 60, 100)
+    )
+    if rate_values_found == 0:
+        for try_col in range(6, 11):
+            cnt = sum(
+                1 for r in range(data_start, min(ws_cy.max_row + 1, data_start + 40))
+                if isinstance(ws_cy_do.cell(r, try_col).value, (int, float))
+                and ws_cy_do.cell(r, try_col).value in (5, 10, 15, 20, 25, 30, 40, 60, 100)
+            )
+            if cnt >= 2:
+                rt_col = try_col
+                log.append(f"  FA: rate col auto-corrected to C{rt_col}")
+                break
+
+    for r in range(data_start, ws_cy.max_row + 1):
+        if isinstance(ws_cy.cell(r, rt_col), _MC):
+            continue
+        rate_v = ws_cy_do.cell(r, rt_col).value
+        if rate_v is None:
+            rate_v = ws_cy.cell(r, rt_col).value
+            if isinstance(rate_v, str):
+                try: rate_v = float(rate_v)
+                except: rate_v = None
+        if not isinstance(rate_v, (int, float)):
+            continue
+        nm = str(ws_cy.cell(r, 1).value or "").strip().lower()
+        if nm in ("total", "grand total"):
+            continue
+        cl_v = ws_cy_do.cell(r, cl_col).value
+        op_v = ws_cy_do.cell(r, op_col).value
+        if isinstance(cl_v, (int, float)):
+            cy_closing[r] = float(cl_v)
+        if isinstance(op_v, (int, float)):
+            cy_opening[r] = float(op_v)
 
     wb_do.close()
 
-    # ── Step 1: Overwrite PY with CY actuals ──────────────────────────────
+    # ── Step 1: Update PY opening-WDV column with CY closing-WDV ─────────
+    # Strategy: preserve ALL existing formulas in PY sheet.
+    # Only update the hardcoded opening-WDV values (col B/op_col) for data rows.
+    # Also clear additions and sale columns (they should be 0 for the new PY period
+    # since those actuals are now reflected in the opening WDV).
     if py_sn:
         ws_py = wb[py_sn]
-        # Clear existing PY data
+
+        # Detect PY opening-WDV col by matching the same column letter as CY
+        py_op_col = op_col  # same col position assumed (both use col B)
+
+        # Detect data rows in PY sheet using rate column
+        py_data_start = data_start  # same header structure assumed
+        py_rt_col = rt_col
+
+        # Scan PY to find data rows (rows with numeric rate values)
+        py_data_rows = set()
         for r in range(1, ws_py.max_row + 1):
-            for c in range(1, ws_py.max_column + 1):
-                cell = ws_py.cell(r, c)
-                if not isinstance(cell, _MC) and cell.value is not None:
-                    cell.value = None
-        # Write CY resolved values to PY
-        for r, row_data in cy_all_rows.items():
-            for c, val in row_data.items():
-                py_cell = ws_py.cell(r, c)
-                if not isinstance(py_cell, _MC):
-                    py_cell.value = val
-        # Update PY dates (one year back)
+            cell = ws_py.cell(r, py_rt_col)
+            if isinstance(cell, _MC): continue
+            v = cell.value
+            if isinstance(v, (int, float)) and v in (5, 10, 15, 20, 25, 30, 40, 60, 100):
+                nm = str(ws_py.cell(r, 1).value or "").strip().lower()
+                if nm not in ("total", "grand total"):
+                    py_data_rows.add(r)
+
+        # Build CY-row → PY-row mapping by matching asset names in col A
+        cy_name_to_row = {}
+        for r in range(data_start, ws_cy.max_row + 1):
+            if r not in cy_closing: continue
+            nm = str(ws_cy.cell(r, 1).value or "").strip()
+            # For CY sheets that reference PY via formula like ='Fixed Assets P. Yr.'!A9
+            # resolve the actual asset name
+            cy_a = ws_cy.cell(r, 1).value
+            if isinstance(cy_a, str) and cy_a.startswith("="):
+                # Can't resolve formula — use row offset matching instead
+                cy_name_to_row[r] = r  # will fall back to row-offset below
+            else:
+                cy_name_to_row[nm.lower()] = (r, cy_closing[r])
+
+        # Update PY opening WDV and clear additions/sale
+        updated = 0
+        for py_r in py_data_rows:
+            # Match by asset name if possible
+            py_nm = str(ws_py.cell(py_r, 1).value or "").strip().lower()
+            new_opening = None
+            if py_nm in cy_name_to_row:
+                new_opening = cy_name_to_row[py_nm][1]
+            else:
+                # Fallback: match by row position offset (CY data rows relative to data_start)
+                cy_r_equiv = data_start + (py_r - py_data_start)
+                if cy_r_equiv in cy_closing:
+                    new_opening = cy_closing[cy_r_equiv]
+
+            if new_opening is not None:
+                op_cell = ws_py.cell(py_r, py_op_col)
+                if not isinstance(op_cell, _MC) and not (
+                    isinstance(op_cell.value, str) and op_cell.value.startswith("=")
+                ):
+                    op_cell.value = round(new_opening, 2)
+                    updated += 1
+
+            # Clear additions (ag_col, al_col) and sale (sl_col) in PY
+            # These should be 0 (new PY year has no new additions yet)
+            for col in [ag_col, al_col, sl_col]:
+                cell = ws_py.cell(py_r, col)
+                if isinstance(cell, _MC): continue
+                v = cell.value
+                if v is None: continue
+                # Only clear hardcoded numbers — keep formulas
+                if isinstance(v, (int, float)):
+                    cell.value = 0
+
+        # Update PY date headers
         try:
             py_oy  = int(cy_year) - 2
             py_cy2 = int(cy_year) - 1
@@ -7403,78 +7498,64 @@ def _rollover_fixed_assets(output_path, cy_year, log):
                         cell.value = f"01.04.{py_oy}"
                     elif _re.fullmatch(r"\d{1,2}[./]03[./]\d{4}", v):
                         cell.value = f"31.03.{py_cy2}"
-            log.append(f"\u2713 FA PY: 01.04.{py_oy} \u2192 31.03.{py_cy2}")
+            log.append(f"\u2713 FA PY: {updated} opening WDV updated | 01.04.{py_oy} \u2192 31.03.{py_cy2}")
         except Exception as _e:
             log.append(f"\u26a0 FA PY dates: {_e}")
 
-    # ── Step 2: Clear additions and sale in CY ────────────────────────────
-    # Auto-detect rate column if not found in header scan (fallback: scan cols 6-10
-    # for the column that has only numeric values like 10, 15, 20, 25, 40).
-    # Use data_only workbook to check resolved rate values (handles formula-based rate cols)
-    rate_values_found = sum(
-        1 for r in range(1, min(ws_cy.max_row + 1, 50))
-        if isinstance(ws_cy_do.cell(r, rt_col).value, (int, float))
-        and ws_cy_do.cell(r, rt_col).value in (5, 10, 15, 20, 25, 30, 40, 60, 100, 0)
-    )
-    if rate_values_found == 0:
-        # rt_col default wrong — find correct rate column using data_only values
-        for try_col in range(6, 11):
-            cnt = sum(
-                1 for r in range(1, min(ws_cy.max_row + 1, 50))
-                if isinstance(ws_cy_do.cell(r, try_col).value, (int, float))
-                and ws_cy_do.cell(r, try_col).value in (5, 10, 15, 20, 25, 30, 40, 60, 100, 0)
-                and ws_cy_do.cell(r, try_col).value > 0
-            )
-            if cnt >= 2:
-                rt_col = try_col
-                log.append(f"  FA: rate col auto-corrected to C{rt_col}")
-                break
-
-    cleared = 0
-    for r in range(1, ws_cy.max_row + 1):
-        # Asset row = has a numeric RATE value — check data_only for resolved values
-        if isinstance(ws_cy.cell(r, rt_col), _MC): continue
-        rate_v = ws_cy_do.cell(r, rt_col).value  # resolved value from data_only
-        if rate_v is None:
-            # Fallback: try formula view (for templates with plain numeric rates)
-            rate_v = ws_cy.cell(r, rt_col).value
-            if isinstance(rate_v, str):
-                try: rate_v = float(rate_v)
-                except: rate_v = None
-        if not isinstance(rate_v, (int, float)): continue
-
-        # Skip total rows
-        nm = str(ws_cy.cell(r, 1).value or "").strip().lower()
-        if nm in ("total", "grand total"): continue
-
-        # Clear additions (ag_col, al_col) and sale (sl_col) — blank for new year
-        for col in [ag_col, al_col, sl_col]:
-            cell = ws_cy.cell(r, col)
-            if isinstance(cell, _MC): continue
-            if cell.value is not None:
-                cell.value = None
-                cleared += 1
-
-    # ── Also clear addition input rows (e.g. per-item input section below total) ──
-    # Some templates have an additions input area below the main asset table
-    # (e.g. Atultex: R49+ with individual purchase dates and amounts).
-    # Clear any remaining numeric values in ag/al/sl cols across ALL rows.
+    # ── Step 2: Clear additions input area in CY (NOT main data table) ────
+    # The main data table rows have formula-driven additions (=+C55 etc.) that
+    # will auto-clear once the source input rows are cleared.
+    # We clear ONLY rows that are NOT data rows (i.e. no rate value) and contain
+    # numeric values in the additions col — these are the per-item input rows.
     _header_skip = {"additions", "greater than", "less than", "sale",
-                    "180 days", "amount in rs.", "particulars", "w.d.v"}
+                    "180 days", "amount in rs.", "particulars", "w.d.v",
+                    "amount in rs", "180days"}
+    cleared = 0
+
+    # Rows that are data rows (have rate value) — skip formula cells in these
+    cy_data_rows = set(cy_closing.keys())
+
     for r in range(1, ws_cy.max_row + 1):
+        is_data_row = r in cy_data_rows
         for col in [ag_col, al_col, sl_col]:
             cell = ws_cy.cell(r, col)
             if isinstance(cell, _MC): continue
             v = cell.value
             if v is None: continue
             vs = str(v).strip().lower()
-            if vs in _header_skip: continue  # keep header text
-            if isinstance(v, str) and "sum" in vs: continue  # keep =SUM() totals
-            if isinstance(v, (int, float)) or (isinstance(v, str) and v.startswith("=")):
-                cell.value = None
-                cleared += 1
+            if vs in _header_skip: continue
+            if isinstance(v, str) and "sum" in vs.lower(): continue  # keep =SUM()
 
-    # ── Step 3: Update CY dates ───────────────────────────────────────────
+            if is_data_row:
+                # In main data rows: only clear hardcoded numbers (not formulas)
+                # Formulas like =+C55 reference input rows; those will recalc to 0
+                if isinstance(v, (int, float)):
+                    cell.value = None
+                    cleared += 1
+                # Do NOT clear formula cells (=+C55 etc.) — let them recalculate
+            else:
+                # In input/detail rows: clear both numbers AND date strings
+                # (these are the per-item purchase entries like "18.04.2024", 35156.25)
+                if isinstance(v, (int, float)):
+                    cell.value = None
+                    cleared += 1
+                elif isinstance(v, str) and not v.startswith("="):
+                    # Clear date strings and asset name text in input section
+                    if _re.fullmatch(r"\d{1,2}[./]\d{2}[./]\d{4}", v.strip()):
+                        cell.value = None
+                        cleared += 1
+
+    # Also clear date-string cells in col B of non-data input rows (purchase dates)
+    # These are always in rows that are NOT main data rows (no rate value).
+    for r in range(data_start, ws_cy.max_row + 1):
+        if r in cy_data_rows: continue
+        cell_b = ws_cy.cell(r, 2)
+        if isinstance(cell_b, _MC): continue
+        v = cell_b.value
+        if isinstance(v, str) and _re.fullmatch(r"\d{1,2}[./]\d{2}[./]\d{4}", v.strip()):
+            cell_b.value = None
+
+    # ── Step 3: Update CY date headers ───────────────────────────────────
     try:
         new_oy = int(cy_year) - 1
         new_cy = int(cy_year)
@@ -7487,11 +7568,11 @@ def _rollover_fixed_assets(output_path, cy_year, log):
                     cell.value = f"01.04.{new_oy}"
                 elif _re.fullmatch(r"\d{1,2}[./]03[./]\d{4}", v):
                     cell.value = f"31.03.{new_cy}"
-        log.append(f"\u2713 FA CY: {cleared} cleared | 01.04.{new_oy} \u2192 31.03.{new_cy}")
+        log.append(f"\u2713 FA CY: {cleared} input cells cleared | 01.04.{new_oy} \u2192 31.03.{new_cy}")
     except Exception as _de:
         log.append(f"\u26a0 FA CY dates: {_de}")
 
-    # ── #REF cleaner (merged here to avoid extra open/save) ─────────────
+    # ── #REF cleaner ─────────────────────────────────────────────────────
     ref_count = 0
     for _sn in wb.sheetnames:
         _ws = wb[_sn]
