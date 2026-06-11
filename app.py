@@ -5664,6 +5664,10 @@ def process_file():
         finally:
             try: os.remove(ip)
             except: pass
+
+        # ── FA year-end rollover (clears additions/sale, copies CY→PY) ──
+        _rollover_fixed_assets(op, str(ny), result.get("log", []))
+
         log_usage(user["id"], fname)
         return jsonify({"status": "success", "log": result["log"], "file_id": h, "filename": fname})
     except Exception as e:
