@@ -654,6 +654,10 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
             return full
         action, new_val = changes[ref]
         if action == "clear_v":
+            # Remove both formula <f> and cached value <v> so cell is truly blank
+            # (keeping <f> would cause formula to recalculate, showing stale data)
+            full = re.sub(r'<f[^>]*>.*?</f>', '', full, flags=re.DOTALL)
+            full = re.sub(r'<f[^>]*/>', '', full)
             full = re.sub(r'<v>[^<]*</v>', '', full)
             full = re.sub(r'<v\s*/>', '', full)
         elif action == "clear_v_keep_f":
