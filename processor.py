@@ -585,9 +585,17 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                 cy_l = py_to_cy[cl]
                 py_l, vals, frows = col_info[cy_l]
                 if rn in vals:
-                    # BUG 3 FIX: Write CY value to PY cell even if PY cell
-                    # is currently a formula.
-                    changes[ref] = ("set_v_overwrite", _fmt_num(vals[rn]))
+                    # If PY cell already has a formula (<f> tag), keep the formula
+                    # intact and only update the cached <v> so it shows correctly
+                    # until Excel recalculates. This preserves cross-sheet references
+                    # like ='notes to bs'!E20 and =SUM(F12:F20) in BS/P&L PY columns.
+                    py_has_formula = (
+                        cell_el.find(f"{{{_NS}}}f") is not None
+                    )
+                    if py_has_formula:
+                        changes[ref] = ("set_v_keep_f", _fmt_num(vals[rn]))
+                    else:
+                        changes[ref] = ("set_v_overwrite", _fmt_num(vals[rn]))
                 else:
                     # BUG 6 FIX: Only clear PY cell when CY cell is TRULY empty
                     # (has no <v> tag at all). Skip if CY has a string value
@@ -665,11 +673,13 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
             # Excel recalculates formula when file is opened
             full = re.sub(r'<v>[^<]*</v>', '', full)
             full = re.sub(r'<v\s*/>', '', full)
-        elif action in ("set_v", "set_v_overwrite"):
+        elif action in ("set_v", "set_v_overwrite", "set_v_keep_f"):
             if action == "set_v_overwrite":
                 # Remove any <f>...</f> formula tag first (convert formula → value)
                 full = re.sub(r'<f\b[^>]*>.*?</f>', '', full, flags=re.DOTALL)
                 full = re.sub(r'<f\b[^>]*/>', '', full)
+            # set_v_keep_f: keep formula tag, just update cached <v> value
+            # (for PY cells that have cross-sheet formulas like ='notes to bs'!E20)
             # BUG 1 FIX: self-closing empty cells (<c r="E16" s="814"/>) end with />
             # not </c>, so replace('</c>', ...) silently fails. Convert to paired tag.
             if full.rstrip().endswith('/>'):
@@ -678,8 +688,9 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                 full = re.sub(r'<v>[^<]*</v>', f'<v>{new_val}</v>', full)
             else:
                 full = full.replace('</c>', f'<v>{new_val}</v></c>')
-            # Remove string-type attribute — it's a number now
-            full = re.sub(r'\s*t="s"', '', full)
+            # Remove string-type attribute — it's a number now (only for overwrite)
+            if action != "set_v_keep_f":
+                full = re.sub(r'\s*t="s"', '', full)
         return full
 
     def _fix_row(rm):
