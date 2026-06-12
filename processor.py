@@ -18,9 +18,7 @@ import xml.etree.ElementTree as ET
 
 from openpyxl import load_workbook
 from openpyxl.cell import MergedCell
-from openpyxl.formula.translate import Translator
 from openpyxl.utils import get_column_letter
-from xml.sax.saxutils import escape as _xml_escape
 
 # ── thresholds ─────────────────────────────────────────────────────────────────
 BIG_ROWS        = 3000
@@ -336,11 +334,10 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
     Open the workbook ONCE (read_only=True, data_only=True).
 
     Returns:
-        sizes             {sheet_name: (rows, cols)}
-        shift_map         {sheet_name: [(cy_letter, py_letter), ...]}
-        cy_values         {sheet_name: {cy_col_letter: {row_int: float}}}
-        cy_formulas       {sheet_name: {cy_col_letter: set_of_row_ints}}
-        cy_formula_texts  {sheet_name: {cy_col_letter: {row_int: formula_text}}}
+        sizes        {sheet_name: (rows, cols)}
+        shift_map    {sheet_name: [(cy_letter, py_letter), ...]}
+        cy_values    {sheet_name: {cy_col_letter: {row_int: float}}}
+        cy_formulas  {sheet_name: {cy_col_letter: set_of_row_ints}}
 
     Strategy:
     - data_only=True means formula cells return their last-cached value.
@@ -372,10 +369,12 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
     sizes = {sn: file_sizes.get(sf, (0, 0)) for sn, sf in smap.items()}
     big_names = {n for n, (r, c) in sizes.items() if r > BIG_ROWS or c > BIG_COLS}
 
-    # ── Step 2: extract formula-cell refs + texts directly from sheet XML ───
-    formula_refs = {}    # {sheet_file: set_of_refs}
-    formula_texts = {}   # {sheet_file: {"E5": "SUM(D14:D15)", ...}}
-    # Parse read-only with ET so each <c> / <f> pair is captured exactly.
+    # ── Step 2: extract formula-cell refs directly from ZIP XML (regex, no ET)
+    #    formula_refs[sheet_file] = set of "ColRow" refs like {"E5","E12"}
+    formula_refs = {}  # {sheet_file: set_of_refs}
+    # A formula cell in OOXML looks like: <c r="E5" ...><f ...>...</f><v>...</v></c>
+    # We just need to find all refs that contain a <f> tag.
+    _f_cell_re = re.compile(rb'<c\b[^>]*\br="([A-Z]+\d+)"[^>]*>[^<]*<f[ />]')
     with zipfile.ZipFile(filepath) as z:
         for sn, sf in smap.items():
             if sn in big_names:
@@ -385,30 +384,16 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
                 continue
             try:
                 xml_data = z.read(sf)
-                refs = set()
-                ftexts = {}
-                root = ET.fromstring(xml_data)
-                for cell_el in root.findall(f'.//{{{_NS}}}c'):
-                    ref = cell_el.get('r', '')
-                    if not ref:
-                        continue
-                    f_el = cell_el.find(f'{{{_NS}}}f')
-                    if f_el is None:
-                        continue
-                    refs.add(ref)
-                    ftexts[ref] = f_el.text or ''
+                refs = set(m.group(1).decode() for m in _f_cell_re.finditer(xml_data))
                 formula_refs[sf] = refs
-                formula_texts[sf] = ftexts
             except Exception:
                 formula_refs[sf] = set()
-                formula_texts[sf] = {}
 
     # ── Step 3: single openpyxl open (data_only → gets cached values) ─────
     fb = {k.strip().lower(): v for k, v in SHEET_COL_MAP.items()}
     shift_map  = {}
     cy_values  = {}
     cy_formulas = {}
-    cy_formula_texts = {}
 
     wb = load_workbook(filepath, read_only=True, data_only=True)
     try:
@@ -433,17 +418,14 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
             # Build formula-row sets from pre-extracted refs
             sf = smap.get(sn, "")
             sheet_frefs = formula_refs.get(sf, set())
-            sheet_ftexts = formula_texts.get(sf, {})
 
             cy_vals_sheet   = {}
             cy_frows_sheet  = {}
-            cy_ftexts_sheet = {}
 
             for cy_l, _ in det:
                 ci = _col_idx(cy_l)
                 vals  = {}
                 frows = set()
-                ftxts = {}
 
                 for row in ws.iter_rows(min_col=ci, max_col=ci):
                     for cell in row:
@@ -457,7 +439,6 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
                         if ref in sheet_frefs:
                             # It's a formula cell — record row, grab cached value too
                             frows.add(rn)
-                            ftxts[rn] = sheet_ftexts.get(ref, '')
                             if isinstance(cell.value, (int, float)) and cell.value is not None:
                                 vals[rn] = float(cell.value)
                             elif cell.value is None:
@@ -469,13 +450,11 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
                             # BUG 2 FIX: dash string = zero. Copy 0 to PY column.
                             vals[rn] = 0.0
 
-                cy_vals_sheet[cy_l]   = vals
-                cy_frows_sheet[cy_l]  = frows
-                cy_ftexts_sheet[cy_l] = ftxts
+                cy_vals_sheet[cy_l]  = vals
+                cy_frows_sheet[cy_l] = frows
 
-            cy_values[sn]        = cy_vals_sheet
-            cy_formulas[sn]      = cy_frows_sheet
-            cy_formula_texts[sn] = cy_ftexts_sheet
+            cy_values[sn]   = cy_vals_sheet
+            cy_formulas[sn] = cy_frows_sheet
 
     finally:
         wb.close()
@@ -564,28 +543,15 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
     except Exception:
         pass
 
-    return sizes, shift_map, cy_values, cy_formulas, cy_formula_texts, cap_data
+    return sizes, shift_map, cy_values, cy_formulas, cap_data
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  XML sheet manipulation  (regex on raw bytes — never ET.tostring)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _shift_formula_for_py(formula_text: str, cy_col: str, py_col: str) -> str:
-    """Translate CY formula text into the PY column using Excel semantics."""
-    if not formula_text:
-        return formula_text
-    if cy_col == py_col:
-        return formula_text
-    try:
-        translated = Translator(f"={formula_text}", origin=f"{cy_col}1").translate_formula(dest=f"{py_col}1")
-        return translated[1:] if translated.startswith('=') else translated
-    except Exception:
-        return formula_text
-
-
 def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
-                       cy_vals: dict, cy_formulas: dict, cy_formula_texts: dict) -> bytes:
+                       cy_vals: dict, cy_formulas: dict) -> bytes:
     """
     Surgical byte-level edits on a worksheet XML:
 
@@ -596,15 +562,12 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
     Never calls ET.tostring — preserves all namespace prefixes exactly.
     """
     # Build lookup maps
-    col_info  = {}   # cy_letter → (py_letter, {row: val}, formula_row_set, {row: formula_text})
+    col_info  = {}   # cy_letter → (py_letter, {row: val}, formula_row_set)
     py_to_cy  = {}   # py_letter → cy_letter  (reverse map)
     for cy_l, py_l in col_pairs:
-        col_info[cy_l] = (
-            py_l,
-            cy_vals.get(cy_l, {}),
-            cy_formulas.get(cy_l, set()),
-            cy_formula_texts.get(cy_l, {})
-        )
+        col_info[cy_l] = (py_l,
+                          cy_vals.get(cy_l, {}),
+                          cy_formulas.get(cy_l, set()))
         py_to_cy[py_l] = cy_l
 
     cy_letters = set(col_info.keys())
@@ -632,14 +595,18 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
 
             if cl in py_letters:
                 cy_l = py_to_cy[cl]
-                py_l, vals, frows, ftxts = col_info[cy_l]
+                py_l, vals, frows = col_info[cy_l]
                 if rn in vals:
-                    cy_formula = ftxts.get(rn, "")
-                    if cy_formula:
-                        shifted_formula = _shift_formula_for_py(cy_formula, cy_l, py_l)
-                        changes[ref] = ("set_formula_and_v", shifted_formula, _fmt_num(vals[rn]))
+                    # If PY cell already has a formula (<f> tag), keep the formula
+                    # intact and only update the cached <v> so it shows correctly
+                    # until Excel recalculates. This preserves cross-sheet references
+                    # like ='notes to bs'!E20 and =SUM(F12:F20) in BS/P&L PY columns.
+                    py_has_formula = (
+                        cell_el.find(f"{{{_NS}}}f") is not None
+                    )
+                    if py_has_formula:
+                        changes[ref] = ("set_v_keep_f", _fmt_num(vals[rn]))
                     else:
-                        # No CY formula on this row: treat it as a constant copy.
                         changes[ref] = ("set_v_overwrite", _fmt_num(vals[rn]))
                 else:
                     # BUG 6 FIX: Only clear PY cell when CY cell is TRULY empty
@@ -663,7 +630,7 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                         changes[ref] = ("clear_v", None)
 
             if cl in cy_letters:
-                _, vals, frows, _ = col_info[cl]
+                _, vals, frows = col_info[cl]
                 if rn in vals:
                     if rn in frows:
                         # Formula cell: clear cached <v> but KEEP <f> formula intact
@@ -675,7 +642,7 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
 
     # BUG 1 FIX: Build insertions dict for PY cells that don't exist in XML
     # These are CY values where there's no existing PY <c> element to overwrite
-    insertions = {}  # {row_num: {py_letter: (val_str, formula_text_or_none)}}
+    insertions = {}  # {row_num: {py_letter: val_str}}
     existing_py_refs = set()
     for row_el in sd:
         for cell_el in row_el:
@@ -684,14 +651,12 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
             if m2 and m2.group(1) in py_letters:
                 existing_py_refs.add(ref)
 
-    for cy_l, (py_l, vals, frows, ftxts) in col_info.items():
+    for cy_l, (py_l, vals, frows) in col_info.items():
         for rn, val in vals.items():
             py_ref = f"{py_l}{rn}"
             if py_ref not in existing_py_refs:
                 # PY cell doesn't exist — need to insert it
-                formula_text = ftxts.get(rn, '')
-                shifted_formula = _shift_formula_for_py(formula_text, cy_l, py_l) if formula_text else None
-                insertions.setdefault(rn, {})[py_l] = (_fmt_num(val), shifted_formula)
+                insertions.setdefault(rn, {})[py_l] = _fmt_num(val)
 
     if not changes and not insertions:
         return xml_bytes
@@ -707,9 +672,7 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
         ref = ref_m.group(1)
         if ref not in changes:
             return full
-        payload = changes[ref]
-        action = payload[0]
-        new_val = payload[-1] if len(payload) > 1 else None
+        action, new_val = changes[ref]
         if action == "clear_v":
             # Remove both formula <f> and cached value <v> so cell is truly blank
             # (keeping <f> would cause formula to recalculate, showing stale data)
@@ -722,27 +685,24 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
             # Excel recalculates formula when file is opened
             full = re.sub(r'<v>[^<]*</v>', '', full)
             full = re.sub(r'<v\s*/>', '', full)
-        elif action in ("set_v", "set_v_overwrite", "set_v_keep_f", "set_formula_and_v"):
-            if action in ("set_v_overwrite", "set_formula_and_v"):
-                # For overwrite: remove stale formula. For set_formula_and_v: replace
-                # the PY formula with the CY-derived structure.
+        elif action in ("set_v", "set_v_overwrite", "set_v_keep_f"):
+            if action == "set_v_overwrite":
+                # Remove any <f>...</f> formula tag first (convert formula → value)
                 full = re.sub(r'<f\b[^>]*>.*?</f>', '', full, flags=re.DOTALL)
                 full = re.sub(r'<f\b[^>]*/>', '', full)
-            # self-closing empty cells (<c r="E16" s="814"/>) end with /> not </c>
+            # set_v_keep_f: keep formula tag, just update cached <v> value
+            # (for PY cells that have cross-sheet formulas like ='notes to bs'!E20)
+            # BUG 1 FIX: self-closing empty cells (<c r="E16" s="814"/>) end with />
+            # not </c>, so replace('</c>', ...) silently fails. Convert to paired tag.
             if full.rstrip().endswith('/>'):
                 full = re.sub(r'/>\s*$', '></c>', full.rstrip())
-            if action == "set_formula_and_v":
-                formula_text = _xml_escape(payload[1])
-                if '<v>' in full:
-                    full = re.sub(r'<v>[^<]*</v>', '', full)
-                full = full.replace('</c>', f'<f>{formula_text}</f><v>{payload[2]}</v></c>')
+            if '<v>' in full:
+                full = re.sub(r'<v>[^<]*</v>', f'<v>{new_val}</v>', full)
             else:
-                if '<v>' in full:
-                    full = re.sub(r'<v>[^<]*</v>', f'<v>{new_val}</v>', full)
-                else:
-                    full = full.replace('</c>', f'<v>{new_val}</v></c>')
-            # Remove string-type attribute — it's a number/formula now
-            full = re.sub(r'\s*t="s"', '', full)
+                full = full.replace('</c>', f'<v>{new_val}</v></c>')
+            # Remove string-type attribute — it's a number now (only for overwrite)
+            if action != "set_v_keep_f":
+                full = re.sub(r'\s*t="s"', '', full)
         return full
 
     def _fix_row(rm):
@@ -761,15 +721,11 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                 # For each PY letter that needs a new cell in this row
                 existing_refs = set(re.findall(r'r="([A-Z]+\d+)"', row_xml))
                 new_cells = ""
-                for py_l, payload in sorted(insertions[rn].items(),
-                                             key=lambda x: _col_idx(x[0])):
+                for py_l, val_str in sorted(insertions[rn].items(),
+                                            key=lambda x: _col_idx(x[0])):
                     ref = f"{py_l}{rn}"
                     if ref not in existing_refs:
-                        val_str, formula_text = payload
-                        if formula_text:
-                            new_cells += f'<c r="{ref}"><f>{_xml_escape(formula_text)}</f><v>{val_str}</v></c>'
-                        else:
-                            new_cells += f'<c r="{ref}"><v>{val_str}</v></c>'
+                        new_cells += f'<c r="{ref}"><v>{val_str}</v></c>'
                 if new_cells:
                     row_xml = row_xml.replace("</row>", new_cells + "</row>")
         return row_xml
@@ -1092,7 +1048,7 @@ def process(input_path: str, output_path: str,
     log   = []
 
     # ── Single-pass scan ──────────────────────────────────────────────────────
-    sizes, shift_map, cy_values, cy_formulas, cy_formula_texts, cap_data = _scan_workbook(input_path, closing_year)
+    sizes, shift_map, cy_values, cy_formulas, cap_data = _scan_workbook(input_path, closing_year)
     big_names = {n for n, (r, c) in sizes.items() if r > BIG_ROWS or c > BIG_COLS}
 
     ext_count = 0   # track external refs cleaned
@@ -1136,7 +1092,6 @@ def process(input_path: str, output_path: str,
                             shift_map[sheet_name],
                             cy_values.get(sheet_name, {}),
                             cy_formulas.get(sheet_name, {}),
-                            cy_formula_texts.get(sheet_name, {}),
                         )
                         data = _update_inline_strings(data, pairs)
                         desc = ", ".join(f"{c}→{p}" for c, p in shift_map[sheet_name])
