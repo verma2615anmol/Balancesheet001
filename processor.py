@@ -601,10 +601,55 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                     # intact and only update the cached <v> so it shows correctly
                     # until Excel recalculates. This preserves cross-sheet references
                     # like ='notes to bs'!E20 and =SUM(F12:F20) in BS/P&L PY columns.
-                    py_has_formula = (
-                        cell_el.find(f"{{{_NS}}}f") is not None
-                    )
-                    if py_has_formula:
+                    py_f_el = cell_el.find(f"{{{_NS}}}f")
+                    py_has_formula = (py_f_el is not None)
+
+                    if py_has_formula and rn in frows:
+                        # FORMULA-RANGE MISMATCH FIX:
+                        # Both PY and CY cells are formulas (e.g. PY=SUM(E14:E14),
+                        # CY=SUM(D14:D15)). After the shift, CY's range becomes the
+                        # correct range for PY (just translated CY-col → PY-col).
+                        # If we keep the old PY formula's range as-is, rows that were
+                        # only in CY's range (e.g. "Round Off" row 15, or row 41/45
+                        # in employee benefits) get dropped from the new PY total.
+                        #
+                        # Find the corresponding CY cell's <f> text in this same sheet
+                        # and, if it's a simple range formula (SUM/range refs using
+                        # only the cy_l column), translate cy_l -> py_l and use that
+                        # as the new PY formula. Otherwise fall back to old behaviour.
+                        cy_ref = f"{cy_l}{rn}"
+                        cy_f_text = None
+                        for _row_el in sd:
+                            for _cell_el in _row_el:
+                                if _cell_el.get("r") == cy_ref:
+                                    _f = _cell_el.find(f"{{{_NS}}}f")
+                                    if _f is not None and _f.text:
+                                        cy_f_text = _f.text
+                                    break
+                            if cy_f_text is not None:
+                                break
+
+                        new_py_formula = None
+                        if cy_f_text and "!" not in cy_f_text:
+                            # Only translate if the CY formula references ONLY the
+                            # cy_l column (e.g. SUM(D14:D15), D41+D42, etc.) — safe
+                            # to do a column-letter substitution without breaking
+                            # cross-sheet refs or multi-column formulas. The "!"
+                            # check excludes cross-sheet refs like =Details!D19,
+                            # where "D19" would otherwise be misread as a same-
+                            # sheet column-D reference.
+                            col_refs = set(re.findall(r'\b([A-Z]+)\d+\b', cy_f_text))
+                            if col_refs == {cy_l}:
+                                translated = re.sub(
+                                    rf'\b{cy_l}(\d+)\b', rf'{py_l}\1', cy_f_text
+                                )
+                                new_py_formula = translated
+
+                        if new_py_formula:
+                            changes[ref] = ("set_f", (new_py_formula, _fmt_num(vals[rn])))
+                        else:
+                            changes[ref] = ("set_v_keep_f", _fmt_num(vals[rn]))
+                    elif py_has_formula:
                         changes[ref] = ("set_v_keep_f", _fmt_num(vals[rn]))
                     else:
                         changes[ref] = ("set_v_overwrite", _fmt_num(vals[rn]))
@@ -685,6 +730,31 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
             # Excel recalculates formula when file is opened
             full = re.sub(r'<v>[^<]*</v>', '', full)
             full = re.sub(r'<v\s*/>', '', full)
+        elif action == "set_f":
+            # Replace the cell's formula entirely with a new formula (translated
+            # from the CY cell's range formula), and set the cached <v> to the
+            # CY-computed total so it displays correctly until recalculation.
+            new_formula, new_val = new_val
+            # Escape XML special chars in the formula text
+            esc_formula = (new_formula.replace("&", "&amp;")
+                                       .replace("<", "&lt;")
+                                       .replace(">", "&gt;"))
+            if full.rstrip().endswith('/>'):
+                full = re.sub(r'/>\s*$', '></c>', full.rstrip())
+            # Replace existing <f>...</f> or <f .../> with the new formula
+            if re.search(r'<f\b[^>]*>.*?</f>', full, flags=re.DOTALL):
+                full = re.sub(r'<f\b[^>]*>.*?</f>', f'<f>{esc_formula}</f>',
+                               full, flags=re.DOTALL)
+            elif re.search(r'<f\b[^>]*/>', full):
+                full = re.sub(r'<f\b[^>]*/>', f'<f>{esc_formula}</f>', full)
+            else:
+                full = full.replace('</c>', f'<f>{esc_formula}</f></c>')
+            # Update or insert the cached <v>
+            if '<v>' in full:
+                full = re.sub(r'<v>[^<]*</v>', f'<v>{new_val}</v>', full)
+            else:
+                full = full.replace('</c>', f'<v>{new_val}</v></c>')
+            full = re.sub(r'\s*t="s"', '', full)
         elif action in ("set_v", "set_v_overwrite", "set_v_keep_f"):
             if action == "set_v_overwrite":
                 # Remove any <f>...</f> formula tag first (convert formula → value)
