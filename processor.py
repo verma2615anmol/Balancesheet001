@@ -521,24 +521,40 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
 
     # ── Step 4: Scan capital sheet for CY/PY row data (Bugs 4 & 5) ──────
     #
-    # Templates can have ONE OR MORE partner/proprietor rows under a
-    # "Curret Year (CY)" section header, and a matching set of rows under
-    # a "Previous Year (PY)" section header. Older templates may also
-    # contain leftover/unused legacy blocks (e.g. an old single-proprietor
-    # "Owner's Capital Account" note) — these must be ignored.
+    # Templates vary in TWO ways that must both be detected dynamically:
+    #
+    # (a) COLUMN LAYOUT — the number and order of data columns (C onward)
+    #     differs between firms. A 2-partner firm may have 7 columns
+    #     (opening, introduced, interest, salary, withdrawals, profit,
+    #     closing); a single-proprietor firm may have only 5 (opening,
+    #     introduced, withdrawals, profit, closing). We detect each
+    #     column's ROLE from its header text in the header row (the row
+    #     containing "Sr. No." / "Name of...") rather than hardcoding
+    #     column positions.
+    #
+    # (b) PY ROW STRUCTURE — two patterns exist:
+    #     Pattern A (multi-partner, e.g. 2 partners): a separate
+    #       "Previous Year (PY)" SECTION HEADER followed by per-partner
+    #       data rows (Sr.No + Name + values), mirroring the CY block.
+    #     Pattern B (single proprietor): the "Previous Year (PY)" label
+    #       and the PY data values are in the SAME ROW (no separate
+    #       Sr.No/Name columns for PY).
     #
     # Strategy:
-    #   1. Find all "Curret/Current Year (CY)" and "Previous Year (PY)"
+    #   1. Find the header row (contains "Sr. No.") and derive col_roles
+    #      = {col_num: role} from its text.
+    #   2. Find all "Curret/Current Year (CY)" and "Previous Year (PY)"
     #      section header rows.
-    #   2. Find all data rows: col A = Sr. No. (int), col B = partner/
-    #      proprietor name (str), with numeric data in cols C-I.
-    #   3. Take the FIRST CY block's data rows (these are what `bs` and
-    #      other sheets reference for the current note).
-    #   4. Take the LAST PY block's data rows (the one most likely to be
-    #      this note's own prior-year mirror, immediately following the
-    #      CY block in the template).
-    #   5. Match CY rows to PY rows by partner/proprietor name (column B),
-    #      falling back to positional order if names don't match 1:1.
+    #   3. Find CY data rows: col A = Sr. No. (int), col B = name (str),
+    #      numeric data in the detected columns. Take rows belonging to
+    #      the FIRST CY block.
+    #   4. For PY: first look for Pattern-A data rows in the LAST PY
+    #      block (Sr.No + Name rows after a PY section header). If none
+    #      found, fall back to Pattern B: an inline row whose col A text
+    #      contains "previous year" AND which itself has numeric data in
+    #      the detected columns.
+    #   5. Match CY rows to PY rows by name (Pattern A) or 1:1 positional
+    #      (Pattern B, since there's only one row of each).
     cap_data = {}
     wb2 = load_workbook(filepath, read_only=True, data_only=True)
     try:
@@ -547,6 +563,45 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
                 continue
             ws_cap = wb2[sn]
 
+            # --- (a) Detect header row and column roles ---
+            header_row = None
+            for r in range(1, 20):
+                a = ws_cap.cell(r, 1).value
+                if isinstance(a, str) and a.strip().lower() in ("sr. no.", "sr no.", "sr no"):
+                    header_row = r
+                    break
+
+            col_roles = {}
+            if header_row:
+                for c in range(3, 12):
+                    v = ws_cap.cell(header_row, c).value
+                    if not isinstance(v, str):
+                        continue
+                    vl = v.strip().lower()
+                    if "march" in vl:
+                        col_roles[c] = "closing"
+                    elif "april" in vl or ("as at" in vl and "1st" in vl):
+                        col_roles[c] = "opening"
+                    elif "introduced" in vl:
+                        col_roles[c] = "introduced"
+                    elif "interest" in vl:
+                        col_roles[c] = "interest"
+                    elif "salary" in vl:
+                        col_roles[c] = "salary"
+                    elif "withdraw" in vl:
+                        col_roles[c] = "withdrawals"
+                    elif "profit" in vl or "loss" in vl:
+                        col_roles[c] = "profit"
+
+            if not col_roles:
+                # Fall back to the legacy fixed 7-column layout if header
+                # text couldn't be parsed (shouldn't normally happen).
+                col_roles = {3: "opening", 4: "introduced", 5: "interest",
+                              6: "salary", 7: "withdrawals", 8: "profit", 9: "closing"}
+
+            data_cols = sorted(col_roles.keys())
+
+            # --- (b) Section headers ---
             cy_hdrs, py_hdrs = [], []
             for row in ws_cap.iter_rows(min_row=1, max_row=60):
                 for cell in row:
@@ -563,8 +618,7 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
             if not cy_hdrs:
                 continue
 
-            # Data rows: Sr.No (int) in col A, name (str, len>2) in col B,
-            # with at least one numeric value in cols C-I.
+            # --- CY/PY data rows: Sr.No (int) + name (str) + numeric data ---
             data_rows = []
             for r in range(1, 60):
                 a = ws_cap.cell(r, 1).value
@@ -575,7 +629,7 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
                         "name of partners", "name of proprietor", "sr. no.", "particulars"
                     ):
                         if any(isinstance(ws_cap.cell(r, c).value, (int, float))
-                               for c in range(3, 10)):
+                               for c in data_cols):
                             data_rows.append((r, b.strip()))
 
             if not data_rows:
@@ -589,50 +643,69 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
                 return [(r, name) for r, name in data_rows if start_hdr < r < end]
 
             cy_block = _rows_in_block(cy_hdrs[0])
-            py_block = _rows_in_block(py_hdrs[-1]) if py_hdrs else []
-
             if not cy_block:
                 continue
 
-            # Match CY rows to PY rows by partner name; fall back to
-            # positional pairing if a name has no PY counterpart.
-            py_by_name = {name.strip().lower(): r for r, name in py_block}
-            pairs = []
-            used_py_rows = set()
-            for cy_r, cy_name in cy_block:
-                py_r = py_by_name.get(cy_name.strip().lower())
-                pairs.append((cy_r, py_r, cy_name))
-                if py_r:
-                    used_py_rows.add(py_r)
+            # --- PY rows: Pattern A (separate data rows) ---
+            py_block = _rows_in_block(py_hdrs[-1]) if py_hdrs else []
 
-            # Positional fallback for any CY rows that found no PY match
-            unmatched_py = [r for r, _ in py_block if r not in used_py_rows]
+            # --- PY rows: Pattern B (inline "Previous Year (PY)" row with
+            #     its own data in the SAME row, col A = the label text) ---
+            py_inline_rows = []
+            if not py_block:
+                for r in range(1, 60):
+                    a = ws_cap.cell(r, 1).value
+                    if isinstance(a, str) and "previous year" in a.strip().lower():
+                        if any(isinstance(ws_cap.cell(r, c).value, (int, float))
+                               for c in data_cols):
+                            py_inline_rows.append(r)
+
+            # --- Build (cy_row, py_row, name) pairs ---
             fixed_pairs = []
-            for cy_r, py_r, cy_name in pairs:
-                if py_r is None and unmatched_py:
-                    py_r = unmatched_py.pop(0)
-                fixed_pairs.append((cy_r, py_r, cy_name))
+            if py_block:
+                # Pattern A: match by partner name, fallback positional
+                py_by_name = {name.strip().lower(): r for r, name in py_block}
+                used_py_rows = set()
+                pairs = []
+                for cy_r, cy_name in cy_block:
+                    py_r = py_by_name.get(cy_name.strip().lower())
+                    pairs.append((cy_r, py_r, cy_name))
+                    if py_r:
+                        used_py_rows.add(py_r)
+                unmatched_py = [r for r, _ in py_block if r not in used_py_rows]
+                for cy_r, py_r, cy_name in pairs:
+                    if py_r is None and unmatched_py:
+                        py_r = unmatched_py.pop(0)
+                    fixed_pairs.append((cy_r, py_r, cy_name))
+            elif py_inline_rows:
+                # Pattern B: single proprietor — one CY row, one inline PY row
+                for i, (cy_r, cy_name) in enumerate(cy_block):
+                    py_r = py_inline_rows[i] if i < len(py_inline_rows) else None
+                    fixed_pairs.append((cy_r, py_r, cy_name))
+            else:
+                for cy_r, cy_name in cy_block:
+                    fixed_pairs.append((cy_r, None, cy_name))
 
-            # Read CY row values (cols C-I = opening, introduced, interest,
-            # salary, withdrawals, profit, closing)
+            # --- Read CY row values using detected column roles ---
             row_pairs = []
             for cy_r, py_r, cy_name in fixed_pairs:
                 cy_vals = {}
-                for col_num in range(3, 10):
+                for col_num, role in col_roles.items():
                     v = ws_cap.cell(cy_r, col_num).value
                     if isinstance(v, (int, float)):
-                        cy_vals[col_num] = float(v)
+                        cy_vals[role] = float(v)
                 row_pairs.append({
                     "cy_row": cy_r,
                     "py_row": py_r,
                     "name": cy_name,
-                    "cy_opening":    cy_vals.get(3),
-                    "cy_introduced": cy_vals.get(4),
-                    "cy_interest":   cy_vals.get(5),
-                    "cy_salary":     cy_vals.get(6),
-                    "cy_withdrawals":cy_vals.get(7),
-                    "cy_profit":     cy_vals.get(8),
-                    "cy_closing":    cy_vals.get(9),
+                    "col_roles": col_roles,
+                    "cy_opening":    cy_vals.get("opening"),
+                    "cy_introduced": cy_vals.get("introduced"),
+                    "cy_interest":   cy_vals.get("interest"),
+                    "cy_salary":     cy_vals.get("salary"),
+                    "cy_withdrawals":cy_vals.get("withdrawals"),
+                    "cy_profit":     cy_vals.get("profit"),
+                    "cy_closing":    cy_vals.get("closing"),
                 })
 
             if row_pairs:
@@ -649,7 +722,8 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
 
 def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                        cy_vals: dict, cy_formulas: dict,
-                       date_style_indices: set = None) -> bytes:
+                       date_style_indices: set = None,
+                       shift_map: dict = None) -> bytes:
     """
     Surgical byte-level edits on a worksheet XML:
 
@@ -671,6 +745,15 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
     cy_letters = set(col_info.keys())
     py_letters = set(py_to_cy.keys())
     date_style_indices = date_style_indices or set()
+    shift_map = shift_map or {}
+
+    # Build a quick lookup of "is this sheet!cell a PY-column cell that will
+    # be correctly mirrored by its own shift?" — used below to decide whether
+    # a cross-sheet formula in a PY cell is safe to keep.
+    # shift_map: {sheet_name: [(cy_letter, py_letter), ...]}
+    py_cols_by_sheet = {
+        sn: {py_l for _, py_l in pairs} for sn, pairs in shift_map.items()
+    }
 
     # Build the change dict: {cell_ref_str: ("set_v", new_val_str) | ("clear_v", None)}
     # We do this via a lightweight ET parse (read-only, no tostring ever called)
@@ -784,18 +867,38 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                         # actual figure as a plain number).
                         #
                         # If we kept PY's old formula (set_v_keep_f), Excel would
-                        # recalculate '=44317.6-82.3' back to 44235.3 on open,
-                        # silently overwriting the correct value (8002) and
-                        # unbalancing the sheet.
+                        # recalculate it on open, silently overwriting the correct
+                        # value and unbalancing the sheet.
                         #
-                        # Only keep the PY formula if it's a genuine cross-sheet
-                        # reference (contains '!', e.g. ='notes to bs'!E20) — those
-                        # still need to resolve correctly after the shift. Any
-                        # self-contained formula (arithmetic, SUM of its own
-                        # column, etc.) gets overwritten with the CY constant,
+                        # Only keep the PY formula if it's a cross-sheet reference
+                        # (e.g. ='notes to bs'!E20) AND the referenced cell is
+                        # itself a PY column in a sheet that's part of this same
+                        # shift (shift_map) — in that case, after both sheets are
+                        # shifted, the referenced cell will correctly mirror the
+                        # old CY data, just like the original formula intended
+                        # (e.g. bs!E8 -> 'notes to bs'!E20, where 'notes to bs'
+                        # also shifts D->E).
+                        #
+                        # Any other formula — self-contained arithmetic, SUM of
+                        # its own column, or a cross-sheet ref to a column that
+                        # ISN'T part of a coordinated PY shift (e.g. a stale
+                        # ='GROSS PROFIT'!E10 reference in an "Other Expenses"
+                        # line item) — gets overwritten with the CY constant,
                         # exactly like a plain value would be.
                         py_f_text = py_f_el.text if py_f_el is not None else None
+                        keep_formula = False
                         if py_f_text and "!" in py_f_text:
+                            m_ref = re.match(
+                                r"^=?\s*(?:'([^']+)'|([A-Za-z0-9_ ]+))!\$?([A-Z]+)\$?\d+\s*$",
+                                py_f_text.strip()
+                            )
+                            if m_ref:
+                                ref_sheet = (m_ref.group(1) or m_ref.group(2)).strip()
+                                ref_col = m_ref.group(3)
+                                ref_py_cols = py_cols_by_sheet.get(ref_sheet, set())
+                                if ref_col in ref_py_cols:
+                                    keep_formula = True
+                        if keep_formula:
                             changes[ref] = ("set_v_keep_f", _fmt_num(vals[rn]))
                         else:
                             changes[ref] = ("set_v_overwrite", _fmt_num(vals[rn]))
@@ -1011,49 +1114,46 @@ def _process_capital_sheet(xml_bytes: bytes, cap_data: dict) -> bytes:
     # Build changes dict: {cell_ref: ("set_v_overwrite", val) | ("clear_fv", None)}
     changes = {}
 
-    # cols 3-9 = C-I = opening, introduced, interest, salary, withdrawals, profit, closing
-    col_map = {
-        3: "opening",
-        4: "introduced",
-        5: "interest",
-        6: "salary",
-        7: "withdrawals",
-        8: "profit",
-        9: "closing",
-    }
-
     for pair in row_pairs:
         cy_row = pair.get("cy_row")
         py_row = pair.get("py_row")
+        col_roles = pair.get("col_roles") or {}
+        # role -> column letter, for this template's actual layout
+        role_to_col = {role: get_column_letter(c) for c, role in col_roles.items()}
 
         if py_row:
-            # PY row becomes a full mirror of the old CY row's data (cols C-I)
-            for col_num, key in col_map.items():
-                ref = f"{get_column_letter(col_num)}{py_row}"
-                val = pair.get(f"cy_{key}")
+            # PY row becomes a full mirror of the old CY row's data, using
+            # this template's own column layout (role_to_col).
+            for role, col_letter in role_to_col.items():
+                ref = f"{col_letter}{py_row}"
+                val = pair.get(f"cy_{role}")
                 if val is not None:
                     changes[ref] = ("set_v_overwrite", _fmt_num(float(val)))
                 else:
                     changes[ref] = ("clear_v", None)
 
         if cy_row:
-            # New CY row: opening = old CY closing (constant)
+            # New CY row: opening = old CY closing (constant), using
+            # whichever column this template uses for "opening".
             cy_closing = pair.get("cy_closing")
-            if cy_closing is not None:
-                changes[f"C{cy_row}"] = ("set_v_overwrite", _fmt_num(float(cy_closing)))
-            # Clear introduced/interest/salary/withdrawals (cols D-G) — new
-            # year has no entries yet. Use clear_fv to remove both formula
-            # AND cached value (some templates use formulas like
-            # =75242.8+884000 for withdrawals).
-            for col_num in [4, 5, 6, 7]:
-                ref = f"{get_column_letter(col_num)}{cy_row}"
-                changes[ref] = ("clear_fv", None)
-            # Profit (col 8 = H) and closing (col 9 = I) keep their formulas
-            # — they auto-recalculate from the shifted p&l sheet and the new
+            opening_col = role_to_col.get("opening")
+            if cy_closing is not None and opening_col:
+                changes[f"{opening_col}{cy_row}"] = ("set_v_overwrite", _fmt_num(float(cy_closing)))
+            # Clear introduced/interest/salary/withdrawals — new year has no
+            # entries yet. Use clear_fv to remove both formula AND cached
+            # value (some templates use formulas like =75242.8+884000).
+            for role in ("introduced", "interest", "salary", "withdrawals"):
+                col_letter = role_to_col.get(role)
+                if col_letter:
+                    ref = f"{col_letter}{cy_row}"
+                    changes[ref] = ("clear_fv", None)
+            # Profit and closing columns keep their formulas — they
+            # auto-recalculate from the shifted p&l sheet and the new
             # opening balance, so we leave them untouched.
 
     if not changes:
         return xml_bytes
+
 
 
     text = xml_bytes.decode("utf-8", errors="replace")
@@ -1349,6 +1449,7 @@ def process(input_path: str, output_path: str,
                             cy_values.get(sheet_name, {}),
                             cy_formulas.get(sheet_name, {}),
                             date_style_indices,
+                            shift_map,
                         )
                         data = _update_inline_strings(data, pairs)
                         desc = ", ".join(f"{c}→{p}" for c, p in shift_map[sheet_name])
