@@ -211,6 +211,42 @@ def _is_date_format_code(code: str) -> bool:
     return has_date_letters and not has_number_placeholder
 
 
+def _py_formula_keep(py_f_el, py_cols_by_sheet) -> bool:
+    """
+    Decide whether a PY cell's EXISTING formula should be kept (True) or
+    overwritten with the CY constant (False), when we've determined the PY
+    cell needs a new value written into it.
+
+    Only keep the formula if it's a cross-sheet reference (e.g.
+    ='notes to bs'!E20) AND the referenced cell is itself a PY column in a
+    sheet that's part of this same coordinated shift — in that case, after
+    both sheets are shifted, the referenced cell will correctly mirror the
+    old CY data (e.g. bs!E8 -> 'notes to bs'!E20, where 'notes to bs' also
+    shifts D->E).
+
+    Any other formula gets overwritten:
+      - self-contained arithmetic / disguised constants (e.g. "=6582",
+        "=44317.6-82.3") — these would recalculate back to their stale
+        value on open, silently corrupting the new PY figure.
+      - SUM of its own column, or cross-sheet refs to a column that ISN'T
+        part of a coordinated PY shift (e.g. a stale ='GROSS PROFIT'!E10
+        reference in an "Other Expenses" line item).
+    """
+    py_f_text = py_f_el.text if py_f_el is not None else None
+    if not py_f_text or "!" not in py_f_text:
+        return False
+    m_ref = re.match(
+        r"^=?\s*(?:'([^']+)'|([A-Za-z0-9_ ]+))!\$?([A-Z]+)\$?\d+\s*$",
+        py_f_text.strip()
+    )
+    if not m_ref:
+        return False
+    ref_sheet = (m_ref.group(1) or m_ref.group(2)).strip()
+    ref_col = m_ref.group(3)
+    ref_py_cols = py_cols_by_sheet.get(ref_sheet, set())
+    return ref_col in ref_py_cols
+
+
 def _try_eval_arithmetic_formula(formula_text):
     """
     If formula_text (with or without leading '=') is pure arithmetic on
@@ -915,7 +951,21 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                         if new_py_formula:
                             changes[ref] = ("set_f", (new_py_formula, _fmt_num(vals[rn])))
                         else:
-                            changes[ref] = ("set_v_keep_f", _fmt_num(vals[rn]))
+                            # No safe formula translation available (e.g. the
+                            # CY formula is itself a "disguised constant" like
+                            # "=18523.70" with no column references, so
+                            # col_refs == set() != {cy_l}). Fall back to the
+                            # same keep-vs-overwrite decision used below: only
+                            # keep the PY cell's existing formula if it's a
+                            # cross-sheet reference into another sheet's PY
+                            # column (a legitimate coordinated shift); otherwise
+                            # overwrite with the CY value — e.g. PY = "=6582"
+                            # (a stale disguised-constant from last year) must
+                            # become 18523.7, not stay "=6582".
+                            if _py_formula_keep(py_f_el, py_cols_by_sheet):
+                                changes[ref] = ("set_v_keep_f", _fmt_num(vals[rn]))
+                            else:
+                                changes[ref] = ("set_v_overwrite", _fmt_num(vals[rn]))
                     elif py_has_formula:
                         # CY cell is a plain constant (not a formula), but PY cell
                         # has its own formula — e.g. PY = '=44317.6-82.3' (a stale
@@ -942,20 +992,7 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                         # ='GROSS PROFIT'!E10 reference in an "Other Expenses"
                         # line item) — gets overwritten with the CY constant,
                         # exactly like a plain value would be.
-                        py_f_text = py_f_el.text if py_f_el is not None else None
-                        keep_formula = False
-                        if py_f_text and "!" in py_f_text:
-                            m_ref = re.match(
-                                r"^=?\s*(?:'([^']+)'|([A-Za-z0-9_ ]+))!\$?([A-Z]+)\$?\d+\s*$",
-                                py_f_text.strip()
-                            )
-                            if m_ref:
-                                ref_sheet = (m_ref.group(1) or m_ref.group(2)).strip()
-                                ref_col = m_ref.group(3)
-                                ref_py_cols = py_cols_by_sheet.get(ref_sheet, set())
-                                if ref_col in ref_py_cols:
-                                    keep_formula = True
-                        if keep_formula:
+                        if _py_formula_keep(py_f_el, py_cols_by_sheet):
                             changes[ref] = ("set_v_keep_f", _fmt_num(vals[rn]))
                         else:
                             changes[ref] = ("set_v_overwrite", _fmt_num(vals[rn]))
