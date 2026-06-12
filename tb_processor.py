@@ -1705,8 +1705,8 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
             # Separate secured vs unsecured based on Tally group
             def _is_unsecured(acct):
-                g = acct.get("group", "").lower()
-                n = acct.get("name", "").lower()
+                g = (acct.get("group") or "").lower()
+                n = (acct.get("name") or "").lower()
                 return "unsecure" in g or "unsecure" in n
 
             secured_accounts   = [a for a in ltb_accounts if not _is_unsecured(a)]
