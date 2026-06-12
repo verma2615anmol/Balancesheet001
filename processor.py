@@ -61,6 +61,18 @@ TEXT_ONLY_SHEETS = {s.strip().lower() for s in [
 # Capital sheets need special year-shift logic (Bugs 4 & 5)
 CAPITAL_SHEET_NAMES = {"capital"}
 
+def detect_fixed_asset_sheet_names(sheetnames):
+    """Return (cy_sheet_name, py_sheet_name) for fixed-asset sheets."""
+    cy_sn = py_sn = None
+    for sn in sheetnames or []:
+        sl = (sn or "").strip().lower()
+        if "p. yr" in sl or "p.yr" in sl or ("fixed" in sl and (" p." in sl or "p. " in sl)):
+            py_sn = sn
+        elif "fixed asset" in sl or (sl.startswith("fa") and "2022" not in sl) or "ppe" in sl:
+            if cy_sn is None:
+                cy_sn = sn
+    return cy_sn, py_sn
+
 # Sheets whose data must never be touched (raw transaction dumps etc.)
 RAW_DATA_SHEETS = {s.strip().lower() for s in [
     "new trial", "summary trial", "purchase report", "sale report",
