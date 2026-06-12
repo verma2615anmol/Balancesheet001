@@ -211,6 +211,32 @@ def _is_date_format_code(code: str) -> bool:
     return has_date_letters and not has_number_placeholder
 
 
+def _try_eval_arithmetic_formula(formula_text):
+    """
+    If formula_text (with or without leading '=') is pure arithmetic on
+    numeric literals — e.g. "18523.70", "44317.6-82.3", "120000+367521" —
+    evaluate it and return the float result. Returns None for anything
+    containing cell references, sheet references, or function calls
+    (SUM, etc.), since those can't be safely eval'd.
+
+    This is used as a fallback when a formula cell has NO cached <v> value
+    (data_only=True would otherwise read it as None/0), which happens for
+    cells where a formula like "=18523.70" was entered but the file was
+    saved without a full recalculation.
+    """
+    if not formula_text:
+        return None
+    body = formula_text.lstrip("=").strip()
+    if not body:
+        return None
+    if not re.fullmatch(r'[\d\s\.\+\-\*\/\(\)]+', body):
+        return None
+    try:
+        return float(eval(body, {"__builtins__": {}}, {}))
+    except Exception:
+        return None
+
+
 def _build_date_style_set(filepath: str) -> set:
     """
     Parse xl/styles.xml and return the set of cellXfs style indices (the
@@ -432,6 +458,9 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
     # ── Step 2: extract formula-cell refs directly from ZIP XML (regex, no ET)
     #    formula_refs[sheet_file] = set of "ColRow" refs like {"E5","E12"}
     formula_refs = {}  # {sheet_file: set_of_refs}
+    formula_texts = {}  # {sheet_file: {ref: formula_text}} — fallback for
+                          # formula cells with NO cached <v> (data_only=True
+                          # would otherwise read these as None/0).
     # A formula cell in OOXML looks like: <c r="E5" ...><f ...>...</f><v>...</v></c>
     # We just need to find all refs that contain a <f> tag.
     _f_cell_re = re.compile(rb'<c\b[^>]*\br="([A-Z]+\d+)"[^>]*>[^<]*<f[ />]')
@@ -446,8 +475,27 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
                 xml_data = z.read(sf)
                 refs = set(m.group(1).decode() for m in _f_cell_re.finditer(xml_data))
                 formula_refs[sf] = refs
+
+                # Find formula cells that have NO cached value — either no
+                # <v> tag at all, or an empty one (<v></v>, <v/>) — and
+                # extract their formula text for arithmetic eval.
+                ftexts = {}
+                for cm in re.finditer(rb'<c\b[^>]*\br="([A-Z]+\d+)"[^>]*>(.*?)</c>',
+                                       xml_data, re.DOTALL):
+                    ref_b, body_b = cm.group(1), cm.group(2)
+                    has_real_v = bool(re.search(rb'<v[^>]*>[^<]+</v>', body_b))
+                    if has_real_v:
+                        continue  # has a non-empty cached value, no fallback needed
+                    fm = re.search(rb'<f[^>]*>([^<]*)</f>', body_b)
+                    if fm:
+                        try:
+                            ftexts[ref_b.decode()] = fm.group(1).decode("utf-8", "replace")
+                        except Exception:
+                            pass
+                formula_texts[sf] = ftexts
             except Exception:
                 formula_refs[sf] = set()
+                formula_texts[sf] = {}
 
     # ── Step 3: single openpyxl open (data_only → gets cached values) ─────
     fb = {k.strip().lower(): v for k, v in SHEET_COL_MAP.items()}
@@ -478,6 +526,7 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
             # Build formula-row sets from pre-extracted refs
             sf = smap.get(sn, "")
             sheet_frefs = formula_refs.get(sf, set())
+            sheet_ftexts = formula_texts.get(sf, {})
 
             cy_vals_sheet   = {}
             cy_frows_sheet  = {}
@@ -502,8 +551,16 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
                             if isinstance(cell.value, (int, float)) and cell.value is not None:
                                 vals[rn] = float(cell.value)
                             elif cell.value is None:
-                                # Formula evaluated to empty/zero — record as 0
-                                vals[rn] = 0.0
+                                # No cached value. Before defaulting to 0,
+                                # try to evaluate the formula directly if
+                                # it's pure arithmetic on literals (e.g.
+                                # "=18523.70", "=44317.6-82.3") — common
+                                # when a cell was entered as a "formula"
+                                # but the file wasn't recalculated before
+                                # saving, leaving no <v> tag.
+                                ftext = sheet_ftexts.get(ref)
+                                evaluated = _try_eval_arithmetic_formula(ftext)
+                                vals[rn] = evaluated if evaluated is not None else 0.0
                         elif isinstance(cell.value, (int, float)) and cell.value is not None:
                             vals[rn] = float(cell.value)
                         elif isinstance(cell.value, str) and cell.value.strip() in ("-", "—", "–", "-"):
@@ -932,9 +989,24 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                 _, vals, frows = col_info[cl]
                 if rn in vals:
                     if rn in frows:
-                        # Formula cell: clear cached <v> but KEEP <f> formula intact
-                        # Excel will recalculate when user opens and enters new data
-                        changes[ref] = ("clear_v_keep_f", None)
+                        # Formula cell. Check if it's a "disguised constant"
+                        # — pure arithmetic on numeric literals, e.g.
+                        # "=18523.70" or "=120000+367521" — with no cell/
+                        # sheet references. These are effectively hardcoded
+                        # values entered via the formula bar, and for the
+                        # NEW CY year they must be fully cleared (blank),
+                        # not preserved-as-formula, otherwise Excel will
+                        # recalculate "=18523.70" back to 18523.70 even
+                        # though this is a fresh year with no data yet.
+                        cy_f_el = cell_el.find(f"{{{_NS}}}f")
+                        cy_f_text = cy_f_el.text if cy_f_el is not None else None
+                        if _try_eval_arithmetic_formula(cy_f_text) is not None:
+                            changes[ref] = ("clear_v", None)
+                        else:
+                            # Real formula (SUM, cross-sheet ref, cell refs)
+                            # — clear cached <v> but KEEP <f> so Excel
+                            # recalculates it for the new year's data.
+                            changes[ref] = ("clear_v_keep_f", None)
                     else:
                         # Constant cell: remove <v> entirely
                         changes[ref] = ("clear_v", None)
@@ -975,8 +1047,8 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
         if action == "clear_v":
             # Remove both formula <f> and cached value <v> so cell is truly blank
             # (keeping <f> would cause formula to recalculate, showing stale data)
-            full = re.sub(r'<f[^>]*>.*?</f>', '', full, flags=re.DOTALL)
-            full = re.sub(r'<f[^>]*/>', '', full)
+            full = re.sub(r'<f[^>]*>.*?</f>', '', full, flags=re.DOTALL)
+            full = re.sub(r'<f[^>]*/>', '', full)
             full = re.sub(r'<v>[^<]*</v>', '', full)
             full = re.sub(r'<v\s*/>', '', full)
         elif action == "clear_v_keep_f":
