@@ -8035,8 +8035,21 @@ def tb_process():
             except: pass
             return jsonify(result)
 
-        # ── FA year-end rollover (always runs) ──────────────────────────
-        _rollover_fixed_assets(out_path, cy_year, result.get("log", []))
+        # ── NOTE: FA rollover intentionally NOT run here ────────────────
+        # _rollover_fixed_assets() is designed for the YEAR-SHIFT tool,
+        # where CY data becomes PY data for a new fiscal year. The TB→BS
+        # tool is a different workflow: it fills CY figures into an
+        # EXISTING template whose "Fixed Assets P. Yr." sheet already
+        # holds last year's correct closing data (e.g. Equipment/Car/
+        # Motor Cycle WDV figures). Running the rollover here treated
+        # that sheet as if it needed to be "shifted", overwriting its
+        # rows/headers with the CY sheet's layout and wiping the real
+        # data — causing the Fixed Assets note (and PPE on the BS) to
+        # show 0 in the generated output.
+        #
+        # The BS template's FA C.Yr / FA P.Yr sheets are preserved
+        # as-is by process_tb_to_bs() above; no further FA processing
+        # is needed for this tool.
 
         # ── Inject Capital & FA user entries ──────────────────────────────
         if cap_entries or fa_entries:
