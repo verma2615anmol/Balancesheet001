@@ -7761,9 +7761,23 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                     copied += 1
 
             # Name-based copy for section headers, asset rows, and totals.
+            #
+            # IMPORTANT: column A in the CY sheet's data rows is often a
+            # FORMULA like ='Fixed Assets P. Yr.'!A10 (linking back to the
+            # asset's own name in the PY sheet). Using the formula TEXT as
+            # the label ("='fixed assets p. yr.'!a10") never matches the PY
+            # sheet's actual label ("equipment"), so that PY row was never
+            # found and stayed blank. Use the RESOLVED value
+            # (src_cy_ws_do, cached <v>) for the label when column A holds a
+            # formula, falling back to the formula-view value otherwise.
             src_rows_by_label = {}
             for src_r in range(1, src_cy_ws.max_row + 1):
-                key = _norm(src_cy_ws.cell(src_r, 1).value)
+                raw_a = src_cy_ws.cell(src_r, 1).value
+                if isinstance(raw_a, str) and raw_a.startswith('='):
+                    label_val = src_cy_ws_do.cell(src_r, 1).value
+                else:
+                    label_val = raw_a
+                key = _norm(label_val)
                 if key:
                     src_rows_by_label[key] = src_r
 
