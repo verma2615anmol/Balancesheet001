@@ -220,8 +220,14 @@ BS_HEADS = {
             "sale", "revenue", "income from operation",
             "turnover", "gross receipt", "service income",
             "service revenue", "consulting income", "fee received",
-            "commission received", "commission income",
+            "commission received", "commission income", "commission recd",
             "export sale", "domestic sale", "local sale",
+            # Professional-services income (CA/consulting firms etc.) —
+            # "Professional Income (...)", "Professional Charges" are the
+            # primary revenue line items in such templates' "Revenue from
+            # operations" note.
+            "professional income", "professional charges", "professional fee",
+            "professional fees", "consultancy charges", "consultancy fee",
         ],
         "negative_keywords": ["sale return", "sales return", "sale of asset", "sale of investment"],
     },
@@ -236,6 +242,9 @@ BS_HEADS = {
             "discount received", "discount earned", "commission earned",
             "bad debt recovered", "insurance claim received",
             "interest on fd", "interest on deposit", "bank interest received",
+            "bank interest recd", "interest recd",
+            # Pension/annuity income received by the proprietor
+            "pension received", "pension recd",
         ],
         "negative_keywords": [],
     },
@@ -1231,8 +1240,15 @@ def _classify_single(name, net_amount, group=None):
             return "employee_expenses", "high"
 
     # Finance cost: bank interest, cc intt etc. (but not late payment interest)
+    # IMPORTANT (Issue 3): "Bank Interest Recd." / "Bank Interest Received" is
+    # INCOME (a credit balance, net_amount < 0), not an expense — even though
+    # its name contains "bank interest" which matches a finance_cost keyword.
+    # Only classify as finance_cost (an EXPENSE head) when the account has a
+    # DEBIT balance (net_amount > 0, money paid out). A credit-balance
+    # "interest" account is interest INCOME and must fall through to be
+    # classified as other_income/revenue instead.
     _fin_neg = BS_HEADS["finance_cost"].get("negative_keywords", [])
-    if not any(nk in name_lower for nk in _fin_neg):
+    if net_amount > 0 and not any(nk in name_lower for nk in _fin_neg):
         for kw in BS_HEADS["finance_cost"]["keywords"]:
             if kw in name_lower:
                 return "finance_cost", "high"
@@ -1262,6 +1278,12 @@ def _classify_single(name, net_amount, group=None):
 
     # Step 2: Try each head in priority order by name
     for head_key in CLASSIFICATION_PRIORITY:
+        # finance_cost is an EXPENSE head — already handled above with the
+        # correct net_amount > 0 guard (Issue 3 fix). Skip it here for
+        # credit-balance accounts so e.g. "Bank Interest Recd." (net < 0)
+        # doesn't get re-matched as an expense via this generic loop.
+        if head_key == "finance_cost" and net_amount <= 0:
+            continue
         head = BS_HEADS[head_key]
         # Check negative keywords first (exclusions)
         excluded = False
@@ -1672,6 +1694,17 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
     for _sn in ["notes to bs", "notes to p&l", "Details", "GROSS PROFIT",
                 "Fixed Assets C. Yr.", "capital"]:
         _cache[_sn] = _load_sheet_cache(wb, _sn, max_row=250, max_col=12)
+
+    # Resolved (data_only) cache for "notes to p&l" — used where we need a
+    # formula cell's CACHED VALUE (e.g. D5 = "=10898146+793859" -> 11692005)
+    # to compare against a TB total, rather than the formula text itself.
+    _npl_cache_do = {}
+    try:
+        _wb_do_tmp = load_workbook(bs_template_path, data_only=True)
+        _npl_cache_do = _load_sheet_cache(_wb_do_tmp, "notes to p&l", max_row=250, max_col=12)
+        _wb_do_tmp.close()
+    except Exception:
+        pass
 
     # ────────────────────────────────────────────────────────────────
     # 1. CAPITAL — DO NOT inject from TB.
@@ -2371,13 +2404,127 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         # GROSS PROFIT!E12 = Sale GST 12% Within State
         # GROSS PROFIT!E13 = Sale GST 5% Interstate
         # GROSS PROFIT!E14 = Sale GST 5% Within State
-        if "GROSS PROFIT" in wb.sheetnames:
-            ws_gp = wb["GROSS PROFIT"]
+        # Shared normaliser used by BOTH the sales-side and purchases-side
+        # GROSS PROFIT label matching below. Previously this was defined
+        # only inside the sales block (gated by `revenue_prefilled`), so
+        # when that block was skipped, the purchases block below (which is
+        # NOT gated by `revenue_prefilled`) would crash with
+        # UnboundLocalError if it ever reached a non-empty purchase_accounts
+        # list.
+        def _norm_gst(s):
+            """Normalise sale/purchase account names for row matching.
+            Maps all synonym pairs to canonical forms so that e.g.
+            'SALE GST 12% INTERSTATE' and 'Sales 12% Intrastate' match
+            the same template row regardless of exact wording.
+            """
+            s = str(s).lower()
+            s = re.sub(r"\b(sale|sales|purchase|purchases|gst|a/c)\b", " ", s)
+            # Synonym normalisation
+            s = s.replace("intrastate", "within state")
+            s = s.replace("within state", "intrastate")   # canonical = intrastate
+            s = s.replace("within state", "intrastate")
+            s = s.replace("intra state", "intrastate")
+            s = s.replace("inter state", "interstate")
+            s = re.sub(r"\s+", " ", s).strip()
+            return s
 
-            sale_accounts = [a for a in individual_accounts
-                             if a.get("bs_head") == "revenue"
-                             and abs(a.get("net", 0)) > 0]
+        sale_accounts = [a for a in individual_accounts
+                         if a.get("bs_head") == "revenue"
+                         and abs(a.get("net", 0)) > 0]
 
+        # FIX (Issue 1 — revised): the previous "pre-filled" detector checked
+        # whether TB revenue amounts matched ANY numeric literal anywhere in
+        # notes to p&l!D5:D7 (including individual addends of a formula like
+        # "=10898146+793859"). That produced FALSE POSITIVES: if even one
+        # addend happened to equal a TB group total, the WHOLE row's
+        # resolved value (which may be wrong/stale, e.g. 11,692,005 instead
+        # of the correct 10,898,146) was treated as "already correct" and
+        # never fixed — leaving D5 blank/stale while the real CY revenue
+        # never got written anywhere.
+        #
+        # New approach: reconcile each of rows 5-7 INDIVIDUALLY.
+        #   1. Match TB revenue accounts to a row via its label in column B
+        #      (e.g. accounts containing "professional" -> the row labelled
+        #      "Professional Income"; "commission" -> "Commission Recd...").
+        #   2. Compare that TB group's total to the row's RESOLVED D-value.
+        #   3. If they already match (within tolerance) -> leave the row
+        #      alone (genuinely pre-filled correctly).
+        #   4. If they DON'T match -> overwrite D{row} with the correct TB
+        #      total as a plain number (replacing any stale formula/value).
+        # TB accounts that don't match any row 5-7 label fall through to the
+        # existing GROSS PROFIT injection below, exactly as before.
+        npl_cache_rev = _cache.get("notes to p&l", {})
+
+        rev_row_labels = {}   # {row: normalised label}
+        for r in range(5, 8):
+            b_val = npl_cache_rev.get((r, 2))
+            if b_val:
+                rev_row_labels[r] = str(b_val).strip().lower()
+
+        def _rev_row_for(acct_name):
+            nl = acct_name.lower()
+            for r, lbl in rev_row_labels.items():
+                if not lbl:
+                    continue
+                # Match on the label's significant words appearing in the
+                # account name (e.g. label "professional income" matches
+                # "PROFESSIONAL CHARGES" / "PROFESSIONAL INCOME (ECG)" via
+                # the shared word "professional"; label "commission recd
+                # gst" matches "Commission Recd GGST" via "commission").
+                lbl_words = [w for w in lbl.replace("/", " ").split() if len(w) > 3]
+                if any(w in nl for w in lbl_words):
+                    return r
+            return None
+
+        rev_row_totals = {}   # {row: tb_total}
+        consumed_accounts = set()  # id() of accounts matched to a row
+        for a in sale_accounts:
+            r = _rev_row_for(a["name"])
+            if r is not None:
+                rev_row_totals[r] = rev_row_totals.get(r, 0.0) + abs(a["net"])
+                consumed_accounts.add(id(a))
+
+        for r, tb_total in rev_row_totals.items():
+            existing_resolved = _npl_cache_do.get((r, 4))
+            existing_val = existing_resolved if isinstance(existing_resolved, (int, float)) else None
+            if existing_val is not None and abs(existing_val - tb_total) < max(1.0, tb_total * 0.001):
+                log.append(
+                    f"· notes to p&l!D{r} already correct ({existing_val:,.2f}) — not overwritten"
+                )
+                continue
+            if _safe_write(ws_npl, r, 4, tb_total):
+                injected.append(f"notes to p&l!D{r} ({rev_row_labels.get(r,'')}) = {tb_total:,.2f}")
+            else:
+                # The cell holds a stale formula (e.g. "=10898146+793859")
+                # whose RESOLVED value doesn't match this year's TB total —
+                # _safe_write/_safe_set both refuse to touch formula cells,
+                # so overwrite directly with a plain number here.
+                cell = _get_writable_cell(ws_npl, r, 4)
+                if cell is not None:
+                    cell.value = round(float(tb_total), 2)
+                    injected.append(
+                        f"notes to p&l!D{r} ({rev_row_labels.get(r,'')}) = {tb_total:,.2f} "
+                        f"(overwrote stale formula)"
+                    )
+
+        # Remaining TB revenue accounts (not matched to rows 5-7) continue
+        # through the existing GROSS PROFIT injection pipeline, unchanged.
+        sale_accounts = [a for a in sale_accounts if id(a) not in consumed_accounts]
+        tb_revenue_total = sum(abs(a["net"]) for a in sale_accounts)
+        revenue_prefilled = (tb_revenue_total == 0)
+        if sale_accounts:
+            log.append(
+                f"· {len(sale_accounts)} revenue account(s) totalling "
+                f"{tb_revenue_total:,.2f} did not match a notes to p&l!D5:D7 "
+                f"label — passing through to GROSS PROFIT injection"
+            )
+
+        # Defined here (shared scope) so the purchases block below — which
+        # is NOT gated by `revenue_prefilled` — can also use it without an
+        # UnboundLocalError if the sales block above is skipped.
+        ws_gp = wb["GROSS PROFIT"] if "GROSS PROFIT" in wb.sheetnames else None
+
+        if not revenue_prefilled and "GROSS PROFIT" in wb.sheetnames:
             # FIX (Issues 2 & 4): Trading-account formatting.
             #
             # Previously this block used HARD-CODED row numbers
@@ -2393,23 +2540,6 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             # write each TB sale account into the row whose label best matches.
             # Unknown rate codes get appended below the last labelled row.
             gp_cache = _cache.get("GROSS PROFIT", {})
-
-            def _norm_gst(s):
-                """Normalise sale/purchase account names for row matching.
-                Maps all synonym pairs to canonical forms so that e.g.
-                'SALE GST 12% INTERSTATE' and 'Sales 12% Intrastate' match
-                the same template row regardless of exact wording.
-                """
-                s = str(s).lower()
-                s = re.sub(r"\b(sale|sales|purchase|purchases|gst|a/c)\b", " ", s)
-                # Synonym normalisation
-                s = s.replace("intrastate", "within state")
-                s = s.replace("within state", "intrastate")   # canonical = intrastate
-                s = s.replace("within state", "intrastate")
-                s = s.replace("intra state", "intrastate")
-                s = s.replace("inter state", "interstate")
-                s = re.sub(r"\s+", " ", s).strip()
-                return s
 
             # Build label→row map by scanning the Sales side of GROSS PROFIT.
             # Sale rows live in col D (label) with amounts in col E.
@@ -2701,14 +2831,38 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         oi_total_row = r
                         break
 
+            # FIX (Issues 1/2/3 continued): _fuzzy_match_name's generic
+            # "single distinctive word >=7 chars" rule matches on the word
+            # "received"/"RECEIVED" alone — which both "Bank Interest Recd."
+            # and "PENSION RECEIVED FROM LIC" contain. This caused "Pension
+            # received" to fuzzy-match the "Bank interest received" row
+            # (and vice versa), so both accounts landed on the same row,
+            # silently dropping one of them.
+            #
+            # For Other Income sub-row matching specifically, require that
+            # at least one MEANINGFUL word (excluding generic terms like
+            # "received"/"recd"/"income") also matches between the TB
+            # account name and the template row label.
+            _OI_GENERIC_WORDS = {"received", "recd", "income", "interest", "other"}
+
+            def _oi_row_match(tb_name, row_label):
+                import re as _re_oi
+                def _words(s):
+                    s = _re_oi.sub(r'[^a-z0-9\s]', ' ', s.lower())
+                    return set(w for w in s.split() if len(w) > 3)
+                a_words = _words(tb_name) - _OI_GENERIC_WORDS
+                b_words = _words(row_label) - _OI_GENERIC_WORDS
+                return bool(a_words & b_words)
+
             if oi_header_row and oi_total_row and oi_total_row > oi_header_row + 1:
                 for acct in oi_accounts:
                     amt = abs(acct["net"])
                     placed = False
-                    # First try fuzzy-matching an existing labelled sub-row
+                    # First try matching an existing labelled sub-row, requiring
+                    # at least one meaningful (non-generic) shared word.
                     for r in range(oi_header_row + 1, oi_total_row):
                         b = npl_cache_for_oi.get((r, 2))
-                        if b and _fuzzy_match_name(acct["name"], str(b)):
+                        if b and _oi_row_match(acct["name"], str(b)):
                             if _safe_write(ws_npl, r, 4, amt):
                                 injected.append(
                                     f"notes to p&l!D{r} (Other Income: {acct['name']}) = {amt:,.2f}"
@@ -2834,7 +2988,14 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         finance_accounts = [a for a in individual_accounts
                            if abs(a.get("net", 0)) > 0
                            and any(kw in a.get("name","").lower() for kw in FINANCE_KEYWORDS)
-                           and a.get("bs_head") != "other_expenses"]  # don't override classification
+                           and a.get("bs_head") not in ("other_expenses", "other_income", "revenue")]
+                           # ^ FIX (Issue 3): "Bank Interest Recd." matches the
+                           # "bank interest" keyword in FINANCE_KEYWORDS, but if
+                           # it was classified as other_income/revenue (i.e. it's
+                           # a CREDIT/income account, not an expense), it must
+                           # NOT be treated as a finance cost — otherwise it gets
+                           # written into notes to p&l!D38 "Bank interest &
+                           # charges" (an EXPENSE row) as a positive expense.
         # Also include accounts explicitly classified as finance_cost
         for a in individual_accounts:
             if a.get("bs_head") == "finance_cost" and abs(a.get("net", 0)) > 0:
