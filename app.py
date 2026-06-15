@@ -7900,6 +7900,60 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                     new_formula = bval.replace(f'!I{old_py_row}', f'!I{new_py_row}')
                     b_cell.value = new_formula
 
+            # 1c) Fix bs sheet cross-references after PY restructure.
+            #
+            # The bs sheet contains formulas that reference specific row
+            # numbers in the FA P.Yr sheet — e.g. ='Fixed Assets P. Yr.'!I38
+            # which pointed to the TOTAL row in the ORIGINAL PY sheet (R38).
+            # After our rollover, the new PY sheet is a copy of the CY sheet
+            # where the Total row is at a DIFFERENT row (e.g. R42 for Chetan
+            # Textiles). The old formula now references the wrong row (Property
+            # data row = 0 instead of the Total = 183,827).
+            #
+            # Also: bs!F8 = '=capital!G11' (PY capital) and similar cross-
+            # sheet references can be replaced by plain values by
+            # processor.process — restore them from the source file.
+            if 'bs' in wb.sheetnames and src_wb and 'bs' in src_wb.sheetnames:
+                ws_bs = wb['bs']
+                ws_bs_src = src_wb['bs']
+
+                # Find the new Total row in the new PY sheet
+                new_py_total_row = None
+                for _r in range(1, ws_py.max_row + 1):
+                    _a = str(ws_py.cell(_r, 1).value or "").strip().lower()
+                    if _a == "total":
+                        new_py_total_row = _r
+                        break
+
+                import re as _re_bs
+                for r in range(1, ws_bs.max_row + 1):
+                    for c in range(1, ws_bs.max_column + 1):
+                        src_val = ws_bs_src.cell(r, c).value
+                        cur_val = ws_bs.cell(r, c).value
+                        if not (isinstance(src_val, str) and src_val.startswith('=')):
+                            continue
+                        # If the source had a formula but the generated output
+                        # has a plain number, restore the formula (fixes capital
+                        # reference bs!F8='=capital!G11' being replaced by value)
+                        if not (isinstance(cur_val, str) and cur_val.startswith('=')):
+                            ws_bs.cell(r, c).value = src_val
+                            cur_val = src_val
+                        # Fix FA P.Yr row references in bs formulas
+                        if py_sn and py_sn in cur_val and new_py_total_row:
+                            # Find the old PY total row from the SOURCE bs formula
+                            m = _re_bs.search(
+                                r"'Fixed Assets P\. Yr\.'!I(\d+)",
+                                cur_val
+                            )
+                            if m:
+                                old_ref_row = int(m.group(1))
+                                if old_ref_row != new_py_total_row:
+                                    new_formula = cur_val.replace(
+                                        f'!I{old_ref_row}',
+                                        f'!I{new_py_total_row}'
+                                    )
+                                    ws_bs.cell(r, c).value = new_formula
+
 
         cy_data_rows = set()
         rate_values_found = sum(
