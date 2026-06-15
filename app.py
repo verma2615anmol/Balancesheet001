@@ -8692,6 +8692,8 @@ function onFile(inp, type) {
 function _setFile(f, type) {
   if (type==='tb') {
     tbFile = f;
+    // Clear stale session mappings whenever a new TB file is loaded
+    try { sessionStorage.removeItem('tb_mappings'); sessionStorage.removeItem('tb_mappings_fp'); } catch(e) {}
     document.getElementById('tbDone').style.display='block';
     document.getElementById('tbDone').textContent='✓ '+f.name;
     document.getElementById('tbZone').style.borderColor='var(--green)';
@@ -9372,7 +9374,17 @@ function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&
     const f=e.dataTransfer.files[0]; if(!f) return;
     const type=id==='tbZone'?'tb':'bs';
     onFile({files:[f]},type);
-    if(type==='tb') tbFile=f; else bsFile=f;
+    if(type==='tb') {
+      tbFile=f;
+      // Clear stale mappings from any previous session whenever a new
+      // TB file is picked — prevents old classifications (e.g. all accounts
+      // mapped to 'other_cl' by a previous buggy version) from overwriting
+      // the fresh auto-classifications returned by the server.
+      try {
+        sessionStorage.removeItem('tb_mappings');
+        sessionStorage.removeItem('tb_mappings_fp');
+      } catch(e) {}
+    } else { bsFile=f; }
     document.getElementById('analyseBtn').disabled=!(tbFile&&bsFile);
   });
 });
