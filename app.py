@@ -8761,10 +8761,24 @@ async function doAnalyse() {
       userMappings[a.key] = a.bs_head || 'ignore';
     });
 
-    // Restore any saved mappings from sessionStorage (survives refresh)
+    // Restore saved mappings from sessionStorage ONLY if they belong to
+    // the same TB file (matched by a fingerprint of account keys).
+    // Without this guard, stale mappings from a previous session (e.g.
+    // all accounts mapped to 'other_cl' by an old buggy version) get
+    // restored over the correct new auto-classifications.
     try {
       const saved = JSON.parse(sessionStorage.getItem('tb_mappings') || '{}');
-      Object.keys(saved).forEach(k => { if (saved[k] && userMappings.hasOwnProperty(k)) userMappings[k] = saved[k]; });
+      const savedFp = sessionStorage.getItem('tb_mappings_fp') || '';
+      const currentFp = Object.keys(userMappings).sort().slice(0,5).join('|');
+      if (savedFp === currentFp) {
+        Object.keys(saved).forEach(k => {
+          if (saved[k] && userMappings.hasOwnProperty(k)) userMappings[k] = saved[k];
+        });
+      } else {
+        // Different TB file — discard stale mappings
+        sessionStorage.removeItem('tb_mappings');
+        sessionStorage.removeItem('tb_mappings_fp');
+      }
     } catch(e) {}
 
     buildMappingUI(data);
@@ -9025,7 +9039,11 @@ function onMapChange(sel) {
   const val = sel.value;
   userMappings[key] = val;
   sel.classList.add('changed');
-  try { sessionStorage.setItem('tb_mappings', JSON.stringify(userMappings)); } catch(e) {}
+  try {
+    sessionStorage.setItem('tb_mappings', JSON.stringify(userMappings));
+    const fp = Object.keys(userMappings).sort().slice(0,5).join('|');
+    sessionStorage.setItem('tb_mappings_fp', fp);
+  } catch(e) {}
   // Track expanded groups before rebuild
   const expanded = new Set();
   document.querySelectorAll('[id^="grp_"]').forEach(el => {
