@@ -7820,25 +7820,16 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                     tgt.value = None
 
             # Copy source CY → output PY row-by-row, cell-by-cell.
-            # Find the last row that belongs to the FA table.
-            #
-            # Normal asset rows are easy to detect because they have either
-            # a label in col A or a numeric rate in the Rate % column.
-            #
-            # But the final Total row is special: in some uploaded sheets the
-            # word "Total" sits in col B (not col A), and the rate column is
-            # blank. In that case the old detection stopped at the last asset
-            # row above Total, so the PY copy missed the Total row entirely.
-            #
-            # Fix: also treat a row as the table end when col B contains the
-            # text "Total".
+            # Find the last row that belongs to the FA table: the last row
+            # that has EITHER a non-empty col A (asset/section name or Total)
+            # OR a numeric rate value in col G (the Rate % column).
+            # This excludes stray formula-overflow values that appear below
+            # the table boundary in columns B-I with no corresponding label.
             src_last_row = 1
             for _r in range(src_cy_ws.max_row, 0, -1):
                 _a = src_cy_ws_do.cell(_r, 1).value
-                _b_raw = src_cy_ws.cell(_r, op_col).value
-                _b_txt = str(_b_raw).strip().lower() if _b_raw is not None else ""
                 _g = src_cy_ws_do.cell(_r, rt_col).value
-                if _a is not None or isinstance(_g, (int, float)) or "total" in _b_txt:
+                if _a is not None or isinstance(_g, (int, float)):
                     src_last_row = _r
                     break
 
