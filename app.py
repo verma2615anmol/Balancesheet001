@@ -7287,9 +7287,10 @@ def tb_read_bs():
     if "uid" not in session:
         return jsonify({"status": "error", "message": "Not logged in"}), 401
     try:
-        import tempfile, os
+        import tempfile, os, re
         from openpyxl import load_workbook
         from openpyxl.cell import MergedCell
+        from openpyxl.utils import column_index_from_string
 
         bs_file = request.files.get("bs_file")
         if not bs_file:
@@ -7300,7 +7301,37 @@ def tb_read_bs():
         bs_file.save(bs_path)
 
         wb = load_workbook(bs_path, read_only=True, data_only=True)
+        # Parallel formula-view workbook — used to resolve cells whose
+        # data_only value is None because they hold a formula with no
+        # cached <v> (common after tb_processor.py's openpyxl round-trip,
+        # which drops cached values for formulas it didn't itself compute).
+        # E.g. capital!B8 = "=F40" (the proprietor's name lives in F40, and
+        # B8 just references it) — data_only reads B8 as None, but we can
+        # resolve it ourselves for simple same-sheet cell references.
+        wb_f = load_workbook(bs_path, read_only=True, data_only=False)
         result = {"capital": None, "fixed_assets": None}
+
+        def _resolve_cell(ws_do, ws_f, row, col):
+            """Return ws_do.cell(row,col).value, or — if that's None and the
+            formula-view cell is a simple same-sheet reference like '=F40' —
+            the resolved value of the referenced cell instead."""
+            val = ws_do.cell(row, col).value
+            if val is not None:
+                return val
+            try:
+                fval = ws_f.cell(row, col).value
+            except Exception:
+                return val
+            if isinstance(fval, str) and fval.startswith('='):
+                m = re.match(r'^=\$?([A-Z]+)\$?(\d+)$', fval.strip())
+                if m:
+                    ref_col_letters, ref_row = m.group(1), int(m.group(2))
+                    ref_col = column_index_from_string(ref_col_letters)
+                    try:
+                        return ws_do.cell(ref_row, ref_col).value
+                    except Exception:
+                        return val
+            return val
 
         # ── Read Capital Account sheet ──────────────────────────────────
         cap_sheet = None
@@ -7311,14 +7342,15 @@ def tb_read_bs():
 
         if cap_sheet:
             ws = wb[cap_sheet]
+            ws_f = wb_f[cap_sheet]
             rows_data = []
-            for row in ws.iter_rows(min_row=1, max_row=50, max_col=15, values_only=False):
+            for row_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=50, max_col=15, values_only=False), start=1):
                 r = []
-                for c in row:
+                for col_idx, c in enumerate(row, start=1):
                     if isinstance(c, MergedCell):
                         r.append(None)
                     else:
-                        r.append(c.value)
+                        r.append(_resolve_cell(ws, ws_f, row_idx, col_idx))
                 rows_data.append(r)
 
             # Find the header row with "Sr. No." or "Name of Proprietor/Partner"
@@ -7487,9 +7519,15 @@ def tb_read_bs():
                 # Read asset names and closing WDV
                 import re as _re2
                 _date_re2 = _re2.compile(r'^\d{1,2}[./]\d{1,2}[./]\d{2,4}$')
+
+                # Use col I (index 8) for closing WDV if it has values,
+                # otherwise fall back to col B (index 1, opening WDV of P.Yr.)
+                # Col I is a formula (=F-H) and loses its cached <v> after an
+                # openpyxl round-trip, while col B holds plain numeric constants
+                # that survive.  Either way, the goal is to give the user a
+                # non-zero reference figure to start from.
+                ws_py_f = wb_f[py_sheet_name]
                 for row in py_rows[5:]:
-                    if not row:
-                        continue
                     nm = str(row[0] or "").strip()
                     if not nm or len(nm) < 2:
                         continue
@@ -7502,18 +7540,36 @@ def tb_read_bs():
                             "w.d.v", "building", "property", "chair"}):
                         continue
                     closing = row[py_closing_col] if len(row) > py_closing_col else None
+                    if not isinstance(closing, (int, float)):
+                        # col I is None → fall back to col B (opening WDV of P.Yr.)
+                        closing = row[1] if len(row) > 1 else None
                     if isinstance(closing, (int, float)):
                         py_opening[nm.lower().strip()] = float(closing)
 
             ws = wb[fa_sheet]
-            rows_data = []
-            for row in ws.iter_rows(min_row=1, max_row=60, max_col=15, values_only=False):
+            ws_f_fa = wb_f[fa_sheet]
+            # Build a parallel formula-view row list for resolving cross-sheet
+            # refs in col A (asset names like ='Fixed Assets P. Yr.'!A10) and
+            # col B (opening WDV like ='Fixed Assets P. Yr.'!I10) that have no
+            # cached <v> after an openpyxl round-trip.
+            rows_data_f = []
+            for row in ws_f_fa.iter_rows(min_row=1, max_row=60, max_col=15, values_only=False):
                 r = []
                 for c in row:
                     if isinstance(c, MergedCell):
                         r.append(None)
                     else:
-                        r.append(c.value)
+                        r.append(c.value if hasattr(c, 'value') else None)
+                rows_data_f.append(r)
+
+            rows_data = []
+            for row_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=60, max_col=15, values_only=False), start=1):
+                r = []
+                for col_idx, c in enumerate(row, start=1):
+                    if isinstance(c, MergedCell):
+                        r.append(None)
+                    else:
+                        r.append(c.value if hasattr(c, 'value') else None)
                 rows_data.append(r)
 
             # Find header row (PARTICULARS / W.D.V / ADDITIONS / SALE / RATE)
@@ -7554,11 +7610,33 @@ def tb_read_bs():
 
             for i in range(start_row, min(start_row + 40, len(rows_data))):
                 row = rows_data[i]
+                row_f = rows_data_f[i] if i < len(rows_data_f) else row
                 if not row or all(v is None for v in row):
                     continue
 
-                # Get asset name from col A or B
+                # Get asset name from col A — if data_only is None (formula cell
+                # with no cached <v>), check the formula-view cell: if it's a
+                # cross-sheet ref like ='Fixed Assets P. Yr.'!A10, look that
+                # name up in py_opening keys as a fallback.
                 name_val = row[0] if len(row) > 0 else None
+                if name_val is None and len(row_f) > 0:
+                    fval = row_f[0]
+                    if isinstance(fval, str) and fval.startswith('=') and '!' in fval:
+                        # Cross-sheet ref: find matching name from py_opening
+                        for known_name in py_opening:
+                            name_val = known_name
+                            break
+                        # Better: use formula-view of py sheet directly
+                        m = __import__('re').search(r"!([A-Z]+)(\d+)$", fval)
+                        if m:
+                            ref_col_s = m.group(1)
+                            ref_row_i = int(m.group(2))
+                            from openpyxl.utils import column_index_from_string as _c2i
+                            try:
+                                ws_py_do_tmp = wb[py_sheet_name]
+                                name_val = ws_py_do_tmp.cell(ref_row_i, _c2i(ref_col_s)).value
+                            except Exception:
+                                pass
                 if name_val is None and len(row) > 1:
                     name_val = row[1]
 
@@ -7631,6 +7709,7 @@ def tb_read_bs():
                 }
 
         wb.close()
+        wb_f.close()
         try:
             os.remove(bs_path)
             os.rmdir(tmp)
