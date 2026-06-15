@@ -7976,8 +7976,7 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                     tgt = ws_py.cell(trg_r, c)
                     if isinstance(tgt, _MC):
                         continue
-                    # Skip user-input columns for data rows (rows that have
-                    # a rate value — i.e. actual asset rows).
+                    # Skip user-input columns for data rows.
                     src_rate = src_cy_ws_do.cell(src_r, rt_col).value
                     is_data_row = isinstance(src_rate, (int, float))
                     if is_data_row and c in input_cols_to_skip:
@@ -7985,38 +7984,55 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                         copied += 1
                         continue
 
-                    # For the Total column (sl_col+1) on data rows, always
-                    # write the formula (translated to the target row) rather
-                    # than the cached numeric value from data_only.  The cached
-                    # value reflects the CY year's additions/sale which are now
-                    # gone; the formula (=B+C+D-E) will correctly recompute
-                    # once the PY sheet is opened in Excel.
-                    total_col = sl_col + 1
-                    if is_data_row and c == total_col:
+                    # For ALL formula cells on data rows, write the TRANSLATED
+                    # formula instead of the cached numeric value.
+                    # This covers:
+                    #   Total (F)  = =B+C+D-E   (includes additions/sale)
+                    #   Depr  (H)  = =(B+C-E)*G%+(D*G/200)
+                    #   Closing(I) = =F-H
+                    # Without translation, copying CY R38 formula into PY R35
+                    # would give =B38+... referencing the wrong row.
+                    # Without formula-preference, data_only returns stale cached
+                    # values that reflect the old CY year's additions/sale.
+                    import re as _re_f
+                    if is_data_row:
                         raw_f = src_cy_ws.cell(src_r, c).value
                         if isinstance(raw_f, str) and raw_f.startswith('='):
-                            if trg_r != src_r:
-                                import re as _re_f
-                                translated = _re_f.sub(
-                                    rf'([A-Z]+){src_r}(?!\d)',
-                                    lambda m: f'{m.group(1)}{trg_r}',
-                                    raw_f[1:]
-                                )
-                                tgt.value = '=' + translated
+                            # Cross-sheet formulas (containing '!') like
+                            # ='Fixed Assets P. Yr.'!I9 (used in CY col B
+                            # to pull opening WDV from the PY sheet) would
+                            # create circular references if copied into PY.
+                            # Use the resolved numeric value instead.
+                            if '!' in raw_f:
+                                val = src_cy_ws_do.cell(src_r, c).value
+                                tgt.value = val
                             else:
-                                tgt.value = raw_f
+                                # Same-sheet formula: translate row numbers
+                                # so references point to this PY target row.
+                                if trg_r != src_r:
+                                    translated = _re_f.sub(
+                                        rf'([A-Z]+){src_r}(?!\d)',
+                                        lambda m, _sr=src_r, _tr=trg_r: f'{m.group(1)}{_tr}',
+                                        raw_f[1:]
+                                    )
+                                    tgt.value = '=' + translated
+                                else:
+                                    tgt.value = raw_f
                             copied += 1
                             continue
 
+                    # Non-data rows (headers, section headers, Total row) and
+                    # non-formula cells: copy the resolved value as-is.
                     val = src_cy_ws_do.cell(src_r, c).value
                     if val is None:
                         raw = src_cy_ws.cell(src_r, c).value
                         if isinstance(raw, str) and raw.startswith('='):
-                            if is_data_row and trg_r != src_r:
-                                import re as _re_f
+                            # Formula in a non-data row (e.g. Total row =SUM)
+                            # — translate row refs if needed
+                            if trg_r != src_r:
                                 translated = _re_f.sub(
                                     rf'([A-Z]+){src_r}(?!\d)',
-                                    lambda m: f'{m.group(1)}{trg_r}',
+                                    lambda m, _sr=src_r, _tr=trg_r: f'{m.group(1)}{_tr}',
                                     raw[1:]
                                 )
                                 tgt.value = '=' + translated
@@ -8024,8 +8040,7 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                                 tgt.value = raw
                             copied += 1
                             continue
-                        else:
-                            val = raw
+                        val = raw
                     tgt.value = val
                     copied += 1
 
