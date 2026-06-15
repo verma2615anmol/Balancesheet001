@@ -7781,270 +7781,72 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                     elif v in ("%", "rate", "rate %"): rt_col = ci
                     elif "w.d.v" in v and ci > 5: cl_col = ci
 
-        # 1) Mirror uploaded CY sheet into output PY sheet as visible values
-        #    The two FA sheets are not row-for-row identical, so copy by
-        #    semantic row mapping (headers + asset/section names), not by raw row index.
+        # 1) Mirror source CY sheet → output PY sheet as a direct row-by-row copy.
+        #
+        # The PY sheet should be a COMPLETE HISTORICAL RECORD of the uploaded
+        # CY year — including all additions (Camera DVR, Steel Angle, Car
+        # additions etc.) and any sales (Property sale). This is the factual
+        # data for the prior year and must not be filtered or omitted.
+        #
+        # Approach: copy every cell from src_cy_ws directly into ws_py,
+        # row-for-row, column-for-column. For formula cells, write the
+        # RESOLVED VALUE (from src_cy_ws_do) rather than the formula text,
+        # since the PY sheet is a value-snapshot, not a live calculation sheet.
+        # Exception: same-sheet formulas that have NO cross-sheet refs and
+        # whose resolved value would be None (e.g. =B8+C8... on a section
+        # header row) are left as None (blank), matching the source display.
         copied = 0
         if py_sn:
             ws_py = wb[py_sn]
 
-            def _norm(v):
-                return " ".join(str(v or "").strip().lower().split())
-
-            merged_children = set()
+            # First, blank the entire PY sheet so stale data from the old
+            # prior-prior-year template doesn't bleed through.
+            merged_children_py = set()
             for merged in ws_py.merged_cells.ranges:
                 min_col, min_row, max_col, max_row = merged.bounds
                 for rr in range(min_row, max_row + 1):
                     for cc in range(min_col, max_col + 1):
                         if (rr, cc) != (min_row, min_col):
-                            merged_children.add((rr, cc))
+                            merged_children_py.add((rr, cc))
 
-            # Use SOURCE PY sheet (original input) for row-label / header
-            # detection — processor.process has already modified the output
-            # file's PY sheet (date shifts, value copies, section-header
-            # clearing), so its col-A values can't be trusted for structure
-            # detection. The source file preserves the pristine template.
-            src_py_ws = src_wb[py_sn] if src_wb and py_sn in src_wb.sheetnames else ws_py
-
-            # Capture target row labels AND header rows from the SOURCE PY.
-            py_row_labels = {r: _norm(src_py_ws.cell(r, 1).value) for r in range(1, src_py_ws.max_row + 1)}
-            py_row_raw    = {r: str(src_py_ws.cell(r, 1).value or "") for r in range(1, src_py_ws.max_row + 1)}
-
-            # Capture header rows from SOURCE PY — stop at first ALL-CAPS
-            # data-section header (e.g. "PLANT & MACHINERY") whose remaining
-            # cols are all empty (formulas count as empty for this check).
-            _py_header_rows_pre = []
-            file_header_keywords_pre = {"particulars", "detail of fixed assets",
-                                        "property plant and equipment"}
-            for r in range(1, min(data_start + 5, src_py_ws.max_row + 1)):
-                raw_py_a = src_py_ws.cell(r, 1).value
-                raw_str = str(raw_py_a or "")
-                alpha_chars = [c for c in raw_str if c.isalpha()]
-                row_is_section = (bool(alpha_chars) and
-                                  all(c.isupper() for c in alpha_chars) and
-                                  len(alpha_chars) >= 3)
-                norm_raw = _norm(raw_py_a)
-                if row_is_section and norm_raw not in file_header_keywords_pre:
-                    looks_like_data = not any(
-                        src_py_ws.cell(r, c).value not in (None, 0, "", 0.0)
-                        and not (isinstance(src_py_ws.cell(r, c).value, str)
-                                 and src_py_ws.cell(r, c).value.startswith('='))
-                        for c in range(2, 10)
-                    )
-                    if looks_like_data:
-                        break
-                rate_v = src_py_ws.cell(r, rt_col).value
-                if r >= data_start and isinstance(rate_v, (int, float)):
-                    break
-                vals = [str(src_py_ws.cell(r, c).value or "").strip() for c in range(1, 10)]
-                if any(v for v in vals):
-                    _py_header_rows_pre.append(r)
-
-            # Blank existing target values in the visible FA area, preserving styles/merges.
             for r in range(1, ws_py.max_row + 1):
-                for c in range(1, min(ws_py.max_column, 9) + 1):
-                    if (r, c) in merged_children:
+                for c in range(1, min(ws_py.max_column, src_cy_ws.max_column) + 1):
+                    if (r, c) in merged_children_py:
                         continue
+                    from openpyxl.cell import MergedCell as _MC2
                     tgt = ws_py.cell(r, c)
-                    if isinstance(tgt, _MC):
+                    if isinstance(tgt, _MC2):
                         continue
                     tgt.value = None
 
-            # Fixed header/date rows in PY <- source CY rows.
-            # Previously these were HARDCODED (e.g. PY row 3 → CY row 5)
-            # which only worked for one specific template layout. Different
-            # templates (e.g. Chetan Textiles vs DR. AMIT MODGIL) have
-            # different numbers of header/spacer rows above the data, so
-            # the SALE/TOTAL column labels ended up in the wrong row or
-            # were missing entirely.
-            #
-            # Fix: detect header rows DYNAMICALLY from the source CY sheet.
-            # IMPORTANT: data_start is set to (header_keyword_row + 1), but
-            # for Chetan Textiles the date row ("01.04.2024") and the
-            # "Amount in Rs." row come AFTER the keyword row, so they fall
-            # at data_start or data_start+1 — still header rows, not data.
-            # We extend the scan to data_start+2 and stop as soon as we
-            # hit a row with a numeric rate value (a true data row).
-            src_header_rows = []
-            for r in range(1, data_start + 3):
-                if r > src_cy_ws.max_row:
-                    break
-                # Stop if this row looks like actual asset data (has a rate)
-                rate_v = src_cy_ws_do.cell(r, rt_col).value
-                if r >= data_start and isinstance(rate_v, (int, float)):
-                    break
-                vals = [str(src_cy_ws_do.cell(r, c).value or "").strip()
-                        for c in range(1, 10)]
-                # Also check formula-view for formula cells (e.g. =bs!A1)
-                vals_f = [str(src_cy_ws.cell(r, c).value or "").strip()
-                          for c in range(1, 10)]
-                if any(v for v in vals) or any(v for v in vals_f):
-                    src_header_rows.append(r)
-
-            # Pair them up bottom-to-top (closest to data first) so the
-            # critical column-label rows always align, even when PY has
-            # extra title rows (like "DETAIL OF FIXED ASSETS") that CY lacks.
-            fixed_rows = {}
-            if src_header_rows and _py_header_rows_pre:
-                for py_r, src_r in zip(
-                    reversed(_py_header_rows_pre), reversed(src_header_rows)
-                ):
-                    fixed_rows[py_r] = src_r
-
-            for trg_r, src_r in fixed_rows.items():
-                for c in range(1, 10):
-                    if (trg_r, c) in merged_children:
+            # Copy source CY → output PY row-by-row, cell-by-cell.
+            # Use resolved (data_only) values — no formula text in PY.
+            src_max_r = src_cy_ws.max_row
+            src_max_c = src_cy_ws.max_column
+            for r in range(1, src_max_r + 1):
+                for c in range(1, min(src_max_c, 9) + 1):
+                    src_cell_f = src_cy_ws.cell(r, c)
+                    from openpyxl.cell import MergedCell as _MC3
+                    if isinstance(src_cell_f, _MC3):
                         continue
-                    tgt = ws_py.cell(trg_r, c)
-                    if isinstance(tgt, _MC):
-                        continue
-                    val = None
-                    if src_r <= src_cy_ws.max_row and c <= src_cy_ws.max_column:
-                        val = src_cy_ws_do.cell(src_r, c).value
-                        if val is None:
-                            raw = src_cy_ws.cell(src_r, c).value
-                            if not (isinstance(raw, str) and raw.startswith('=')):
-                                val = raw
-                    tgt.value = val
-                    copied += 1
-
-            # Name-based copy for section headers, asset rows, and totals.
-            #
-            # IMPORTANT: column A in the CY sheet's data rows is often a
-            # FORMULA like ='Fixed Assets P. Yr.'!A10 (linking back to the
-            # asset's own name in the PY sheet). Using the formula TEXT as
-            # the label ("='fixed assets p. yr.'!a10") never matches the PY
-            # sheet's actual label ("equipment"), so that PY row was never
-            # found and stayed blank. Use the RESOLVED value
-            # (src_cy_ws_do, cached <v>) for the label when column A holds a
-            # formula, falling back to the formula-view value otherwise.
-            src_rows_by_label = {}
-            for src_r in range(1, src_cy_ws.max_row + 1):
-                raw_a = src_cy_ws.cell(src_r, 1).value
-                if isinstance(raw_a, str) and raw_a.startswith('='):
-                    label_val = src_cy_ws_do.cell(src_r, 1).value
-                else:
-                    label_val = raw_a
-                key = _norm(label_val)
-                if not key:
-                    continue
-                # Distinguish ALL-CAPS section headers (e.g. "BUILDING") from
-                # title-case asset rows (e.g. "Building") — both normalise to
-                # the same key "building", but they must map to different PY
-                # rows. Store section headers under "§KEY" so the lookup
-                # below can match PY section-header rows separately from PY
-                # data rows (which use the plain key).
-                raw_str = str(label_val or "")
-                is_section = raw_str == raw_str.upper() and len(raw_str) > 2 and raw_str.isalpha() == False
-                # More robust: ALL-CAPS check (ignore spaces/punctuation)
-                alpha_chars = [c for c in raw_str if c.isalpha()]
-                is_section = bool(alpha_chars) and all(c.isupper() for c in alpha_chars) and len(alpha_chars) >= 3
-                if is_section:
-                    src_rows_by_label["§" + key] = src_r
-                else:
-                    src_rows_by_label[key] = src_r
-
-            # Columns that are USER INPUTS for the current year — must NOT
-            # be carried forward from source CY into new PY, as they would
-            # make it look like the same additions/sales happened again:
-            #   ag_col = Additions > 180 days
-            #   al_col = Additions < 180 days
-            #   sl_col = Sale proceeds
-            # The TOTAL column (sl_col+1 = F) is NOT skipped — it holds the
-            # formula =B+C+D-E which will auto-compute the correct total once
-            # the additions/sale inputs are cleared (result = opening WDV).
-            input_cols_to_skip = {ag_col, al_col, sl_col}
-
-
-            for trg_r, key in py_row_labels.items():
-                if not key or key in {"detail of fixed assets"}:
-                    continue
-                # Check if PY row's label is an ALL-CAPS section header using
-                # the pre-blank raw value (ws_py.cell is None after blanking)
-                raw_py = py_row_raw.get(trg_r, "")
-                alpha_chars = [c for c in raw_py if c.isalpha()]
-                py_is_section = bool(alpha_chars) and all(c.isupper() for c in alpha_chars) and len(alpha_chars) >= 3
-                lookup_key = ("§" + key) if py_is_section else key
-                src_r = src_rows_by_label.get(lookup_key)
-                if not src_r:
-                    src_r = src_rows_by_label.get(key)  # fallback to plain key
-                if not src_r:
-                    continue
-                for c in range(1, 10):
-                    if (trg_r, c) in merged_children:
-                        continue
-                    tgt = ws_py.cell(trg_r, c)
-                    if isinstance(tgt, _MC):
-                        continue
-                    # Skip user-input columns for data rows.
-                    src_rate = src_cy_ws_do.cell(src_r, rt_col).value
-                    is_data_row = isinstance(src_rate, (int, float))
-                    if is_data_row and c in input_cols_to_skip:
-                        tgt.value = None
-                        copied += 1
-                        continue
-
-                    # For ALL formula cells on data rows, write the TRANSLATED
-                    # formula instead of the cached numeric value.
-                    # This covers:
-                    #   Total (F)  = =B+C+D-E   (includes additions/sale)
-                    #   Depr  (H)  = =(B+C-E)*G%+(D*G/200)
-                    #   Closing(I) = =F-H
-                    # Without translation, copying CY R38 formula into PY R35
-                    # would give =B38+... referencing the wrong row.
-                    # Without formula-preference, data_only returns stale cached
-                    # values that reflect the old CY year's additions/sale.
-                    import re as _re_f
-                    if is_data_row:
-                        raw_f = src_cy_ws.cell(src_r, c).value
-                        if isinstance(raw_f, str) and raw_f.startswith('='):
-                            # Cross-sheet formulas (containing '!') like
-                            # ='Fixed Assets P. Yr.'!I9 (used in CY col B
-                            # to pull opening WDV from the PY sheet) would
-                            # create circular references if copied into PY.
-                            # Use the resolved numeric value instead.
-                            if '!' in raw_f:
-                                val = src_cy_ws_do.cell(src_r, c).value
-                                tgt.value = val
-                            else:
-                                # Same-sheet formula: translate row numbers
-                                # so references point to this PY target row.
-                                if trg_r != src_r:
-                                    translated = _re_f.sub(
-                                        rf'([A-Z]+){src_r}(?!\d)',
-                                        lambda m, _sr=src_r, _tr=trg_r: f'{m.group(1)}{_tr}',
-                                        raw_f[1:]
-                                    )
-                                    tgt.value = '=' + translated
-                                else:
-                                    tgt.value = raw_f
-                            copied += 1
-                            continue
-
-                    # Non-data rows (headers, section headers, Total row) and
-                    # non-formula cells: copy the resolved value as-is.
-                    val = src_cy_ws_do.cell(src_r, c).value
+                    # Use resolved value for everything
+                    val = src_cy_ws_do.cell(r, c).value
                     if val is None:
-                        raw = src_cy_ws.cell(src_r, c).value
-                        if isinstance(raw, str) and raw.startswith('='):
-                            # Formula in a non-data row (e.g. Total row =SUM)
-                            # — translate row refs if needed
-                            if trg_r != src_r:
-                                translated = _re_f.sub(
-                                    rf'([A-Z]+){src_r}(?!\d)',
-                                    lambda m, _sr=src_r, _tr=trg_r: f'{m.group(1)}{_tr}',
-                                    raw[1:]
-                                )
-                                tgt.value = '=' + translated
-                            else:
-                                tgt.value = raw
-                            copied += 1
-                            continue
-                        val = raw
+                        # For non-formula cells (plain text labels etc.)
+                        # fall back to formula-view value if it's not a formula
+                        raw = src_cell_f.value
+                        if not (isinstance(raw, str) and raw.startswith('=')):
+                            val = raw
+                    # Write to target PY row (same row number as CY)
+                    from openpyxl.cell import MergedCell as _MC4
+                    tgt = ws_py.cell(r, c)
+                    if isinstance(tgt, _MC4):
+                        continue
                     tgt.value = val
-                    copied += 1
+                    if val is not None:
+                        copied += 1
 
-            log.append(f"✓ FA PY: mirrored source CY sheet into '{py_sn}' ({copied} mapped cells)")
+            log.append(f"✓ FA PY: copied source CY sheet into '{py_sn}' ({copied} cells)")
 
         # 2) Clear additions/sale inputs in output CY sheet only
         cy_data_rows = set()
