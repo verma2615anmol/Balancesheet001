@@ -7799,8 +7799,46 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                         if (rr, cc) != (min_row, min_col):
                             merged_children.add((rr, cc))
 
-            # Capture target row labels BEFORE clearing anything.
-            py_row_labels = {r: _norm(ws_py.cell(r, 1).value) for r in range(1, ws_py.max_row + 1)}
+            # Use SOURCE PY sheet (original input) for row-label / header
+            # detection — processor.process has already modified the output
+            # file's PY sheet (date shifts, value copies, section-header
+            # clearing), so its col-A values can't be trusted for structure
+            # detection. The source file preserves the pristine template.
+            src_py_ws = src_wb[py_sn] if src_wb and py_sn in src_wb.sheetnames else ws_py
+
+            # Capture target row labels AND header rows from the SOURCE PY.
+            py_row_labels = {r: _norm(src_py_ws.cell(r, 1).value) for r in range(1, src_py_ws.max_row + 1)}
+            py_row_raw    = {r: str(src_py_ws.cell(r, 1).value or "") for r in range(1, src_py_ws.max_row + 1)}
+
+            # Capture header rows from SOURCE PY — stop at first ALL-CAPS
+            # data-section header (e.g. "PLANT & MACHINERY") whose remaining
+            # cols are all empty (formulas count as empty for this check).
+            _py_header_rows_pre = []
+            file_header_keywords_pre = {"particulars", "detail of fixed assets",
+                                        "property plant and equipment"}
+            for r in range(1, min(data_start + 5, src_py_ws.max_row + 1)):
+                raw_py_a = src_py_ws.cell(r, 1).value
+                raw_str = str(raw_py_a or "")
+                alpha_chars = [c for c in raw_str if c.isalpha()]
+                row_is_section = (bool(alpha_chars) and
+                                  all(c.isupper() for c in alpha_chars) and
+                                  len(alpha_chars) >= 3)
+                norm_raw = _norm(raw_py_a)
+                if row_is_section and norm_raw not in file_header_keywords_pre:
+                    looks_like_data = not any(
+                        src_py_ws.cell(r, c).value not in (None, 0, "", 0.0)
+                        and not (isinstance(src_py_ws.cell(r, c).value, str)
+                                 and src_py_ws.cell(r, c).value.startswith('='))
+                        for c in range(2, 10)
+                    )
+                    if looks_like_data:
+                        break
+                rate_v = src_py_ws.cell(r, rt_col).value
+                if r >= data_start and isinstance(rate_v, (int, float)):
+                    break
+                vals = [str(src_py_ws.cell(r, c).value or "").strip() for c in range(1, 10)]
+                if any(v for v in vals):
+                    _py_header_rows_pre.append(r)
 
             # Blank existing target values in the visible FA area, preserving styles/merges.
             for r in range(1, ws_py.max_row + 1):
@@ -7820,33 +7858,36 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
             # the SALE/TOTAL column labels ended up in the wrong row or
             # were missing entirely.
             #
-            # Fix: detect header rows DYNAMICALLY from the source CY sheet
-            # (any row above data_start whose row_str is non-empty), and
-            # map them to the corresponding PY header rows by finding the
-            # same set of non-empty rows in ws_py BEFORE the data area.
-            src_header_rows = []  # source CY rows that are header/label rows
-            for r in range(1, data_start):
+            # Fix: detect header rows DYNAMICALLY from the source CY sheet.
+            # IMPORTANT: data_start is set to (header_keyword_row + 1), but
+            # for Chetan Textiles the date row ("01.04.2024") and the
+            # "Amount in Rs." row come AFTER the keyword row, so they fall
+            # at data_start or data_start+1 — still header rows, not data.
+            # We extend the scan to data_start+2 and stop as soon as we
+            # hit a row with a numeric rate value (a true data row).
+            src_header_rows = []
+            for r in range(1, data_start + 3):
+                if r > src_cy_ws.max_row:
+                    break
+                # Stop if this row looks like actual asset data (has a rate)
+                rate_v = src_cy_ws_do.cell(r, rt_col).value
+                if r >= data_start and isinstance(rate_v, (int, float)):
+                    break
                 vals = [str(src_cy_ws_do.cell(r, c).value or "").strip()
                         for c in range(1, 10)]
-                if any(v for v in vals):
+                # Also check formula-view for formula cells (e.g. =bs!A1)
+                vals_f = [str(src_cy_ws.cell(r, c).value or "").strip()
+                          for c in range(1, 10)]
+                if any(v for v in vals) or any(v for v in vals_f):
                     src_header_rows.append(r)
 
-            # Find non-empty rows in PY sheet before its own data area
-            # (use the same data_start as a rough upper bound)
-            py_header_rows = []
-            for r in range(1, min(data_start + 5, ws_py.max_row + 1)):
-                vals = [str(ws_py.cell(r, c).value or "").strip()
-                        for c in range(1, 10)]
-                if any(v for v in vals):
-                    py_header_rows.append(r)
-
-            # Pair them up: last N source header rows → last N PY header rows
-            # (both ends aligned so company name, title, column-labels all map)
+            # Pair them up bottom-to-top (closest to data first) so the
+            # critical column-label rows always align, even when PY has
+            # extra title rows (like "DETAIL OF FIXED ASSETS") that CY lacks.
             fixed_rows = {}
-            if src_header_rows and py_header_rows:
-                # Align from the BOTTOM (closest to data) upward
-                for i, (py_r, src_r) in enumerate(
-                    zip(reversed(py_header_rows), reversed(src_header_rows))
+            if src_header_rows and _py_header_rows_pre:
+                for py_r, src_r in zip(
+                    reversed(_py_header_rows_pre), reversed(src_header_rows)
                 ):
                     fixed_rows[py_r] = src_r
 
@@ -7885,7 +7926,22 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                 else:
                     label_val = raw_a
                 key = _norm(label_val)
-                if key:
+                if not key:
+                    continue
+                # Distinguish ALL-CAPS section headers (e.g. "BUILDING") from
+                # title-case asset rows (e.g. "Building") — both normalise to
+                # the same key "building", but they must map to different PY
+                # rows. Store section headers under "§KEY" so the lookup
+                # below can match PY section-header rows separately from PY
+                # data rows (which use the plain key).
+                raw_str = str(label_val or "")
+                is_section = raw_str == raw_str.upper() and len(raw_str) > 2 and raw_str.isalpha() == False
+                # More robust: ALL-CAPS check (ignore spaces/punctuation)
+                alpha_chars = [c for c in raw_str if c.isalpha()]
+                is_section = bool(alpha_chars) and all(c.isupper() for c in alpha_chars) and len(alpha_chars) >= 3
+                if is_section:
+                    src_rows_by_label["§" + key] = src_r
+                else:
                     src_rows_by_label[key] = src_r
 
             # Columns that are USER INPUTS for the current year (additions
@@ -7897,12 +7953,30 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
             # (= old PY closing WDV = F - H = (B+C+D-E) - H) wrongly
             # deduct those values a second time (e.g. Property with
             # 1,542,000 in Sale col → closing = 0 → new CY opening = 0).
-            input_cols_to_skip = {ag_col, al_col, sl_col}
+            #
+            # The Total column (F, index 6 = cl_col-3 typically) is also
+            # skipped for data rows: it is a DERIVED column (=B+C+D-E) and
+            # its PY sheet formula will recompute the correct value once
+            # B (opening WDV) is set and C/D/E are cleared.  Carrying the
+            # old CY total (which included additions/sale) would give a
+            # wrong Total in the new PY sheet.
+            # Determine the Total column: it sits between sl_col and rt_col
+            total_col = sl_col + 1  # col F = TOTAL (immediately after SALE)
+            input_cols_to_skip = {ag_col, al_col, sl_col, total_col}
+
 
             for trg_r, key in py_row_labels.items():
                 if not key or key in {"detail of fixed assets"}:
                     continue
-                src_r = src_rows_by_label.get(key)
+                # Check if PY row's label is an ALL-CAPS section header using
+                # the pre-blank raw value (ws_py.cell is None after blanking)
+                raw_py = py_row_raw.get(trg_r, "")
+                alpha_chars = [c for c in raw_py if c.isalpha()]
+                py_is_section = bool(alpha_chars) and all(c.isupper() for c in alpha_chars) and len(alpha_chars) >= 3
+                lookup_key = ("§" + key) if py_is_section else key
+                src_r = src_rows_by_label.get(lookup_key)
+                if not src_r:
+                    src_r = src_rows_by_label.get(key)  # fallback to plain key
                 if not src_r:
                     continue
                 for c in range(1, 10):
