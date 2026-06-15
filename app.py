@@ -7820,24 +7820,30 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                     tgt.value = None
 
             # Copy source CY → output PY row-by-row, cell-by-cell.
-            # Use resolved (data_only) values — no formula text in PY.
-            src_max_r = src_cy_ws.max_row
-            src_max_c = src_cy_ws.max_column
-            for r in range(1, src_max_r + 1):
-                for c in range(1, min(src_max_c, 9) + 1):
+            # Find the last row that belongs to the FA table: the last row
+            # that has EITHER a non-empty col A (asset/section name or Total)
+            # OR a numeric rate value in col G (the Rate % column).
+            # This excludes stray formula-overflow values that appear below
+            # the table boundary in columns B-I with no corresponding label.
+            src_last_row = 1
+            for _r in range(src_cy_ws.max_row, 0, -1):
+                _a = src_cy_ws_do.cell(_r, 1).value
+                _g = src_cy_ws_do.cell(_r, rt_col).value
+                if _a is not None or isinstance(_g, (int, float)):
+                    src_last_row = _r
+                    break
+
+            for r in range(1, src_last_row + 1):
+                for c in range(1, 10):  # strictly cols 1-9 only
                     src_cell_f = src_cy_ws.cell(r, c)
                     from openpyxl.cell import MergedCell as _MC3
                     if isinstance(src_cell_f, _MC3):
                         continue
-                    # Use resolved value for everything
                     val = src_cy_ws_do.cell(r, c).value
                     if val is None:
-                        # For non-formula cells (plain text labels etc.)
-                        # fall back to formula-view value if it's not a formula
                         raw = src_cell_f.value
                         if not (isinstance(raw, str) and raw.startswith('=')):
                             val = raw
-                    # Write to target PY row (same row number as CY)
                     from openpyxl.cell import MergedCell as _MC4
                     tgt = ws_py.cell(r, c)
                     if isinstance(tgt, _MC4):
