@@ -7849,8 +7849,31 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                     if isinstance(tgt, _MC4):
                         continue
                     tgt.value = val
+                    # Copy cell formatting (border, font, fill, alignment,
+                    # number_format) so the table borders render correctly
+                    # in Excel — without this, the Total row's medium border
+                    # is missing and it appears outside the table visually.
+                    import copy
+                    if src_cell_f.has_style:
+                        tgt.border    = copy.copy(src_cell_f.border)
+                        tgt.font      = copy.copy(src_cell_f.font)
+                        tgt.fill      = copy.copy(src_cell_f.fill)
+                        tgt.alignment = copy.copy(src_cell_f.alignment)
+                        tgt.number_format = src_cell_f.number_format
                     if val is not None:
                         copied += 1
+
+            # Copy column widths from source CY so PY columns match
+            import copy
+            for col_letter, col_dim in src_cy_ws.column_dimensions.items():
+                ws_py.column_dimensions[col_letter].width = col_dim.width
+                ws_py.column_dimensions[col_letter].hidden = col_dim.hidden
+            # Copy row heights for rows we've written
+            for row_num in range(1, src_last_row + 1):
+                if row_num in src_cy_ws.row_dimensions:
+                    src_rd = src_cy_ws.row_dimensions[row_num]
+                    ws_py.row_dimensions[row_num].height = src_rd.height
+                    ws_py.row_dimensions[row_num].hidden = src_rd.hidden
 
             log.append(f"✓ FA PY: copied source CY sheet into '{py_sn}' ({copied} cells)")
 
