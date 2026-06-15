@@ -7812,16 +7812,44 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                         continue
                     tgt.value = None
 
-            # Fixed header/date rows in PY <- source CY visible rows.
-            fixed_rows = {
-                1: 1,   # company name
-                2: 3,   # title
-                3: 5,   # headers
-                4: 6,
-                5: 7,   # dates
-                6: 8,   # amount labels
-                26: 29, # note / balancing line
-            }
+            # Fixed header/date rows in PY <- source CY rows.
+            # Previously these were HARDCODED (e.g. PY row 3 → CY row 5)
+            # which only worked for one specific template layout. Different
+            # templates (e.g. Chetan Textiles vs DR. AMIT MODGIL) have
+            # different numbers of header/spacer rows above the data, so
+            # the SALE/TOTAL column labels ended up in the wrong row or
+            # were missing entirely.
+            #
+            # Fix: detect header rows DYNAMICALLY from the source CY sheet
+            # (any row above data_start whose row_str is non-empty), and
+            # map them to the corresponding PY header rows by finding the
+            # same set of non-empty rows in ws_py BEFORE the data area.
+            src_header_rows = []  # source CY rows that are header/label rows
+            for r in range(1, data_start):
+                vals = [str(src_cy_ws_do.cell(r, c).value or "").strip()
+                        for c in range(1, 10)]
+                if any(v for v in vals):
+                    src_header_rows.append(r)
+
+            # Find non-empty rows in PY sheet before its own data area
+            # (use the same data_start as a rough upper bound)
+            py_header_rows = []
+            for r in range(1, min(data_start + 5, ws_py.max_row + 1)):
+                vals = [str(ws_py.cell(r, c).value or "").strip()
+                        for c in range(1, 10)]
+                if any(v for v in vals):
+                    py_header_rows.append(r)
+
+            # Pair them up: last N source header rows → last N PY header rows
+            # (both ends aligned so company name, title, column-labels all map)
+            fixed_rows = {}
+            if src_header_rows and py_header_rows:
+                # Align from the BOTTOM (closest to data) upward
+                for i, (py_r, src_r) in enumerate(
+                    zip(reversed(py_header_rows), reversed(src_header_rows))
+                ):
+                    fixed_rows[py_r] = src_r
+
             for trg_r, src_r in fixed_rows.items():
                 for c in range(1, 10):
                     if (trg_r, c) in merged_children:
@@ -7860,6 +7888,17 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                 if key:
                     src_rows_by_label[key] = src_r
 
+            # Columns that are USER INPUTS for the current year (additions
+            # greater/less than 180 days, and sale proceeds) — these must
+            # NOT be carried forward from the source CY sheet into the new
+            # PY sheet.  Copying them would make it look like the same
+            # additions/sales happened again in the new year, and — most
+            # critically — would make the new CY's opening WDV formula
+            # (= old PY closing WDV = F - H = (B+C+D-E) - H) wrongly
+            # deduct those values a second time (e.g. Property with
+            # 1,542,000 in Sale col → closing = 0 → new CY opening = 0).
+            input_cols_to_skip = {ag_col, al_col, sl_col}
+
             for trg_r, key in py_row_labels.items():
                 if not key or key in {"detail of fixed assets"}:
                     continue
@@ -7871,6 +7910,16 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                         continue
                     tgt = ws_py.cell(trg_r, c)
                     if isinstance(tgt, _MC):
+                        continue
+                    # Skip user-input columns for data rows (rows that have
+                    # a rate value — i.e. actual asset/section-header rows).
+                    # Header rows (company name, title, column labels, dates)
+                    # still get all columns copied so SALE/TOTAL labels appear.
+                    src_rate = src_cy_ws_do.cell(src_r, rt_col).value
+                    is_data_row = isinstance(src_rate, (int, float))
+                    if is_data_row and c in input_cols_to_skip:
+                        tgt.value = None
+                        copied += 1
                         continue
                     val = src_cy_ws_do.cell(src_r, c).value
                     if val is None:
