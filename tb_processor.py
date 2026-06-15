@@ -525,6 +525,7 @@ def parse_tb_pdf(pdf_path):
                             "name": _name_gw, "group": _cg,
                             "debit": _d, "credit": _c,
                             "net": _d - _c,
+                            "key": f"{_name_gw}_{len(accounts)}",
                         })
                     else:
                         _gm_gw = _grp_re_gw.match(_ln)
@@ -1161,13 +1162,20 @@ def classify_accounts(accounts):
     Returns list of dicts with added 'bs_head' and 'confidence' keys.
     """
     classified = []
-    for acct in accounts:
+    for i, acct in enumerate(accounts):
         name = acct["name"]
         group = acct.get("group", "")
         bs_head, confidence = _classify_single(name, acct["net"], group)
         acct_copy = dict(acct)
         acct_copy["bs_head"] = bs_head
         acct_copy["confidence"] = confidence
+        # Ensure every account has a unique key for the JS mapping UI.
+        # Without this, accounts from the group-wise PDF parser (which don't
+        # add a key field) all share `undefined` as their JS key, causing
+        # userMappings[undefined] to be overwritten repeatedly and all
+        # accounts to appear under the last account's bs_head in the UI.
+        if not acct_copy.get("key"):
+            acct_copy["key"] = f"{name}_{i}"
         classified.append(acct_copy)
     return classified
 
