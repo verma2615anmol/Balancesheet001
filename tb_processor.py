@@ -179,7 +179,8 @@ BS_HEADS = {
             "loan given", "advance to", "loan to",
             "advance to staff", "staff advance",
             "prepaid", "deposit", "security deposit paid",
-            "tds receivable", "tcs receivable", "input tax",
+            "tds receivable", "tcs receivable", "tcs collection", "tcs ",
+            "input tax",
             "input cgst", "input sgst", "input igst", "gst input",
             "advance tax", "self assessment tax", "mat credit",
             "cenvat", "vat input", "excise input",
@@ -1203,8 +1204,14 @@ def _classify_single(name, net_amount, group=None):
 
     # Rule: "bank" in name + CREDIT balance = secured loan/OD/CC
     if ("bank" in name_lower or "a/c" in name_lower) and net_amount < 0:
-        if any(kw in name_lower for kw in ["loan", "od", "cc", "overdraft",
-               "cash credit", "machinery", "vehicle", "term loan"]):
+        # Cash Credit / Overdraft facilities are WORKING CAPITAL (short-term),
+        # not long-term loans — even though they're "secured" against assets.
+        # Must check this BEFORE the generic "loan"/"term loan" check below,
+        # since CC/OD account names often also contain "loan"-adjacent words.
+        if any(kw in name_lower for kw in ["od", "overdraft", "cash credit"]) or \
+           re.search(r'(?<![a-z])cc(?![a-z])', name_lower):
+            return "st_borrowings", "high"
+        if any(kw in name_lower for kw in ["loan", "machinery", "vehicle", "term loan"]):
             return "lt_borrowings", "high"
         # Cheque issued/not cleared with credit balance = outstanding liability
         if any(kw in name_lower for kw in ["cheque issued", "chq issued",
@@ -1279,8 +1286,25 @@ def _classify_single(name, net_amount, group=None):
         if "sundry debtor" in group_lower:
             return "trade_rec", "high"
 
-    # Step 1: Check if group header directly maps to a head
-    if group_lower and group_lower in GROUP_HEAD_MAP:
+    # Step 1: Check if group header directly maps to a head.
+    # FIX: only apply this for SPECIFIC group labels (e.g. "current assets
+    # (bank accounts)", "current assets (sundry debtors)") — NOT for a
+    # bare generic group like plain "current assets" or "current
+    # liabilities" with no sub-bracket. A bare generic group should defer
+    # to Step 2's name-keyword matching first, since many TBs dump
+    # unrelated accounts (Prepaid Insurance, TCS Collection, Round Off,
+    # etc.) directly under the bare top-level group with no sub-heading —
+    # and those specific keywords (e.g. "prepaid", "tcs") are far more
+    # reliable classifiers than the generic group bucket. Without this,
+    # "PREPAID INSURANCE" / "TCS COLLECTION" under bare "CURRENT ASSETS"
+    # always landed in the generic Other Current Assets bucket instead of
+    # Short Term Loans & Advances, where the template actually expects
+    # them and has dedicated injection logic.
+    _GENERIC_BARE_GROUPS = {
+        "current assets", "current liabilities", "current liability",
+    }
+    if (group_lower and group_lower in GROUP_HEAD_MAP
+            and group_lower not in _GENERIC_BARE_GROUPS):
         group_head = GROUP_HEAD_MAP[group_lower]
         return group_head, "high"
 
@@ -1307,7 +1331,10 @@ def _classify_single(name, net_amount, group=None):
             if kw in name_lower:
                 return head_key, "high"
 
-    # Step 3: Partial group match
+    # Step 3: Partial group match (also handles the bare generic groups
+    # deferred above, since "current assets" / "current liabilities" are
+    # present in GROUP_HEAD_MAP and will match here as a substring of
+    # themselves if Step 2's keyword check didn't already return).
     if group_lower:
         for grp_key, head_key in GROUP_HEAD_MAP.items():
             if grp_key in group_lower or group_lower in grp_key:
@@ -1622,6 +1649,25 @@ def _fuzzy_match_name(tb_name, template_name):
     # Exact after normalization
     if a == b:
         return True
+    # Simple singular/plural stemming: "salary" should match "salaries",
+    # "expense" should match "expenses", etc. Without this, a TB account
+    # like "SALARY" never matches a template label "Salaries" and falls
+    # through to "find next empty row" — which can silently duplicate an
+    # amount that's ALREADY pre-filled in the template under a slightly
+    # different spelling, double-counting it in the section's Total.
+    def _stem(w):
+        if w.endswith("ies") and len(w) > 4:
+            return w[:-3] + "y"
+        if w.endswith("es") and len(w) > 3:
+            return w[:-2]
+        if w.endswith("s") and len(w) > 3:
+            return w[:-1]
+        return w
+    a_words = a.split()
+    b_words = b.split()
+    if len(a_words) == 1 and len(b_words) == 1:
+        if _stem(a_words[0]) == _stem(b_words[0]):
+            return True
     # Only allow substring if the shorter is at least 6 chars
     # AND the match is not just a common word like 'textiles'
     COMMON_WORDS = {'textiles', 'trading', 'enterprises', 'creation', 'fashion',
@@ -1633,12 +1679,16 @@ def _fuzzy_match_name(tb_name, template_name):
             unique_words = [w for w in shorter.split() if w not in COMMON_WORDS and len(w) > 3]
             if unique_words:
                 return True
-    # Check first 2+ significant words match exactly
+    # Check first 2+ significant words match exactly.
+    # Require BOTH names to have at least 2 significant words for this
+    # path — otherwise a single short shared word (e.g. "Goel" appearing
+    # in both "Anjali Goel" and "Goel Trading Co.") would wrongly count
+    # as a full match via min(2, 1, 2) = 1.
     words_a = [w for w in a.split() if len(w) > 3 and w not in COMMON_WORDS]
     words_b = [w for w in b.split() if len(w) > 3 and w not in COMMON_WORDS]
-    if words_a and words_b:
+    if len(words_a) >= 2 and len(words_b) >= 2:
         common = sum(1 for w in words_a if w in words_b)
-        if common >= min(2, len(words_a), len(words_b)):
+        if common >= 2:
             return True
     # Single distinctive word match (>=7 chars, not common)
     if words_a and words_b:
@@ -1744,6 +1794,27 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                             if a.get("bs_head") == "lt_borrowings"
                             and abs(a.get("net", 0)) > 0]
 
+            # FIX: Defend against re-processing a previously-generated
+            # (and possibly buggy) output file as if it were a pristine
+            # template. Some uploaded "templates" already contain stray
+            # numeric values in UNLABELED rows of the LT-borrowings section
+            # (col B empty, col D has a leftover number from an earlier
+            # run) which get silently summed by the section's Total
+            # formula alongside our freshly-injected figures, double-
+            # counting that amount. Clear any such label-less numeric cell
+            # in rows 7-24 of the LT borrowings section before injecting —
+            # a legitimate template row always has a label in col B.
+            for _r in range(7, 25):
+                _b = ws_n.cell(_r, 2).value
+                _d = ws_n.cell(_r, 4).value
+                if (_b is None or str(_b).strip() == "") and isinstance(_d, (int, float)) and _d != 0:
+                    if not _is_formula(_d):
+                        ws_n.cell(_r, 4).value = None
+                        log.append(
+                            f"· Cleared stray unlabeled value at notes to bs!D{_r} "
+                            f"({_d:,.2f}) — likely leftover from a previous run"
+                        )
+
             # Separate secured vs unsecured based on Tally group
             def _is_unsecured(acct):
                 g = (acct.get("group") or "").lower()
@@ -1818,8 +1889,60 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
             # Secured → rows 7 to secured_end-1 as fallback
             _inject_ltb_list(secured_accounts, 7, secured_end - 1)
-            # Unsecured → rows unsecured_start onward as fallback
-            _inject_ltb_list(unsecured_accounts, unsecured_start, unsecured_start + 5)
+
+            # ── FIX: Unsecured loans often live in a dedicated "Details"
+            # sheet section (e.g. "UNSECURED LOAN" / "FROM RELATED PARTIES")
+            # with one row PER LENDER NAME, summed via a Total formula that
+            # 'notes to bs' references (e.g. notes to bs!D18='=Details!D16').
+            # The generic _inject_ltb_list() above only targets 'notes to bs'
+            # directly — since that target cell is itself a formula pointing
+            # to Details, the write gets silently skipped and unsecured loans
+            # (e.g. 9 individually-named lenders) never reach the BS at all.
+            #
+            # Try matching unsecured accounts by NAME to a "Details" sheet
+            # section first; only fall back to the generic notes-to-bs
+            # injection for any names that don't match.
+            unsecured_remaining = list(unsecured_accounts)
+            if "Details" in wb.sheetnames and unsecured_accounts:
+                ws_det_ltb = wb["Details"]
+                # Find a section whose header mentions "unsecured loan"
+                # and locate its name-labeled rows + Total row.
+                section_start, section_end = None, None
+                for r in range(1, min(ws_det_ltb.max_row, 60) + 1):
+                    a_val = ws_det_ltb.cell(r, 1).value
+                    if a_val and "unsecured loan" in str(a_val).strip().lower():
+                        section_start = r
+                        break
+                if section_start:
+                    for r in range(section_start, section_start + 30):
+                        b_val = ws_det_ltb.cell(r, 2).value
+                        if b_val and str(b_val).strip().lower() == "total":
+                            section_end = r
+                            break
+                if section_start and section_end:
+                    still_unmatched_ltb = []
+                    for acct in unsecured_remaining:
+                        name = acct["name"]
+                        amt = abs(acct["net"])
+                        matched_r = None
+                        for r in range(section_start, section_end):
+                            b_val = ws_det_ltb.cell(r, 2).value
+                            if b_val and _fuzzy_match_name(name, str(b_val)):
+                                matched_r = r
+                                break
+                        if matched_r:
+                            if _safe_write(ws_det_ltb, matched_r, 4, amt):
+                                injected.append(
+                                    f"Details!D{matched_r} (unsecured loan: {name}) = {amt:,.2f}"
+                                )
+                                written_rows.add(("details_ltb", matched_r))
+                                continue
+                        still_unmatched_ltb.append(acct)
+                    unsecured_remaining = still_unmatched_ltb
+
+            # Unsecured → rows unsecured_start onward as fallback (any
+            # accounts that didn't match a Details-sheet name row above)
+            _inject_ltb_list(unsecured_remaining, unsecured_start, unsecured_start + 5)
 
             if not written_rows and ltb_amt:
                 # Fallback: write total to "from banks" row
@@ -1829,15 +1952,58 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         inject_notes_row(r, 4, abs(ltb_amt), "Long-term borrowings total")
                         break
 
-        # Short-term borrowings → D26 (bank CC row)
+        # Short-term borrowings → find the labeled CC/OD row dynamically.
+        # FIX: previously hardcoded to "first writable row from 26", which
+        # often lands on a SECTION HEADER row (e.g. R26="Secured") that has
+        # no value cell wired into the Total formula chain feeding bs!E15.
+        # The actual writable target is the row labeled with the bank/CC/OD
+        # account name (e.g. "HDFC Bank CC A/c"), found by scanning for a
+        # label containing cc/od/overdraft/cash credit/loan repayable.
         stb_amt = aggregated_values.get("st_borrowings", 0)
         if stb_amt:
             placed = False
-            for r in range(26, 32):
-                d = ws_n.cell(r, 4).value
-                if d is None or (not _is_formula(str(d))):
-                    placed = inject_notes_row(r, 4, stb_amt, "Short-term borrowings")
+            target_row = None
+            # First pass: prefer a row with a SPECIFIC bank/CC account name
+            # (e.g. "HDFC Bank CC A/c") over a generic section label like
+            # "Loans repayable on demand", since the generic label row is
+            # often just a sub-header with no value of its own — the real
+            # writable cell is the specific account name row beneath it.
+            for r in range(7, 50):
+                b_val = ws_n.cell(r, 2).value
+                if not b_val:
+                    continue
+                bl = str(b_val).strip().lower()
+                if "total" in bl:
+                    continue
+                if any(kw in bl for kw in ["cc a/c", "cc account", "overdraft", "cash credit", "od a/c"]):
+                    target_row = r
                     break
+            if target_row is None:
+                # Second pass: fall back to the generic "loans repayable" label
+                for r in range(7, 50):
+                    b_val = ws_n.cell(r, 2).value
+                    if not b_val:
+                        continue
+                    bl = str(b_val).strip().lower()
+                    if "loans repayable on demand" in bl and "total" not in bl:
+                        target_row = r
+                        break
+            if target_row:
+                d_existing = ws_n.cell(target_row, 4).value
+                if d_existing is None or not _is_formula(d_existing):
+                    placed = inject_notes_row(target_row, 4, stb_amt, "Short-term borrowings")
+            if not placed:
+                # Fallback to old behaviour (scan from row 26) if no
+                # specific CC/OD label was found in this template.
+                for r in range(26, 32):
+                    d = ws_n.cell(r, 4).value
+                    b = ws_n.cell(r, 2).value
+                    # Skip section-header-only rows (no specific account label)
+                    if b and any(kw in str(b).lower() for kw in ["secured", "unsecured", "total"]):
+                        continue
+                    if d is None or (not _is_formula(str(d))):
+                        placed = inject_notes_row(r, 4, stb_amt, "Short-term borrowings")
+                        break
             if not placed:
                 skipped.append(f"short_term_borrowings {stb_amt:,.2f}: no writable row in notes to bs")
 
@@ -1999,7 +2165,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             cash_in_hand_row = None
             for r in range(90, 170):
                 lbl = (ws_n.cell(r, 2).value or "").strip().lower()
-                if "cash in hand" in lbl:
+                if "cash in hand" in lbl or "cash on hand" in lbl or lbl == "cash":
                     cash_in_hand_row = r
                     break
 
@@ -2011,34 +2177,69 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     f"notes to bs!D{cash_in_hand_row} (Cash in hand) = {total_cash:,.2f}"
                 )
 
-            # Locate bank rows by scanning for bank name labels
+            # Locate bank rows by scanning for bank name labels.
+            # FIX: match SPECIFIC distinguishing words (account numbers,
+            # "cc"/"od" suffixes) BEFORE generic words like "hdfc" — with
+            # multiple accounts at the same bank (e.g. a savings A/c and a
+            # separate CC A/c), matching on "hdfc" alone for both accounts
+            # caused the second one to silently overwrite the first in the
+            # same template row.
+            written_bank_rows = set()
             for acct in bank_only:
                 a_name_l = acct["name"].lower()
-                a_words  = [w for w in a_name_l.split()
-                            if len(w) > 3 and w not in {"bank","a/c","ltd","pvt","the","current"}]
-                for r in range(90, 170):
-                    lbl = (ws_n.cell(r, 2).value or "").strip().lower()
-                    if not lbl or "total" in lbl or "cash in hand" in lbl:
-                        continue
-                    if any(w in lbl for w in a_words):
-                        ws_n.cell(r, 4).value = abs(acct["net"])
-                        injected.append(
-                            f"notes to bs!D{r} ({acct['name']}) = {abs(acct['net']):,.2f}"
-                        )
-                        break
-                else:
-                    # Fallback: find empty bank row near section
+                # Specific words: digits-only tokens (account numbers) or
+                # cc/od (even though short, these distinguish CC accounts)
+                specific_words = [w for w in a_name_l.split()
+                                  if w.isdigit() or w in ("cc", "od")]
+                generic_words  = [w for w in a_name_l.split()
+                                  if len(w) > 3 and w not in
+                                  {"bank","a/c","ltd","pvt","the","current"}
+                                  and w not in specific_words]
+                matched_row = None
+                # Pass 1: specific words only
+                if specific_words:
                     for r in range(90, 170):
+                        if r in written_bank_rows:
+                            continue
                         lbl = (ws_n.cell(r, 2).value or "").strip().lower()
-                        if any(k in lbl for k in ["bank", "a/c"]) and "total" not in lbl \
-                                and "cash in hand" not in lbl:
-                            d = ws_n.cell(r, 4).value
-                            if d is None or d == 0:
-                                ws_n.cell(r, 4).value = abs(acct["net"])
-                                injected.append(
-                                    f"notes to bs!D{r} ({acct['name']}) = {abs(acct['net']):,.2f}"
-                                )
-                                break
+                        if not lbl or "total" in lbl or "cash in hand" in lbl or "cash on hand" in lbl:
+                            continue
+                        if any(w in lbl for w in specific_words):
+                            matched_row = r
+                            break
+                # Pass 2: generic words, only on rows not already claimed
+                if matched_row is None and generic_words:
+                    for r in range(90, 170):
+                        if r in written_bank_rows:
+                            continue
+                        lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                        if not lbl or "total" in lbl or "cash in hand" in lbl or "cash on hand" in lbl:
+                            continue
+                        if any(w in lbl for w in generic_words):
+                            matched_row = r
+                            break
+                if matched_row is not None:
+                    ws_n.cell(matched_row, 4).value = abs(acct["net"])
+                    written_bank_rows.add(matched_row)
+                    injected.append(
+                        f"notes to bs!D{matched_row} ({acct['name']}) = {abs(acct['net']):,.2f}"
+                    )
+                    continue
+                # Fallback: find empty bank row near section
+                for r in range(90, 170):
+                    if r in written_bank_rows:
+                        continue
+                    lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                    if any(k in lbl for k in ["bank", "a/c"]) and "total" not in lbl \
+                            and "cash in hand" not in lbl and "cash on hand" not in lbl:
+                        d = ws_n.cell(r, 4).value
+                        if d is None or d == 0:
+                            ws_n.cell(r, 4).value = abs(acct["net"])
+                            written_bank_rows.add(r)
+                            injected.append(
+                                f"notes to bs!D{r} ({acct['name']}) = {abs(acct['net']):,.2f}"
+                            )
+                            break
 
         elif cash_bank_amt:
             # Fallback: find Cash in hand row by label
@@ -2284,6 +2485,58 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     det_cache[(recv_end_row, 4)] = abs(acct["net"])
                 except Exception as e:
                     skipped.append(f"recv '{acct['name']}': insert failed: {e}")
+
+        # ── FIX: repair notes to bs Trade Receivables formula ───────────
+        # The template's "notes to bs" Trade Receivables section often
+        # hardcodes single-cell references like ='Details'!D186 instead
+        # of summing the whole block — a leftover from whatever row count
+        # the template author had when they built it. As we write/insert
+        # potentially 100+ debtor rows above (auto-extending recv_end_row
+        # well past the template's original boundary), those hardcoded
+        # single-row references become stale and point at an arbitrary
+        # row instead of the Total — causing Trade Receivables to read
+        # near-zero on the BS even though all individual debtor balances
+        # were correctly written into Details.
+        #
+        # Fix: if we wrote into Details rows beyond the template's original
+        # recv_end_row (90), rewrite notes to bs!D80/D86 (and their PY
+        # column E80/E86, left untouched since we have no PY TB) to SUM the
+        # full actual range we wrote into, so the Total (A+B) on the BS
+        # reflects the true aggregate instead of one stray row's value.
+        if recv_written and "notes to bs" in wb.sheetnames:
+            ws_nbs_fix = wb["notes to bs"]
+            min_r = min(recv_written)
+            max_r = max(recv_written)
+            # Only repair if the template's own single-row references
+            # (D80, D86) are pointing OUTSIDE our actual written range —
+            # i.e. they're stale. If they happen to already point inside
+            # the range, leave them (template may be correct already).
+            d80_val = ws_nbs_fix.cell(80, 4).value
+            d86_val = ws_nbs_fix.cell(86, 4).value
+            import re as _re_recv
+            def _ref_row(formula_val):
+                if isinstance(formula_val, str):
+                    m = _re_recv.search(r'!D(\d+)', formula_val)
+                    if m:
+                        return int(m.group(1))
+                return None
+            d80_ref = _ref_row(d80_val)
+            d86_ref = _ref_row(d86_val)
+            needs_fix = (
+                d80_ref is None or not (min_r <= d80_ref <= max_r)
+                or d86_ref is None or not (min_r <= d86_ref <= max_r)
+            )
+            if needs_fix:
+                # Single block covers all receivables — put the full SUM
+                # in D80 (the "< 6 months" sub-total) and zero out D86
+                # (the "> 6 months" sub-total) since the TB doesn't
+                # distinguish ageing buckets.
+                ws_nbs_fix.cell(80, 4).value = f"=SUM(Details!D{min_r}:D{max_r})"
+                ws_nbs_fix.cell(86, 4).value = 0
+                log.append(
+                    f"✓ Repaired 'notes to bs'!D80 → SUM(Details!D{min_r}:D{max_r}) "
+                    f"(Trade Receivables total; was pointing to a stale single row)"
+                )
 
         # NOTE: LT borrowings are written to notes to bs!D8 directly (Section 2 above).
         # Do NOT also write to Details D7-D12 — that would double-count because
@@ -2715,6 +2968,105 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         )
                         next_row += 1
 
+            # ── B-bis. Purchases → notes to p&l (rate-keyword sub-rows) ──
+            # FIX: GROSS PROFIT!B14 ("Purchase GST") is itself a FORMULA
+            # (=SUM('notes to p&l'!D22:D29)) in many templates — _safe_write
+            # silently skips formula cells, so the purchases total appeared
+            # to vanish even though purch_row_totals had the right number.
+            # The TRUE writable target is the detail rows in 'notes to p&l'
+            # (e.g. R22 "Purchase GST Central 0%", R26 "Purchases GST Local
+            # 18%", etc.) — same pattern as the Sales injection above.
+            # Without this, purchase figures never reached the template,
+            # Closing Stock (the Trading A/c balancing figure) absorbed the
+            # entire missing purchase amount and went hugely negative, and
+            # any TRULY unmatched purchase account fell through to GROSS
+            # PROFIT's "append below last row" logic — which collided with
+            # and overwrote the DIRECT EXPENSES section directly below.
+            if ws_npl:
+                import re as _re3
+                def _extract_rate3(name):
+                    m = _re3.search(r'(\d+)\s*%', name)
+                    return m.group(1) if m else None
+
+                # Find the Purchases sub-section bounds in notes to p&l:
+                # starts after a row labelled "Purchases" (col B), ends at
+                # the next section label (col A non-empty, e.g. "(c)").
+                purch_start, purch_end = None, None
+                for r in range(1, 60):
+                    lbl_b = ws_npl.cell(r, 2).value
+                    if lbl_b and str(lbl_b).strip().lower() == "purchases":
+                        purch_start = r + 1
+                        break
+                if purch_start:
+                    for r in range(purch_start, purch_start + 20):
+                        lbl_a = ws_npl.cell(r, 1).value
+                        if lbl_a and str(lbl_a).strip():
+                            purch_end = r
+                            break
+                    if purch_end is None:
+                        purch_end = purch_start + 12
+
+                still_unmatched_purch = []
+                if purch_start and purch_end:
+                    for acct in purchase_accounts:
+                        amt = abs(acct["net"])
+                        if amt <= 0:
+                            continue
+                        acct_l = acct["name"].lower()
+                        acct_rate = _extract_rate3(acct["name"])
+                        wrote = False
+                        for r in range(purch_start, purch_end):
+                            cell_name = ws_npl.cell(r, 2).value
+                            if not cell_name:
+                                continue
+                            tmpl_l = str(cell_name).lower()
+                            tmpl_rate = _extract_rate3(str(cell_name))
+                            rate_match = acct_rate and tmpl_rate and acct_rate == tmpl_rate
+                            region_match = (
+                                ("central" in acct_l) == ("central" in tmpl_l)
+                                and ("local" in acct_l) == ("local" in tmpl_l)
+                            )
+                            if rate_match and region_match:
+                                if _safe_write(ws_npl, r, 4, amt):
+                                    injected.append(
+                                        f"notes to p&l!D{r} (Purchase: {acct['name']}) = {amt:,.2f}"
+                                    )
+                                    wrote = True
+                                break
+                        if not wrote:
+                            still_unmatched_purch.append(acct)
+
+                    # Any genuinely unmatched purchase accounts get appended
+                    # as NEW rows strictly inside the Purchases sub-section
+                    # (between purch_start and purch_end), never spilling
+                    # into Direct Expenses below.
+                    next_row = purch_start
+                    # Find first truly empty row within the sub-section
+                    while next_row < purch_end and ws_npl.cell(next_row, 2).value:
+                        next_row += 1
+                    for acct in still_unmatched_purch:
+                        amt = abs(acct.get("net", 0))
+                        if amt <= 0:
+                            continue
+                        if next_row >= purch_end:
+                            # No room left in the template's sub-section —
+                            # fold into the last purchase row rather than
+                            # overwrite Direct Expenses.
+                            last_r = purch_end - 1
+                            existing = ws_npl.cell(last_r, 4).value
+                            existing_amt = existing if isinstance(existing, (int, float)) else 0
+                            _safe_write(ws_npl, last_r, 4, existing_amt + amt)
+                            injected.append(
+                                f"notes to p&l!D{last_r} (Purchase folded, no room: {acct['name']}) = {amt:,.2f}"
+                            )
+                            continue
+                        if _safe_write(ws_npl, next_row, 2, acct["name"]):
+                            _safe_write(ws_npl, next_row, 4, amt)
+                            injected.append(
+                                f"notes to p&l!D{next_row} (Purchase new: {acct['name']}) = {amt:,.2f}"
+                            )
+                            next_row += 1
+
         # ── B2. DIRECT EXPENSES → GROSS PROFIT Direct-Expenses sub-rows ──
         # FIX (Issues 2/4): Direct expenses (Electricity Exp, Wages A/c,
         # Oil & Lubricant) must NOT be collapsed onto the Purchases header.
@@ -2954,6 +3306,30 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                             matched = True
                         break
                 if not matched:
+                    # FIX: before creating a new row, check whether this
+                    # EXACT amount already sits in another row of this
+                    # section (e.g. a contaminated/previously-generated
+                    # template that already has "Salaries"=240000 filled
+                    # in, while our account is named "SALARY" — a near-
+                    # miss the fuzzy matcher doesn't catch). Writing the
+                    # same amount again would double it in the section's
+                    # SUM-based Total. Skip in that case instead.
+                    amt = abs(acct["net"])
+                    already_present = False
+                    for r in range(emp_start, emp_end):
+                        if r in written_emp:
+                            continue
+                        existing_d = ws_npl.cell(r, 4).value
+                        if isinstance(existing_d, (int, float)) and abs(existing_d - amt) < 0.5:
+                            already_present = True
+                            written_emp.add(r)
+                            log.append(
+                                f"· Employee expense '{acct['name']}' ({amt:,.2f}) "
+                                f"matches existing notes to p&l!D{r} — not duplicated"
+                            )
+                            break
+                    if already_present:
+                        continue
                     # Find empty row in section
                     for r in range(emp_start, emp_end):
                         if r not in written_emp:
@@ -3284,6 +3660,108 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         _wb2.close()
     except Exception as _fe:
         pass  # formula fix failed silently — do not break existing flow
+
+    # ── GENERIC BS FORMULA REPAIR PASS ──────────────────────────────
+    # Some BS templates have a Note Number in column D but are MISSING
+    # the actual cross-reference formula in columns E/F (e.g. Trade
+    # Payables row pointing nowhere) — likely a template authoring gap,
+    # not something our injection caused. Detect any bs row whose Note
+    # No. matches a "notes to bs" or "notes to p&l" section, but whose
+    # E/F cells are empty, and auto-link them to that section's Total row.
+    try:
+        from openpyxl import load_workbook as _lwb3
+        _wb3 = _lwb3(output_path)
+        if "bs" in _wb3.sheetnames and "notes to bs" in _wb3.sheetnames:
+            _bs = _wb3["bs"]
+            _nbs = _wb3["notes to bs"]
+
+            # Build a map: note_number -> row in 'notes to bs' where that
+            # note's "Total ..." row lives (the row whose label starts
+            # with "total" and is the LAST such row before the next note
+            # number marker in column A, e.g. "=bs!D16").
+            note_total_rows = {}
+            current_note = None
+            note_start_row = None
+            note_subject = None
+
+            def _find_best_total_row(start_r, end_r, subject):
+                """Within [start_r, end_r), find the row whose label both
+                contains 'total' AND best matches the note's subject text
+                (e.g. 'Trade payables' → prefer 'Total Trade payables' over
+                a generic 'Total' inside an unrelated MSME disclosure)."""
+                candidates = []
+                for rr in range(start_r, end_r):
+                    b_val = _nbs.cell(rr, 2).value
+                    if b_val and "total" in str(b_val).strip().lower():
+                        candidates.append((rr, str(b_val).strip().lower()))
+                if not candidates:
+                    return None
+                if subject:
+                    subj_words = set(subject.lower().split())
+                    scored = []
+                    for rr, lbl in candidates:
+                        lbl_words = set(lbl.replace("total", "").split())
+                        score = len(subj_words & lbl_words)
+                        scored.append((score, rr))
+                    scored.sort(key=lambda x: (-x[0], x[1]))
+                    if scored[0][0] > 0:
+                        return scored[0][1]
+                # No subject match — use the FIRST total row (most likely
+                # to be the section's own total, before any nested
+                # disclosure sub-totals further down)
+                return candidates[0][0]
+
+            for r in range(1, _nbs.max_row + 1):
+                a_val = _nbs.cell(r, 1).value
+                if isinstance(a_val, str) and a_val.strip().startswith("=bs!D"):
+                    # New note section begins — finalize the previous one
+                    if current_note is not None and note_start_row is not None:
+                        best = _find_best_total_row(note_start_row, r, note_subject)
+                        if best:
+                            note_total_rows[current_note] = best
+                    # Extract the note number this section corresponds to
+                    import re as _re_note
+                    m = _re_note.search(r'D(\d+)', a_val)
+                    if m:
+                        current_note = int(_bs.cell(int(m.group(1)), 4).value) \
+                            if isinstance(_bs.cell(int(m.group(1)), 4).value, (int, float)) \
+                            else None
+                    note_subject = _nbs.cell(r, 2).value  # e.g. "Trade payables"
+                    note_start_row = r + 1
+            # Finalize the last section
+            if current_note is not None and note_start_row is not None:
+                best = _find_best_total_row(note_start_row, _nbs.max_row + 1, note_subject)
+                if best:
+                    note_total_rows[current_note] = best
+
+            # Now scan the bs sheet for rows with a Note No. (col D) but
+            # missing E/F formulas, and link them up.
+            repaired = []
+            for r in range(1, _bs.max_row + 1):
+                note_no = _bs.cell(r, 4).value
+                if not isinstance(note_no, (int, float)):
+                    continue
+                e_val = _bs.cell(r, 5).value
+                f_val = _bs.cell(r, 6).value
+                if e_val is not None or f_val is not None:
+                    continue  # already has something — don't touch
+                total_row = note_total_rows.get(int(note_no))
+                if total_row:
+                    _bs.cell(r, 5).value = f"='notes to bs'!D{total_row}"
+                    _bs.cell(r, 6).value = f"='notes to bs'!E{total_row}"
+                    repaired.append(
+                        f"bs!E{r}/F{r} (Note {int(note_no)}) → "
+                        f"'notes to bs'!D{total_row}/E{total_row}"
+                    )
+
+            if repaired:
+                _wb3.save(output_path)
+                log.append(f"✓ Auto-repaired {len(repaired)} missing bs formula(s):")
+                for rep in repaired:
+                    log.append(f"    {rep}")
+        _wb3.close()
+    except Exception as _fe2:
+        pass  # repair pass failed silently — do not break existing flow
 
     # ─────────────────────────────────────────────────────────────
     # FIX (Issue 3): On-screen totals must mirror what the downloaded BS shows.
