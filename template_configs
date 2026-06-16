@@ -384,6 +384,7 @@ TEMPLATE_CONFIGS = {
             "col_py": 6,
             "lt_borrowings":   "='notes to bs'!D22",
             "stb":             "='notes to bs'!D36",
+            "trade_payables":  "='notes to bs'!D42",
             "trade_pay_msme":  "='notes to bs'!D40",
             "trade_pay_other": "='notes to bs'!D41",
             "other_cl":        "='notes to bs'!D61",
