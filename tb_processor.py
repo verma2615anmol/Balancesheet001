@@ -1671,7 +1671,19 @@ def _fuzzy_match_name(tb_name, template_name):
     # Only allow substring if the shorter is at least 6 chars
     # AND the match is not just a common word like 'textiles'
     COMMON_WORDS = {'textiles', 'trading', 'enterprises', 'creation', 'fashion',
-                    'fabrics', 'industries', 'pvt', 'ltd', 'co', 'and', 'sons'}
+                    'fabrics', 'industries', 'pvt', 'ltd', 'co', 'and', 'sons',
+                    # FIX: "products", "store", "traders", "corporation",
+                    # "international" and similar generic business-type
+                    # words appear across many UNRELATED company names —
+                    # treating any one of them as "distinctive" caused
+                    # false-positive matches, e.g. "PARAS MIRACLE POLY
+                    # PRODUCTS PVT. LTD." incorrectly matching "G.M.
+                    # Products" purely because both contain "Products",
+                    # silently swapping the two companies' amounts with
+                    # each other.
+                    'products', 'store', 'stores', 'traders', 'corporation',
+                    'international', 'company', 'industry', 'general',
+                    'national', 'private', 'limited', 'agency', 'agencies'}
     if len(a) >= 6 and len(b) >= 6:
         shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
         if shorter in longer:
@@ -1743,9 +1755,87 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
     shutil.copy2(bs_template_path, output_path)
 
     wb = load_workbook(output_path)
+
+    # FIX: some uploaded BS templates contain leftover ArrayFormula cells
+    # referencing an EXTERNAL workbook that no longer exists (e.g.
+    # "=[1]!'!A D Garments!R21C18:R24C18'" — the "[1]!" prefix is an
+    # external-link index pointing at a file that isn't embedded or
+    # available). Excel can't resolve these and shows #VALUE! every time
+    # the file is reopened, which then cascades through any downstream
+    # formula that depends on that cell (Cost of Materials Consumed →
+    # Total Expenses → Profit → Capital → the Previous Year balance
+    # sheet column) — almost certainly the cause of "previous year
+    # balance sheet doesn't match" reports for templates carrying this
+    # kind of dead reference. openpyxl still preserves the LAST cached
+    # value Excel computed before the link broke (visible via
+    # data_only=True), so the safest repair is to replace the broken
+    # array formula with that last-known plain number, removing the
+    # dead link while keeping the figure the template already expected.
+    try:
+        from openpyxl.worksheet.formula import ArrayFormula as _ArrayFormula
+        wb_cached = load_workbook(output_path, data_only=True)
+        _broken_links_fixed = 0
+        _broken_refs_fixed = 0
+        for _sn in wb.sheetnames:
+            _ws = wb[_sn]
+            _ws_cached = wb_cached[_sn] if _sn in wb_cached.sheetnames else None
+            for _row in _ws.iter_rows():
+                for _cell in _row:
+                    if isinstance(_cell.value, _ArrayFormula):
+                        _formula_text = getattr(_cell.value, "text", "") or ""
+                        if "[1]!" in _formula_text or "[2]!" in _formula_text or "[3]!" in _formula_text:
+                            _cached_val = None
+                            if _ws_cached is not None:
+                                _cached_val = _ws_cached.cell(_cell.row, _cell.column).value
+                            if isinstance(_cached_val, (int, float)):
+                                _cell.value = _cached_val
+                                _broken_links_fixed += 1
+                    elif isinstance(_cell.value, str) and _cell.value.startswith("=") \
+                            and "#REF!" in _cell.value:
+                        # FIX: plain string formulas containing a #REF!
+                        # fragment (e.g. "='notes to p&l'!#REF!") happen
+                        # when a row/column the formula pointed to was
+                        # deleted from the source sheet at some point in
+                        # the template's history. These always evaluate
+                        # to #VALUE!/#REF! and never contribute anything
+                        # meaningful. Only touch cells where this matters
+                        # for arithmetic (not label/text columns A and D,
+                        # which sometimes legitimately hold a cross-sheet
+                        # text-label formula) — replace with the last
+                        # cached value if numeric, otherwise 0, so totals
+                        # depending on the column don't show #VALUE!.
+                        if _cell.column != 1:
+                            _cached_val = None
+                            if _ws_cached is not None:
+                                _cached_val = _ws_cached.cell(_cell.row, _cell.column).value
+                            _cell.value = _cached_val if isinstance(_cached_val, (int, float)) else 0
+                            _broken_refs_fixed += 1
+        if _broken_links_fixed:
+            log.append(
+                f"⚠ Repaired {_broken_links_fixed} broken external-link "
+                f"formula(s) in the uploaded template (dead reference to "
+                f"a missing source workbook) — replaced with last-known "
+                f"cached value(s) so they no longer show #VALUE! on open."
+            )
+        if _broken_refs_fixed:
+            log.append(
+                f"⚠ Repaired {_broken_refs_fixed} broken #REF! formula(s) "
+                f"in value columns of the uploaded template (a row/column "
+                f"the formula pointed to no longer exists) — replaced "
+                f"with last-known cached value(s) or 0."
+            )
+    except Exception as _link_fix_exc:
+        pass
+
     structure = _detect_notes_structure(wb)
     injected = []
     skipped = []
+
+    # Queue for any row-insertion requests that must be deferred until
+    # every other (cache-dependent) injection step has finished reading
+    # and writing — see the detailed explanation at the sale-section
+    # overflow handling below for why this matters.
+    _deferred_section_expansions = []
 
     # Pre-load sheet caches for fast lookup (avoids slow ws.cell(r,c) in loops)
     _cache = {}
@@ -2386,9 +2476,38 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         ws_det  = wb["Details"]
         det_cache = _cache.get("Details", {})
 
+        # FIX: this previously hardcoded range(21, 63) as "the creditor
+        # section", assuming a fixed template layout. In templates where
+        # the Unsecured Loan "FROM OTHER PARTIES" sub-section sits above
+        # Sundry Creditors (e.g. AS Traders: rows 18-24 are unsecured
+        # loans, "SUNDRY CREDITORS" header is at row 26), this caused
+        # unmatched creditor names to be written into the BLANK rows of
+        # the unsecured-loan sub-section instead of the real creditor
+        # section — corrupting that section and shifting/hiding the
+        # actual "SUNDRY CREDITORS" header and its rows beneath stray
+        # data. Now locates the section dynamically by scanning for the
+        # "SUNDRY CREDITORS" header text and using the row directly
+        # below it as the start, falling back to the old hardcoded
+        # range only if the header text can't be found at all.
+        cred_start_row, cred_end_row = 21, 63
+        for r in range(1, 200):
+            lbl = det_cache.get((r, 1)) or det_cache.get((r, 2))
+            if lbl and "sundry creditor" in str(lbl).strip().lower():
+                cred_start_row = r + 2  # skip header row + "PARTICULARS" sub-header row
+                # Find the end: next all-caps section header or blank gap
+                for r2 in range(cred_start_row, cred_start_row + 200):
+                    lbl2 = det_cache.get((r2, 1)) or det_cache.get((r2, 2))
+                    if lbl2 and str(lbl2).strip().isupper() and len(str(lbl2).strip()) > 3 \
+                       and "m/s" not in str(lbl2).strip().lower():
+                        cred_end_row = r2
+                        break
+                else:
+                    cred_end_row = cred_start_row + 60
+                break
+
         # Build name→row map from cache (instant, no cell access)
         cred_row_map = {}
-        for r in range(21, 63):
+        for r in range(cred_start_row, cred_end_row):
             b = det_cache.get((r, 2))
             if b and str(b).strip():
                 cred_row_map[str(b).strip()] = r
@@ -2417,8 +2536,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 unmatched_creditors.append(acct)
 
         # Blank rows for unmatched (from cache)
-        cred_end_row = 63
-        blank_rows = [r for r in range(21, cred_end_row)
+        blank_rows = [r for r in range(cred_start_row, cred_end_row)
                       if r not in written_rows
                       and det_cache.get((r, 4)) is None
                       and det_cache.get((r, 2)) is None]
@@ -2432,18 +2550,84 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 else:
                     skipped.append(f"Trade payable '{acct['name']}': row {r} is merged/formula")
             else:
-                # Section full — insert new row
-                try:
-                    cred_end_row += 1
-                    ws_det.insert_rows(cred_end_row)
-                    ws_det.cell(cred_end_row, 2).value = acct["name"]
-                    ws_det.cell(cred_end_row, 4).value = abs(acct["net"])
-                    written_rows.add(cred_end_row)
-                    injected.append(f"Details!D{cred_end_row} (cred NEW ROW: {acct['name']}) = {abs(acct['net']):,.2f}")
-                    det_cache[(cred_end_row, 2)] = acct["name"]
-                    det_cache[(cred_end_row, 4)] = abs(acct["net"])
-                except Exception as e:
-                    skipped.append(f"Trade payable '{acct['name']}': insert failed: {e}")
+                # FIX: section genuinely has no spare template rows left.
+                # Previously this called ws_det.insert_rows(), which
+                # physically resizes the sheet — but openpyxl's
+                # insert_rows() does NOT update formula text in cells
+                # below the insertion point (a "=SUM(D28:D51)" total
+                # stays textually "D28:D51" even though it's now sitting
+                # on a different row with more data above it), and in
+                # this workbook it also interacted badly with Excel's
+                # shared-formula caching, causing nearby formulas
+                # (e.g. the MSME creditors sub-total) to be silently
+                # duplicated or lost entirely on repeated inserts.
+                # That's a much worse outcome than not placing a row at
+                # all, so this no longer inserts anything. Instead, it
+                # looks for ANY genuinely blank row elsewhere on the
+                # Details sheet (most commonly inside an "Nil"/empty
+                # sibling section like "FROM OTHER PARTIES" — common in
+                # templates with separate Related/Other party splits
+                # that aren't all used by every client) and places the
+                # overflow account there with a clear log entry, so the
+                # accountant can see exactly which entries need a manual
+                # row added and reflected in the relevant Total formula.
+                placed_elsewhere = False
+                for r in range(1, 250):
+                    if r in written_rows:
+                        continue
+                    # Skip rows in the first few lines of the sheet
+                    # (titles/headers) — column A often holds a title or
+                    # formula there while B/D appear blank, which is not
+                    # a genuinely usable data row.
+                    if r <= 5:
+                        continue
+                    if det_cache.get((r, 4)) is None and det_cache.get((r, 2)) is None \
+                            and ws_det.cell(r, 4).value is None and ws_det.cell(r, 2).value is None:
+                        # Skip rows that are part of a merged cell range
+                        # (these are almost always full-row section
+                        # headers like "SUNDRY CREDITORS" merged across
+                        # A:E — B and D both read as None there too since
+                        # MergedCell objects report no independent value,
+                        # but writing to them redirects to the merge's
+                        # anchor cell, which would silently destroy the
+                        # header text instead of adding a new data row).
+                        is_merged_row = any(
+                            mr.min_row <= r <= mr.max_row and mr.min_col <= 2 <= mr.max_col
+                            for mr in ws_det.merged_cells.ranges
+                        )
+                        if is_merged_row:
+                            continue
+                        # Skip rows that sit directly under a TOTAL/header
+                        # row (avoid visually confusing placements right
+                        # next to a total).
+                        above = (ws_det.cell(r - 1, 2).value or ws_det.cell(r - 1, 1).value) if r > 1 else None
+                        if above and "total" in str(above).strip().lower():
+                            continue
+                        # FIX: previously this broke out of the search
+                        # loop unconditionally once it found a row that
+                        # LOOKED blank, even if the actual write failed
+                        # (e.g. the row sits inside a merged cell range
+                        # whose anchor cell already holds a formula) —
+                        # silently giving up on the whole search after
+                        # one failed attempt instead of trying the next
+                        # candidate row. Now it only stops once a write
+                        # genuinely succeeds.
+                        if _safe_write(ws_det, r, 2, acct["name"]) and _safe_write(ws_det, r, 4, abs(acct["net"])):
+                            written_rows.add(r)
+                            injected.append(
+                                f"⚠ Details!D{r} (OVERFLOW creditor, no spare row in Sundry "
+                                f"Creditors section: {acct['name']}) = {abs(acct['net']):,.2f} — "
+                                f"placed in a blank row elsewhere; NOT included in the Sundry "
+                                f"Creditors Total formula. Add a row manually if this account "
+                                f"should be counted in that total."
+                            )
+                            placed_elsewhere = True
+                            break
+                if not placed_elsewhere:
+                    skipped.append(
+                        f"Trade payable '{acct['name']}' ({abs(acct['net']):,.2f}): "
+                        f"no spare row anywhere in Details sheet — not placed at all"
+                    )
 
         # Trade Receivables D74:D90 (auto-extending if section is full)
         receivable_accounts = [a for a in individual_accounts
@@ -2680,6 +2864,22 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             """
             s = str(s).lower()
             s = re.sub(r"\b(sale|sales|purchase|purchases|gst|a/c)\b", " ", s)
+            # FIX: "withinstate" (no space, no word boundary) was never
+            # being normalised to match "within state" (with space) —
+            # both forms appear as separate template row labels in some
+            # workbooks (e.g. Fashion Adda's GROSS PROFIT sheet has both
+            # "Purchase GST 5% withinstate" at one row AND a second,
+            # differently-spelled "PURCHASE GST 5% WITHIN STATE" row),
+            # so a single TB account matching the "within state" spelling
+            # only matched ONE of the two rows, while the OTHER row's
+            # pre-existing value was treated as if blank and the same
+            # amount got duplicated into it via the unmatched-account
+            # fallback — silently double-counting that purchase category.
+            # Collapsing both spellings to one canonical form before the
+            # rest of the synonym normalisation ensures they always
+            # resolve to the same row.
+            s = s.replace("withinstate", "within state")
+            s = s.replace("interstate", "inter state")
             # Synonym normalisation
             s = s.replace("intrastate", "within state")
             s = s.replace("within state", "intrastate")   # canonical = intrastate
@@ -2724,18 +2924,31 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
         def _rev_row_for(acct_name):
             nl = acct_name.lower()
+            # FIX: matching used to require only ANY ONE shared word
+            # between the row label and the account name (e.g. label
+            # "Sale Local" → words ["sale","local"], and since virtually
+            # every revenue account name contains some form of
+            # "sale"/"sales", every single revenue account matched this
+            # row via the word "sale" alone — including "SALES CENTRAL",
+            # which has its own separate, correctly-matched row, causing
+            # it (and every other revenue account) to be folded into
+            # "Sale Local" too and double-counted. Now excludes the
+            # generic "sale"/"sales" word from consideration and
+            # requires a genuinely distinguishing word (e.g. "local",
+            # "central", "export") to actually match.
+            best_r, best_score = None, 0
             for r, lbl in rev_row_labels.items():
                 if not lbl:
                     continue
-                # Match on the label's significant words appearing in the
-                # account name (e.g. label "professional income" matches
-                # "PROFESSIONAL CHARGES" / "PROFESSIONAL INCOME (ECG)" via
-                # the shared word "professional"; label "commission recd
-                # gst" matches "Commission Recd GGST" via "commission").
-                lbl_words = [w for w in lbl.replace("/", " ").split() if len(w) > 3]
-                if any(w in nl for w in lbl_words):
-                    return r
-            return None
+                lbl_words = [w for w in lbl.replace("/", " ").split()
+                             if len(w) > 3 and w not in ("sale", "sales")]
+                if not lbl_words:
+                    continue
+                score = sum(1 for w in lbl_words if w in nl)
+                if score > best_score:
+                    best_score = score
+                    best_r = r
+            return best_r
 
         rev_row_totals = {}   # {row: tb_total}
         consumed_accounts = set()  # id() of accounts matched to a row
@@ -2802,69 +3015,123 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             # Unknown rate codes get appended below the last labelled row.
             gp_cache = _cache.get("GROSS PROFIT", {})
 
-            # Build label→row map by scanning the Sales side of GROSS PROFIT.
-            # Sale rows live in col D (label) with amounts in col E.
-            sale_label_rows = {}
-            sale_total_rows = set()
+            # FIX: same pattern as the purchases-side fix above. Some
+            # templates (e.g. AD Garments) have GROSS PROFIT's "Sales
+            # GST" row driven entirely by a formula pulling from notes
+            # to p&l (col E = "='notes to p&l'!D8"), meaning sales are
+            # meant to be entered there, not directly in GROSS PROFIT.
+            # That same template ALSO has several pre-existing broken
+            # "='notes to p&l'!#REF!" formulas scattered in column D
+            # (left over from a deleted row/column reference) which
+            # evaluate as effectively blank in the cache, making the
+            # code think there's room to append "unmatched" sale
+            # accounts there — landing them well past the TOTAL row
+            # (outside its SUM range, so excluded from any total) and,
+            # worse, overwriting a genuine pre-existing formula row's
+            # label with an unrelated sale account name. Detect the
+            # formula-driven pattern up front and skip direct injection
+            # entirely in that case — sales already get written via the
+            # notes to p&l revenue-row matching above, so nothing is
+            # lost by skipping this block.
+            _gp_sale_is_formula_driven = False
+            # FIX: the sales-side "label, value" column pair isn't
+            # consistently D/E across templates — AD Garments uses E/F
+            # instead (label in column E, formula in column F), one
+            # column over from what this check originally assumed.
+            # Check both layouts so the formula-driven pattern is
+            # correctly detected regardless of which the template uses.
+            _found_sales_gst_row = False
             for r in range(1, 40):
-                lbl = gp_cache.get((r, 4))   # col D = sales-side label
-                if not lbl:
-                    continue
-                lbl_s = str(lbl).strip()
-                if not lbl_s:
-                    continue
-                lbl_low = lbl_s.lower()
-                # Skip section headers (SALES, CLOSING STOCK) and totals
-                if lbl_low in ("sales", "closing stock", "") or "total" in lbl_low:
-                    if "total" in lbl_low:
-                        sale_total_rows.add(r)
-                    continue
-                if "as certified" in lbl_low or "proprietor" in lbl_low:
-                    continue
-                # This is a sub-item row — record it
-                sale_label_rows[_norm_gst(lbl_s)] = (r, lbl_s)
-
-            # Place each TB sale into its matching row
-            sale_row_totals = {}     # {row: amount}
-            unmatched_sales = []
-            for acct in sale_accounts:
-                name_norm = _norm_gst(acct["name"])
-                best_row = None
-                best_label = None
-                # Prefer exact normalised match, else substring either-way
-                if name_norm in sale_label_rows:
-                    best_row, best_label = sale_label_rows[name_norm]
-                else:
-                    for lbl_norm, (r, lbl_orig) in sale_label_rows.items():
-                        if lbl_norm and (lbl_norm in name_norm or name_norm in lbl_norm):
-                            best_row, best_label = r, lbl_orig
-                            break
-                if best_row is None:
-                    unmatched_sales.append(acct)
-                    continue
-                sale_row_totals[best_row] = sale_row_totals.get(best_row, 0) + abs(acct["net"])
-
-            # Write each label-matched row — NEVER write to a Total row
-            for row, amt in sale_row_totals.items():
-                if row in sale_total_rows:
-                    continue
-                if _safe_write(ws_gp, row, 5, amt):
-                    injected.append(f"GROSS PROFIT!E{row} (Sale {amt:,.2f})")
-
-            # Unmatched sales — append below the last sale sub-row but ABOVE total
-            if unmatched_sales and sale_label_rows:
-                last_sub_row = max(r for r, _ in sale_label_rows.values())
-                next_row = last_sub_row + 1
-                for acct in unmatched_sales:
-                    # Stop if we'd overwrite a total / closing-stock row
-                    if next_row in sale_total_rows:
+                for _lbl_col, _val_col in ((4, 5), (5, 6)):
+                    lbl = gp_cache.get((r, _lbl_col))
+                    if lbl and "sales" in str(lbl).strip().lower() and "gst" in str(lbl).strip().lower():
+                        _found_sales_gst_row = True
+                        val = gp_cache.get((r, _val_col))
+                        if isinstance(val, str) and val.startswith("="):
+                            _gp_sale_is_formula_driven = True
                         break
-                    if _safe_write(ws_gp, next_row, 4, acct["name"]):
-                        _safe_write(ws_gp, next_row, 5, abs(acct["net"]))
-                        injected.append(
-                            f"GROSS PROFIT!E{next_row} (Sale unmatched: {acct['name']}) = {abs(acct['net']):,.2f}"
-                        )
-                        next_row += 1
+                if _found_sales_gst_row:
+                    break
+
+            if _gp_sale_is_formula_driven:
+                injected.append(
+                    "  [GP] Sales: GROSS PROFIT's Sales GST row is a "
+                    "formula pulling from 'notes to p&l' — skipping direct "
+                    "injection here; sales already handled via the notes "
+                    "to p&l revenue matching above."
+                )
+                sale_label_rows = {}
+                sale_total_rows = set()
+                unmatched_sales = list(sale_accounts)
+            else:
+                # Build label→row map by scanning the Sales side of GROSS PROFIT.
+                # Sale rows live in col D (label) with amounts in col E.
+                sale_label_rows = {}
+                sale_total_rows = set()
+                for r in range(1, 40):
+                    lbl = gp_cache.get((r, 4))   # col D = sales-side label
+                    if not lbl:
+                        continue
+                    lbl_s = str(lbl).strip()
+                    if not lbl_s:
+                        continue
+                    # Skip formula-text labels (broken #REF! references or
+                    # cross-sheet pulls) — these aren't real sale sub-row
+                    # labels and shouldn't influence row placement.
+                    if lbl_s.startswith("="):
+                        continue
+                    lbl_low = lbl_s.lower()
+                    # Skip section headers (SALES, CLOSING STOCK) and totals
+                    if lbl_low in ("sales", "closing stock", "") or "total" in lbl_low:
+                        if "total" in lbl_low:
+                            sale_total_rows.add(r)
+                        continue
+                    if "as certified" in lbl_low or "proprietor" in lbl_low:
+                        continue
+                    # This is a sub-item row — record it
+                    sale_label_rows[_norm_gst(lbl_s)] = (r, lbl_s)
+
+                # Place each TB sale into its matching row
+                sale_row_totals = {}     # {row: amount}
+                unmatched_sales = []
+                for acct in sale_accounts:
+                    name_norm = _norm_gst(acct["name"])
+                    best_row = None
+                    best_label = None
+                    # Prefer exact normalised match, else substring either-way
+                    if name_norm in sale_label_rows:
+                        best_row, best_label = sale_label_rows[name_norm]
+                    else:
+                        for lbl_norm, (r, lbl_orig) in sale_label_rows.items():
+                            if lbl_norm and (lbl_norm in name_norm or name_norm in lbl_norm):
+                                best_row, best_label = r, lbl_orig
+                                break
+                    if best_row is None:
+                        unmatched_sales.append(acct)
+                        continue
+                    sale_row_totals[best_row] = sale_row_totals.get(best_row, 0) + abs(acct["net"])
+
+                # Write each label-matched row — NEVER write to a Total row
+                for row, amt in sale_row_totals.items():
+                    if row in sale_total_rows:
+                        continue
+                    if _safe_write(ws_gp, row, 5, amt):
+                        injected.append(f"GROSS PROFIT!E{row} (Sale {amt:,.2f})")
+
+                # Unmatched sales — append below the last sale sub-row but ABOVE total
+                if unmatched_sales and sale_label_rows:
+                    last_sub_row = max(r for r, _ in sale_label_rows.values())
+                    next_row = last_sub_row + 1
+                    for acct in unmatched_sales:
+                        # Stop if we'd overwrite a total / closing-stock row
+                        if next_row in sale_total_rows:
+                            break
+                        if _safe_write(ws_gp, next_row, 4, acct["name"]):
+                            _safe_write(ws_gp, next_row, 5, abs(acct["net"]))
+                            injected.append(
+                                f"GROSS PROFIT!E{next_row} (Sale unmatched: {acct['name']}) = {abs(acct['net']):,.2f}"
+                            )
+                            next_row += 1
 
             # Also inject individual sales into notes to p&l (rows 7-14)
             if ws_npl:
@@ -2873,6 +3140,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     m = _re2.search(r'(\d+)\s*%', name)
                     return m.group(1) if m else None
 
+                still_unmatched_sale2 = []
                 for acct in sale_accounts:
                     amt = abs(acct["net"])
                     if amt <= 0: continue
@@ -2892,12 +3160,44 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                     wrote = True
                                 break
                     if not wrote:
-                        for r in range(7, 10):
-                            if ws_npl.cell(r, 4).value is None:
-                                _safe_write(ws_npl, r, 2, acct["name"])
-                                _safe_write(ws_npl, r, 4, amt)
-                                injected.append(f"notes to p&l!D{r} (Sale new: {acct['name']}) = {amt:,.2f}")
-                                break
+                        still_unmatched_sale2.append(acct)
+
+                # FIX: the rows-7-to-9 fallback above has only 3 slots —
+                # in templates where the revenue section is genuinely
+                # tight (e.g. AD Garments has exactly "Sale Local" /
+                # "Sale Central" with NO spare row before the TOTAL),
+                # additional individual customer/freight accounts had
+                # nowhere to go and were silently dropped with no log
+                # entry at all. Inserting rows HERE, mid-pipeline, was
+                # tried and found to actively corrupt OTHER injection
+                # steps further down this function: many of them (e.g.
+                # the Other Income block) read from `_cache`/`npl_cache`
+                # dictionaries that were pre-loaded ONCE at the top of
+                # this function and assume row positions stay stable for
+                # the rest of its execution. Inserting rows mid-way
+                # shifts physical row positions but does NOT update
+                # those caches, so later steps end up writing into
+                # whatever unrelated content now occupies the OLD
+                # (stale) row numbers they were still relying on.
+                # The safe fix is to defer ALL row insertions to a single
+                # pass at the very end of the function, after every
+                # cache-dependent step has already finished reading and
+                # writing. Queue this request instead of acting on it now.
+                if still_unmatched_sale2:
+                    _deferred_section_expansions.append({
+                        "sheet": "notes to p&l",
+                        "section_header_substr": "revenue from operation",
+                        "total_label": "total revenue from operation",
+                        "accounts": still_unmatched_sale2,
+                        "label_col": 2,
+                        "value_col": 4,
+                    })
+                    injected.append(
+                        f"· {len(still_unmatched_sale2)} sale account(s) totalling "
+                        f"{sum(abs(a['net']) for a in still_unmatched_sale2):,.2f} queued "
+                        f"for safe section expansion at end of processing (revenue section "
+                        f"had no spare rows)"
+                    )
 
         # ── B. Purchases → GROSS PROFIT!B14:B18 ─────────────────────
         # Row 14=Purchase GST 12% Interstate, 15=12% WS, 16=18% WS
@@ -2907,66 +3207,122 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                   if a.get("bs_head") == "purchases"
                                   and abs(a.get("net", 0)) > 0]
 
-            # FIX (Issues 2 & 4): Same label-driven approach as Sales.
-            # Purchases live on the DEBIT side of GROSS PROFIT —
-            # column A holds labels, column B holds amounts.
-            gp_cache = _cache.get("GROSS PROFIT", {})
-            purch_label_rows = {}
-            purch_total_rows = set()
+            # FIX: some templates (e.g. AD Garments) have a single
+            # "Purchase GST" row in GROSS PROFIT whose VALUE CELL is a
+            # formula like "=SUM('notes to p&l'!D21:D26)" — meaning
+            # purchases are meant to be entered in the notes to p&l
+            # sheet, and GROSS PROFIT just pulls the total automatically.
+            # Other templates (e.g. Fashion Adda) instead have 5+
+            # separate GST-rate sub-rows directly in GROSS PROFIT with
+            # plain numeric cells expecting direct injection. Running
+            # the direct-injection logic below on a formula-driven
+            # template caused two serious corruptions: (1) the lone
+            # "Purchase GST" row's normalised label was empty/unhelpful,
+          # so account-matching never found a target and every account
+            # fell into the "unmatched" fallback; (2) that fallback then
+            # treated unrelated DIRECT EXPENSES rows (whose labels are
+            # formula text like "='notes to p&l'!B29", which still
+            # produces a non-empty normalised string) as valid "purchase
+            # label rows" purely by accident, computing the wrong
+            # insertion point and overwriting their labels with
+            # unrelated purchase account names. Detect this pattern up
+            # front and skip the whole block — defer entirely to the
+            # notes to p&l injection further below.
+            _gp_purchase_is_formula_driven = False
+            gp_cache_probe = _cache.get("GROSS PROFIT", {})
             for r in range(1, 40):
-                lbl = gp_cache.get((r, 1))  # col A
-                if not lbl:
-                    continue
-                lbl_s = str(lbl).strip()
-                if not lbl_s:
-                    continue
-                lbl_low = lbl_s.lower()
-                # Skip headers and totals (PURCHASES, DIRECT EXPENSES, OPENING STOCK,
-                # GROSS PROFIT, TOTAL).
-                if lbl_low in ("purchases", "direct expenses", "opening stock",
-                                "gross profit"):
-                    continue
-                if "total" in lbl_low:
-                    purch_total_rows.add(r)
-                    continue
-                purch_label_rows[_norm_gst(lbl_s)] = (r, lbl_s)
+                lbl = gp_cache_probe.get((r, 1))
+                if lbl and "purchase" in str(lbl).strip().lower() and "gst" in str(lbl).strip().lower():
+                    val = gp_cache_probe.get((r, 2))
+                    if isinstance(val, str) and val.startswith("="):
+                        _gp_purchase_is_formula_driven = True
+                    break
 
-            purch_row_totals = {}
-            unmatched_purch = []
-            for acct in purchase_accounts:
-                name_norm = _norm_gst(acct["name"])
-                best_row = None
-                if name_norm in purch_label_rows:
-                    best_row = purch_label_rows[name_norm][0]
-                else:
-                    for lbl_norm, (r, _) in purch_label_rows.items():
-                        if lbl_norm and (lbl_norm in name_norm or name_norm in lbl_norm):
-                            best_row = r
+            if _gp_purchase_is_formula_driven:
+                injected.append(
+                    "  [GP] Purchases: GROSS PROFIT's Purchase row is a "
+                    "formula pulling from 'notes to p&l' — skipping direct "
+                    "injection here, handled in the notes to p&l section below."
+                )
+                purch_label_rows = {}
+                unmatched_purch = purchase_accounts
+                purch_total_rows = set()
+                purch_row_totals = {}
+            else:
+                # FIX (Issues 2 & 4): Same label-driven approach as Sales.
+                # Purchases live on the DEBIT side of GROSS PROFIT —
+                # column A holds labels, column B holds amounts.
+                gp_cache = _cache.get("GROSS PROFIT", {})
+                purch_label_rows = {}
+                purch_total_rows = set()
+                for r in range(1, 40):
+                    lbl = gp_cache.get((r, 1))  # col A
+                    if not lbl:
+                        continue
+                    lbl_s = str(lbl).strip()
+                    if not lbl_s:
+                        continue
+                    # Skip formula-text labels entirely (these belong to
+                    # OTHER sections like Direct Expenses that just
+                    # happen to use a cross-sheet reference for their
+                    # label — not a real purchase sub-row label).
+                    if lbl_s.startswith("="):
+                        continue
+                    lbl_low = lbl_s.lower()
+                    # Skip headers and totals (PURCHASES, DIRECT EXPENSES, OPENING STOCK,
+                    # GROSS PROFIT, TOTAL).
+                    if lbl_low in ("purchases", "direct expenses", "opening stock",
+                                    "gross profit"):
+                        continue
+                    if "total" in lbl_low:
+                        purch_total_rows.add(r)
+                        continue
+                    norm = _norm_gst(lbl_s)
+                    if not norm:
+                        # Empty normalised label (e.g. a lone generic
+                        # "Purchase GST" header with nothing distinguishing
+                        # it) can't be reliably matched against — skip it
+                        # as a match target, but don't let it influence
+                        # last_sub_row below either.
+                        continue
+                    purch_label_rows[norm] = (r, lbl_s)
+
+                purch_row_totals = {}
+                unmatched_purch = []
+                for acct in purchase_accounts:
+                    name_norm = _norm_gst(acct["name"])
+                    best_row = None
+                    if name_norm in purch_label_rows:
+                        best_row = purch_label_rows[name_norm][0]
+                    else:
+                        for lbl_norm, (r, _) in purch_label_rows.items():
+                            if lbl_norm and (lbl_norm in name_norm or name_norm in lbl_norm):
+                                best_row = r
+                                break
+                    if best_row is None:
+                        unmatched_purch.append(acct)
+                    else:
+                        purch_row_totals[best_row] = purch_row_totals.get(best_row, 0) + abs(acct["net"])
+
+                for row, amt in purch_row_totals.items():
+                    if row in purch_total_rows:
+                        continue   # never overwrite TOTAL row
+                    if _safe_write(ws_gp, row, 2, amt):
+                        injected.append(f"GROSS PROFIT!B{row} (Purchase {amt:,.2f})")
+
+                # Append unmatched purchase accounts below last sub-row, above TOTAL
+                if unmatched_purch and purch_label_rows:
+                    last_sub_row = max(r for r, _ in purch_label_rows.values())
+                    next_row = last_sub_row + 1
+                    for acct in unmatched_purch:
+                        if next_row in purch_total_rows:
                             break
-                if best_row is None:
-                    unmatched_purch.append(acct)
-                else:
-                    purch_row_totals[best_row] = purch_row_totals.get(best_row, 0) + abs(acct["net"])
-
-            for row, amt in purch_row_totals.items():
-                if row in purch_total_rows:
-                    continue   # never overwrite TOTAL row
-                if _safe_write(ws_gp, row, 2, amt):
-                    injected.append(f"GROSS PROFIT!B{row} (Purchase {amt:,.2f})")
-
-            # Append unmatched purchase accounts below last sub-row, above TOTAL
-            if unmatched_purch and purch_label_rows:
-                last_sub_row = max(r for r, _ in purch_label_rows.values())
-                next_row = last_sub_row + 1
-                for acct in unmatched_purch:
-                    if next_row in purch_total_rows:
-                        break
-                    if _safe_write(ws_gp, next_row, 1, acct["name"]):
-                        _safe_write(ws_gp, next_row, 2, abs(acct["net"]))
-                        injected.append(
-                            f"GROSS PROFIT!B{next_row} (Purchase unmatched: {acct['name']}) = {abs(acct['net']):,.2f}"
-                        )
-                        next_row += 1
+                        if _safe_write(ws_gp, next_row, 1, acct["name"]):
+                            _safe_write(ws_gp, next_row, 2, abs(acct["net"]))
+                            injected.append(
+                                f"GROSS PROFIT!B{next_row} (Purchase unmatched: {acct['name']}) = {abs(acct['net']):,.2f}"
+                            )
+                            next_row += 1
 
             # ── B-bis. Purchases → notes to p&l (rate-keyword sub-rows) ──
             # FIX: GROSS PROFIT!B14 ("Purchase GST") is itself a FORMULA
@@ -3033,6 +3389,50 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                     )
                                     wrote = True
                                 break
+                        # FIX: the rate/region match above requires BOTH
+                        # the TB account name AND the template label to
+                        # contain a GST percentage (e.g. "5%", "18%") —
+                        # but some clients' purchase accounts have no
+                        # rate suffix at all (e.g. "PURCHASE GARMENTS GST
+                        # LOCAL" vs template label "Purchase Garments Gst
+                        # Local", which match near-exactly by NAME but
+                        # neither has a numeric rate to compare). Without
+                        # this fallback, such accounts always fell
+                        # through to "unmatched" and got folded into a
+                        # single row together with unrelated accounts,
+                        # silently combining distinct line items into
+                        # one figure.
+                        if not wrote and not acct_rate:
+                            acct_words = {w for w in re.findall(r"[a-z]+", acct_l)
+                                          if w not in ("purchase", "purchases", "gst", "a", "c")}
+                            best_r, best_overlap = None, 0
+                            for r in range(purch_start, purch_end):
+                                cell_name = ws_npl.cell(r, 2).value
+                                if not cell_name:
+                                    continue
+                                tmpl_l2 = str(cell_name).lower()
+                                tmpl_words = {w for w in re.findall(r"[a-z]+", tmpl_l2)
+                                              if w not in ("purchase", "purchases", "gst", "a", "c")}
+                                # FIX: a single shared generic word (e.g.
+                                # "garments", present in BOTH "Purchase
+                                # Garments Gst Local" and "Purchase
+                                # Garments Igst") isn't enough to
+                                # distinguish between two similarly-named
+                                # categories — pick the template row with
+                                # the MOST matching words, not just the
+                                # first one with any overlap at all, so
+                                # the more specific distinguishing word
+                                # ("local" vs "igst") decides the match.
+                                overlap = len(acct_words & tmpl_words)
+                                if overlap > best_overlap:
+                                    best_overlap = overlap
+                                    best_r = r
+                            if best_r is not None and best_overlap > 0:
+                                if _safe_write(ws_npl, best_r, 4, amt):
+                                    injected.append(
+                                        f"notes to p&l!D{best_r} (Purchase name-match: {acct['name']}) = {amt:,.2f}"
+                                    )
+                                    wrote = True
                         if not wrote:
                             still_unmatched_purch.append(acct)
 
@@ -3578,6 +3978,225 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         else:
             log.append(f"· Depreciation H31 already has value {fa_cell.value} — not overwritten")
 
+    # ── Deferred section expansions (row insertions) ─────────────────
+    # Process any queued "this section had no spare rows" requests now,
+    # at the very end — after every other injection step above has
+    # finished reading from `_cache`/`npl_cache_*` dictionaries. Doing
+    # this earlier would shift physical row positions while those
+    # caches (built once near the top of the function) still hold the
+    # OLD positions, causing later steps to write into whatever
+    # unrelated content ends up at those now-stale row numbers.
+    for _exp in _deferred_section_expansions:
+        _sheet_name = _exp["sheet"]
+        if _sheet_name not in wb.sheetnames:
+            skipped.append(
+                f"Deferred section expansion skipped: sheet '{_sheet_name}' not found"
+            )
+            continue
+        _ws_exp = wb[_sheet_name]
+        _label_col = _exp["label_col"]
+        _value_col = _exp["value_col"]
+        _header_row, _total_row = None, None
+        for _r in range(1, 60):
+            _b = _ws_exp.cell(_r, _label_col).value
+            if not _b:
+                continue
+            _bl = str(_b).strip().lower()
+            if _exp["section_header_substr"] in _bl and _exp["total_label"] not in _bl:
+                _header_row = _r
+            if _bl == _exp["total_label"]:
+                _total_row = _r
+                break
+        if not _total_row:
+            skipped.append(
+                f"Deferred section expansion skipped: couldn't locate "
+                f"'{_exp['total_label']}' row in {_sheet_name} — accounts not placed: "
+                + ", ".join(a["name"] for a in _exp["accounts"])
+            )
+            continue
+        # First check if there's already a genuinely blank row between
+        # the section header and its TOTAL — if so, reuse it instead of
+        # inserting, since insertion is only truly needed when the
+        # section is completely full.
+        _blank_rows_avail = []
+        if _header_row:
+            for _r in range(_header_row + 1, _total_row):
+                if _ws_exp.cell(_r, _label_col).value is None \
+                        and _ws_exp.cell(_r, _value_col).value is None:
+                    _blank_rows_avail.append(_r)
+        _accounts_remaining = list(_exp["accounts"])
+        for _r in _blank_rows_avail:
+            if not _accounts_remaining:
+                break
+            _acct = _accounts_remaining.pop(0)
+            _amt = abs(_acct["net"])
+            _ws_exp.cell(_r, _label_col).value = _acct["name"]
+            _ws_exp.cell(_r, _value_col).value = round(float(_amt), 2)
+            log.append(
+                f"✓ {_sheet_name}!{chr(64+_value_col)}{_r} ({_acct['name']}) = {_amt:,.2f}"
+            )
+        if not _accounts_remaining:
+            continue
+        _n_new = len(_accounts_remaining)
+        try:
+            _ws_exp.insert_rows(_total_row, amount=_n_new)
+            _new_total_row = _total_row + _n_new
+            for _i, _acct in enumerate(_accounts_remaining):
+                _r = _total_row + _i
+                _amt = abs(_acct["net"])
+                _ws_exp.cell(_r, _label_col).value = _acct["name"]
+                _ws_exp.cell(_r, _value_col).value = round(float(_amt), 2)
+                log.append(
+                    f"✓ {_sheet_name}!{chr(64+_value_col)}{_r} (section expanded: "
+                    f"{_acct['name']}) = {_amt:,.2f}"
+                )
+            # Repair the (now-shifted) TOTAL formula's own range to
+            # include the newly-inserted rows, in both the value column
+            # and, if present, the column immediately after it (commonly
+            # the previous-year figure in a matching SUM pattern).
+            for _col in (_value_col, _value_col + 1):
+                _old_f = _ws_exp.cell(_new_total_row, _col).value
+                _coll = chr(64 + _col)
+                _m = re.match(rf"=SUM\({_coll}(\d+):{_coll}(\d+)\)", str(_old_f or ""))
+                if _m:
+                    _rng_start = int(_m.group(1))
+                    _new_f = f"=SUM({_coll}{_rng_start}:{_coll}{_new_total_row - 1})"
+                    _ws_exp.cell(_new_total_row, _col).value = _new_f
+                    log.append(
+                        f"✓ {_sheet_name}!{_coll}{_new_total_row} formula extended: "
+                        f"{_old_f} → {_new_f} (to include the new rows)"
+                    )
+            # FIX: formulas in OTHER sheets entirely (not just the sheet
+            # being expanded) can reference ANY row in this section by
+            # absolute position — not just its TOTAL row. insert_rows()
+            # only updates cell positions WITHIN the sheet it's called
+            # on; it has no way to know about or fix cross-sheet
+            # references elsewhere in the workbook, so EVERY formula
+            # pointing at row >= the insertion point in this sheet keeps
+            # using its OLD row number — silently grabbing whatever
+            # unrelated content (a different section's header, a
+            # different total, an individual account row) now sits
+            # there instead. This was caught happening to AD Garments'
+            # "Total Employee benefits expense" reference, not just the
+            # revenue total, confirming a single targeted fix isn't
+            # enough — any reference into this sheet at or below the
+            # insertion row needs shifting by the same amount that
+            # insert_rows() shifted the sheet's own internal rows.
+            _cross_sheet_fixes = 0
+            # FIX: Excel range syntax like "'notes to p&l'!D21:D26" only
+            # has the sheet-name prefix on the FIRST cell of the range —
+            # the original simpler pattern only matched that first cell,
+            # leaving the second (e.g. "D26") completely unshifted and
+            # producing a nonsensical inverted range like "D29:D26"
+            # (start past end) once the first cell got shifted alone.
+            # This pattern explicitly also matches an optional trailing
+            # ":Cell2" range continuation and shifts both halves
+            # together.
+            _cross_ref_pattern = re.compile(
+                rf"'?{re.escape(_sheet_name)}'?!(\$?)([A-Z]+)(\$?)(\d+)"
+                rf"(:(\$?)([A-Z]+)(\$?)(\d+))?"
+            )
+            for _other_sn in wb.sheetnames:
+                if _other_sn == _sheet_name:
+                    continue
+                _ws_other = wb[_other_sn]
+                for _orow in _ws_other.iter_rows():
+                    for _ocell in _orow:
+                        _ov = _ocell.value
+                        if not (isinstance(_ov, str) and _ov.startswith("=") and _sheet_name in _ov):
+                            continue
+
+                        def _shift_match(_mm):
+                            _row_num = int(_mm.group(4))
+                            _new_row = _row_num + _n_new if _row_num >= _total_row else _row_num
+                            if _mm.group(5):  # has a :Cell2 range continuation
+                                _row_num2 = int(_mm.group(9))
+                                _new_row2 = _row_num2 + _n_new if _row_num2 >= _total_row else _row_num2
+                                return (
+                                    f"'{_sheet_name}'!{_mm.group(1)}{_mm.group(2)}"
+                                    f"{_mm.group(3)}{_new_row}:"
+                                    f"{_mm.group(6)}{_mm.group(7)}{_new_row2}"
+                                )
+                            return (
+                                f"'{_sheet_name}'!{_mm.group(1)}{_mm.group(2)}"
+                                f"{_mm.group(3)}{_new_row}"
+                            )
+
+                        _new_ov = _cross_ref_pattern.sub(_shift_match, _ov)
+                        if _new_ov != _ov:
+                            _ocell.value = _new_ov
+                            _cross_sheet_fixes += 1
+                            log.append(
+                                f"✓ {_other_sn}!{_ocell.coordinate} formula repaired: "
+                                f"{_ov} → {_new_ov} (reference into {_sheet_name} shifted "
+                                f"after {_n_new} row(s) inserted there)"
+                            )
+            if _cross_sheet_fixes == 0:
+                log.append(
+                    f"· No cross-sheet references found needing adjustment "
+                    f"after expanding {_sheet_name} (or none needed fixing)"
+                )
+
+            # FIX: formulas WITHIN the same sheet that reference an
+            # absolute row number via a SUM(...) range or arithmetic
+            # (e.g. "=SUM(D18:D33)-D35", no sheet-name prefix needed
+            # since it's an implicit same-sheet reference) have the
+            # exact same staleness problem — insert_rows() shifts cell
+            # POSITIONS but not formula TEXT, so a formula like this
+            # that sat above the insertion point but referenced rows
+            # below it keeps the OLD row numbers. This was caught
+            # happening to "Total (a+b+c-d)" in notes to p&l, which
+            # still said "D18:D33" after the section below it shifted
+            # by 8 rows. Bare references (no sheet prefix) are riskier
+            # to blanket-shift than cross-sheet ones — a cell could
+            # contain "=D5+D10" where D5 is a genuinely unrelated
+            # constant reference that was never meant to move — so this
+            # only touches cells that are THEMSELVES below the
+            # insertion point (meaning they moved along with the data
+            # they reference, so their relative-position intent is
+            # almost certainly to track the section they're part of)
+            # and only matches bare column+row patterns not already
+            # preceded by a sheet name/quote (negative lookbehind).
+            _same_sheet_fixes = 0
+            _bare_ref_pattern = re.compile(r"(?<!['!])(\$?)([A-Z]{1,2})(\$?)(\d+)")
+            # FIX: scanning from _new_total_row missed formulas that sit
+            # ABOVE the new total but still reference rows that shifted
+            # — e.g. "Total (a+b+c-d)" itself lives just above its own
+            # section's end, referencing rows further up that also
+            # moved. Any cell from the original insertion point (_total_row)
+            # downward could hold a stale reference, so the scan must
+            # start there, not at the new total row.
+            for _srow in _ws_exp.iter_rows(min_row=_total_row):
+                for _scell in _srow:
+                    if _scell.row == _new_total_row:
+                        continue  # already correctly extended above — don't re-shift it
+                    _sv = _scell.value
+                    if not (isinstance(_sv, str) and _sv.startswith("=")):
+                        continue
+                    if _sheet_name in _sv or "!" in _sv:
+                        continue  # already handled by cross-sheet logic, or has its own sheet ref
+
+                    def _shift_bare(_mm):
+                        _row_num = int(_mm.group(4))
+                        if _row_num >= _total_row:
+                            return f"{_mm.group(1)}{_mm.group(2)}{_mm.group(3)}{_row_num + _n_new}"
+                        return _mm.group(0)
+
+                    _new_sv = _bare_ref_pattern.sub(_shift_bare, _sv)
+                    if _new_sv != _sv:
+                        _scell.value = _new_sv
+                        _same_sheet_fixes += 1
+                        log.append(
+                            f"✓ {_sheet_name}!{_scell.coordinate} formula repaired: "
+                            f"{_sv} → {_new_sv} (same-sheet reference shifted after "
+                            f"{_n_new} row(s) inserted above it)"
+                        )
+        except Exception as _exp_exc:
+            skipped.append(
+                f"Deferred section expansion failed for {_sheet_name} "
+                f"({_exp_exc}): " + ", ".join(a["name"] for a in _exp["accounts"])
+            )
+
     for s in skipped:
         log.append(f"⚠ SKIPPED: {s}")
     for inj_msg in injected:
@@ -3622,17 +4241,37 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         _sheets = _wb2.sheetnames
 
         # notes to p&l fixes
+        # FIX: these row-number-specific patches (row 6, row 8, row 20)
+        # were written for Fashion Adda's exact layout, but ran
+        # unconditionally for ANY template reaching this fallback path —
+        # including AD Garments, whose row 20 ALSO happens to hold a
+        # legitimate "=SUM(...)" formula (its own "Total other incomes"
+        # total) purely by coincidence of row numbering, which got
+        # blindly overwritten with Fashion-Adda-specific content
+        # ("=SUM('GROSS PROFIT'!B14:B19)") that has nothing to do with
+        # that template's actual structure. Now verifies the row LABELS
+        # actually match what these specific patches expect before
+        # touching anything, so templates with different layouts that
+        # happen to share a row number are left alone.
         if "notes to p&l" in _sheets:
             _npl = _wb2["notes to p&l"]
-            # Fix 1: Revenue formula — must cover all 6 sale rows (E11:E16)
-            if str(_npl.cell(6,4).value).startswith("=SUM"):
-                _npl.cell(6,4).value = "=SUM('GROSS PROFIT'!E11:E16)"
-            # Fix 2: Clear stray SALE GST 12% INTERSTATE value written outside revenue box
-            if isinstance(_npl.cell(8,4).value, (int, float)):
-                _npl.cell(8,4).value = None
-            # Fix 3: Purchase formula — must cover all 5 purchase rows (B14:B19)
-            if str(_npl.cell(20,4).value).startswith("=SUM"):
-                _npl.cell(20,4).value = "=SUM('GROSS PROFIT'!B14:B19)"
+            _r6_label = str(_npl.cell(6, 2).value or "").strip().lower()
+            _r20_label = str(_npl.cell(20, 2).value or "").strip().lower()
+            _is_fashion_adda_layout = (
+                "revenue" in str(_npl.cell(5, 2).value or "").lower()
+                and "sale" in _r6_label
+                and ("purchase" in _r20_label or _r20_label == "")
+            )
+            if _is_fashion_adda_layout:
+                # Fix 1: Revenue formula — must cover all 6 sale rows (E11:E16)
+                if str(_npl.cell(6,4).value).startswith("=SUM"):
+                    _npl.cell(6,4).value = "=SUM('GROSS PROFIT'!E11:E16)"
+                # Fix 2: Clear stray SALE GST 12% INTERSTATE value written outside revenue box
+                if isinstance(_npl.cell(8,4).value, (int, float)):
+                    _npl.cell(8,4).value = None
+                # Fix 3: Purchase formula — must cover all 5 purchase rows (B14:B19)
+                if str(_npl.cell(20,4).value).startswith("=SUM"):
+                    _npl.cell(20,4).value = "=SUM('GROSS PROFIT'!B14:B19)"
             # Fix 4: Merge INTT PAID ON LATE TDS (296) into Bank Charges (D62)
             _d62 = _npl.cell(62,4).value
             _d70 = _npl.cell(70,4).value
@@ -3651,8 +4290,19 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             if "E11:E14" in str(_gp.cell(22,2).value):
                 _gp.cell(22,2).value = "=SUM(E11:E16)*8.5%"
             # Fix 7: Kill any #REF! in old data columns
+            # FIX: previously scanned ALL columns 1-12 including label
+            # columns (A, D) where a "#REF!" formula might be a
+            # cross-sheet LABEL pull (e.g. "='notes to p&l'!#REF!" used
+            # as a row's display text) rather than a numeric value —
+            # zeroing those destroys the row's identity/label, not just
+            # a broken number. Restrict to the columns that are
+            # genuininely meant to hold amounts (B, C, E, F) so label
+            # cells are left alone even if they contain a broken
+            # reference; a broken label is a template problem to flag,
+            # not silently paper over with a 0 that could be mistaken
+            # for a meaningful figure.
             for _r in range(1, 30):
-                for _c in range(1, 12):
+                for _c in (2, 3, 5, 6):
                     if "#REF!" in str(_wb2["GROSS PROFIT"].cell(_r,_c).value or ""):
                         _wb2["GROSS PROFIT"].cell(_r,_c).value = 0
 
