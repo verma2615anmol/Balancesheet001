@@ -2667,6 +2667,90 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     # Update det_cache for new row
                     det_cache[(recv_end_row, 2)] = acct["name"]
                     det_cache[(recv_end_row, 4)] = abs(acct["net"])
+
+                    # FIX: insert_rows() above only shifted cell positions
+                    # WITHIN the Details sheet — it does not rewrite formula
+                    # text on other sheets. Any cross-sheet formula (e.g. on
+                    # "bs" or "notes to bs") that hardcodes a reference like
+                    # =Details!D101 to read the Trade Receivables Total row
+                    # keeps pointing at the OLD row number even though the
+                    # real Total physically moved down to row 102+ after
+                    # this insert. This mirrors the cross-sheet-shift fix
+                    # already applied to the P&L expense-section expansion
+                    # above — same root cause, just unapplied here.
+                    _recv_cross_pattern = re.compile(
+                        r"'?Details'?!(\$?)([A-Z]+)(\$?)(\d+)"
+                        r"(:(\$?)([A-Z]+)(\$?)(\d+))?"
+                    )
+
+                    def _recv_shift_match(_mm, _ins_row=recv_end_row):
+                        _row_num = int(_mm.group(4))
+                        _new_row = _row_num + 1 if _row_num >= _ins_row else _row_num
+                        if _mm.group(5):
+                            _row_num2 = int(_mm.group(9))
+                            _new_row2 = _row_num2 + 1 if _row_num2 >= _ins_row else _row_num2
+                            return (
+                                f"'Details'!{_mm.group(1)}{_mm.group(2)}{_mm.group(3)}{_new_row}:"
+                                f"{_mm.group(6)}{_mm.group(7)}{_new_row2}"
+                            )
+                        return f"'Details'!{_mm.group(1)}{_mm.group(2)}{_mm.group(3)}{_new_row}"
+
+                    for _other_sn in wb.sheetnames:
+                        if _other_sn == "Details":
+                            continue
+                        _ws_other = wb[_other_sn]
+                        for _orow in _ws_other.iter_rows():
+                            for _ocell in _orow:
+                                _ov = _ocell.value
+                                if not (isinstance(_ov, str) and _ov.startswith("=") and "Details" in _ov):
+                                    continue
+                                _new_ov = _recv_cross_pattern.sub(_recv_shift_match, _ov)
+                                if _new_ov != _ov:
+                                    _ocell.value = _new_ov
+                                    log.append(
+                                        f"✓ {_other_sn}!{_ocell.coordinate} formula repaired: "
+                                        f"{_ov} → {_new_ov} (reference into Details shifted after "
+                                        f"row inserted at Details!{recv_end_row} for overflow debtor "
+                                        f"'{acct['name']}')"
+                                    )
+
+                    # FIX: the Total/sub-total formulas LIVING ON the Details
+                    # sheet itself (e.g. "=D95+SUM(D97:D100)") have the exact
+                    # same staleness problem — insert_rows() shifted their
+                    # CELL POSITION down by one row along with everything
+                    # else below the insertion point, but never touched the
+                    # formula TEXT inside them. Any such formula cell that
+                    # itself sits at or below the insertion row almost
+                    # certainly moved together with the data it's summing,
+                    # so its bare (no sheet-prefix) row references need the
+                    # same +1 shift applied for every row number >= the
+                    # insertion point.
+                    _recv_bare_pattern = re.compile(r"(?<!['!])(\$?)([A-Z]{1,2})(\$?)(\d+)")
+                    for _srow in ws_det.iter_rows(min_row=recv_end_row):
+                        for _scell in _srow:
+                            if _scell.row == recv_end_row:
+                                continue  # the row we just wrote into — not a formula
+                            _sv = _scell.value
+                            if not (isinstance(_sv, str) and _sv.startswith("=")):
+                                continue
+                            if "!" in _sv:
+                                continue  # cross-sheet ref, not handled here
+
+                            def _recv_shift_bare(_mm, _ins_row=recv_end_row):
+                                _row_num = int(_mm.group(4))
+                                if _row_num >= _ins_row:
+                                    return f"{_mm.group(1)}{_mm.group(2)}{_mm.group(3)}{_row_num + 1}"
+                                return _mm.group(0)
+
+                            _new_sv = _recv_bare_pattern.sub(_recv_shift_bare, _sv)
+                            if _new_sv != _sv:
+                                _scell.value = _new_sv
+                                log.append(
+                                    f"✓ Details!{_scell.coordinate} formula repaired: "
+                                    f"{_sv} → {_new_sv} (same-sheet reference shifted after "
+                                    f"row inserted at Details!{recv_end_row} for overflow debtor "
+                                    f"'{acct['name']}')"
+                                )
                 except Exception as e:
                     skipped.append(f"recv '{acct['name']}': insert failed: {e}")
 
