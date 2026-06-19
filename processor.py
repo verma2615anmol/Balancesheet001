@@ -907,21 +907,13 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                     py_f_el = cell_el.find(f"{{{_NS}}}f")
                     py_has_formula = (py_f_el is not None)
 
-                    if py_has_formula and rn in frows:
-                        # FORMULA-RANGE MISMATCH FIX:
-                        # Both PY and CY cells are formulas (e.g. PY=SUM(E14:E14),
-                        # CY=SUM(D14:D15)). After the shift, CY's range becomes the
-                        # correct range for PY (just translated CY-col → PY-col).
-                        # If we keep the old PY formula's range as-is, rows that were
-                        # only in CY's range (e.g. "Round Off" row 15, or row 41/45
-                        # in employee benefits) get dropped from the new PY total.
-                        #
-                        # Find the corresponding CY cell's <f> text in this same sheet
-                        # and, if it's a simple range formula (SUM/range refs using
-                        # only the cy_l column), translate cy_l -> py_l and use that
-                        # as the new PY formula. Otherwise fall back to old behaviour.
+                    # Look up the CY cell's own formula text (if any) up front —
+                    # needed by both the "PY also has a formula" branch below
+                    # AND the "PY has no formula at all" branch, since both
+                    # need to know CY's current formula shape to translate it.
+                    cy_f_text = None
+                    if rn in frows:
                         cy_ref = f"{cy_l}{rn}"
-                        cy_f_text = None
                         for _row_el in sd:
                             for _cell_el in _row_el:
                                 if _cell_el.get("r") == cy_ref:
@@ -932,6 +924,18 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                             if cy_f_text is not None:
                                 break
 
+                    if py_has_formula and rn in frows:
+                        # FORMULA-RANGE MISMATCH FIX:
+                        # Both PY and CY cells are formulas (e.g. PY=SUM(E14:E14),
+                        # CY=SUM(D14:D15)). After the shift, CY's range becomes the
+                        # correct range for PY (just translated CY-col → PY-col).
+                        # If we keep the old PY formula's range as-is, rows that were
+                        # only in CY's range (e.g. "Round Off" row 15, or row 41/45
+                        # in employee benefits) get dropped from the new PY total.
+                        #
+                        # If it's a simple range formula (SUM/range refs using
+                        # only the cy_l column), translate cy_l -> py_l and use that
+                        # as the new PY formula. Otherwise fall back to old behaviour.
                         new_py_formula = None
                         if cy_f_text and "!" not in cy_f_text:
                             # Only translate if the CY formula references ONLY the
@@ -966,6 +970,80 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                                 changes[ref] = ("set_v_keep_f", _fmt_num(vals[rn]))
                             else:
                                 changes[ref] = ("set_v_overwrite", _fmt_num(vals[rn]))
+                    elif rn in frows:
+                        # FIX: CY has a formula at this row, but the PY cell
+                        # has NO formula at all (often because last year's
+                        # template simply hardcoded a number here, or this
+                        # row didn't exist in last year's layout). Previously
+                        # this fell straight through to the bare "overwrite
+                        # with CY's plain value" branch below, silently
+                        # losing the formula relationship entirely — e.g.
+                        # CY D94 = "=Details!D60" (a genuine cross-sheet
+                        # lookup) became a hardcoded number in PY E94
+                        # instead of "=Details!E60", so future edits to the
+                        # Details sheet would never be reflected in this
+                        # PY cell again.
+                        #
+                        # Apply the SAME safe translation used above, but
+                        # widened to also cover cross-sheet references of
+                        # the form 'Sheet'!ColRow or Sheet!ColRow, where
+                        # the referenced sheet is itself part of this same
+                        # coordinated CY/PY shift (shift_map) — in that
+                        # case translating its column letter the same way
+                        # (cy_l -> py_l) correctly points the new PY formula
+                        # at that other sheet's own PY column, exactly
+                        # mirroring what the CY formula does in its own
+                        # column today.
+                        new_py_formula2 = None
+                        if cy_f_text and "!" not in cy_f_text:
+                            # Same-sheet formula (e.g. SUM(D125+D128+D132)) —
+                            # safe to translate column letters directly.
+                            col_refs2 = set(re.findall(r'\b([A-Z]+)\d+\b', cy_f_text))
+                            if col_refs2 == {cy_l}:
+                                new_py_formula2 = re.sub(
+                                    rf'\b{cy_l}(\d+)\b', rf'{py_l}\1', cy_f_text
+                                )
+                        elif cy_f_text and "!" in cy_f_text:
+                            # Cross-sheet reference(s), e.g. "=Details!D60".
+                            # Only translate if EVERY distinct sheet
+                            # referenced is itself part of the coordinated
+                            # shift (shift_map) AND every referenced column
+                            # is that sheet's CY column — otherwise leave it
+                            # as a plain value, which is always safe (just
+                            # no formula, but a correct number).
+                            sheet_refs = re.findall(
+                                r"(?:'([^']+)'|([A-Za-z0-9_ ]+))!\$?([A-Z]+)\$?(\d+)",
+                                cy_f_text
+                            )
+                            has_bare_cy_ref = bool(re.search(
+                                r'(?<![!A-Za-z0-9_])' + re.escape(cy_l) + r'\d+\b', cy_f_text
+                            ))
+                            if sheet_refs and not has_bare_cy_ref:
+                                safe = True
+                                translated2 = cy_f_text
+                                for sh1, sh2, rcol, rrow in sheet_refs:
+                                    ref_sheet2 = (sh1 or sh2).strip()
+                                    target_py_col = None
+                                    for c4, p4 in (shift_map or {}).get(ref_sheet2, []):
+                                        if c4 == rcol:
+                                            target_py_col = p4
+                                            break
+                                    if not target_py_col:
+                                        safe = False
+                                        break
+                                    translated2 = re.sub(
+                                        rf'\b{re.escape(rcol)}{rrow}\b',
+                                        f"{target_py_col}{rrow}",
+                                        translated2,
+                                        count=1
+                                    )
+                                if safe:
+                                    new_py_formula2 = translated2
+
+                        if new_py_formula2:
+                            changes[ref] = ("set_f", (new_py_formula2, _fmt_num(vals[rn])))
+                        else:
+                            changes[ref] = ("set_v_overwrite", _fmt_num(vals[rn]))
                     elif py_has_formula:
                         # CY cell is a plain constant (not a formula), but PY cell
                         # has its own formula — e.g. PY = '=44317.6-82.3' (a stale
@@ -1112,8 +1190,19 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                 full = re.sub(r'<f\b[^>]*/>', f'<f>{esc_formula}</f>', full)
             else:
                 full = full.replace('</c>', f'<f>{esc_formula}</f></c>')
-            # Update or insert the cached <v>
-            if '<v>' in full:
+            # Update or insert the cached <v>.
+            # FIX: the previous check only matched the open/close form
+            # <v>...</v> — a self-closing empty <v /> tag (very common on
+            # a cell that previously had a formula but no cached value
+            # yet, e.g. <f>SUM(E131:E138)</f><v />) fell through to the
+            # "insert a new <v>" branch instead of being replaced,
+            # leaving BOTH the old empty <v /> and the new <v>0</v> in
+            # the same cell. A cell with two <v> tags is malformed XML
+            # that several recalculation engines (LibreOffice headless,
+            # at minimum) fail on, producing #VALUE!/#REF!/#NAME? errors
+            # in that cell and anything that depends on it.
+            full = re.sub(r'<v\s*/>', '', full)  # drop any self-closing empty <v/> first
+            if re.search(r'<v>[^<]*</v>', full):
                 full = re.sub(r'<v>[^<]*</v>', f'<v>{new_val}</v>', full)
             else:
                 full = full.replace('</c>', f'<v>{new_val}</v></c>')
