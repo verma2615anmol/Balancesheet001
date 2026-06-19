@@ -23,8 +23,14 @@ from openpyxl import load_workbook
 from template_configs import get_config, TEMPLATE_CONFIGS
 
 # ── reuse existing classifier ──────────────────────────────────────────
+# FIXED: this previously imported a stale, nonexistent module name
+# ("tb_processor2_fixed"), which silently disabled this entire
+# config-driven injection path — process_tb_to_bs() would call
+# inject_with_config() below, get _HAS_CLASSIFIER=False, and return a
+# hard error immediately, before any actual TB→BS work was attempted.
+# Now correctly points at the real classifier module.
 try:
-    from tb_processor2_fixed import (
+    from tb_processor import (
         analyze_trial_balance,
         get_aggregated_values,
         _classify_single,
@@ -371,7 +377,7 @@ def inject_with_config(tb_path: str,
 
     # ── 1. Classify TB ──
     if not _HAS_CLASSIFIER:
-        return {"status": "error", "errors": ["tb_processor2_fixed not found"], "log": log}
+        return {"status": "error", "errors": ["tb_processor not found"], "log": log}
 
     try:
         analysis = analyze_trial_balance(tb_path)
@@ -389,12 +395,29 @@ def inject_with_config(tb_path: str,
 
     if not cfg:
         log.append("  Unknown template — falling back to heuristic injector")
-        # Fall back to original processor
+        # FIX: this previously called tb_processor.process_tb_to_bs(),
+        # but process_tb_to_bs() itself calls inject_with_config() FIRST
+        # — creating an infinite recursive loop for any unrecognized
+        # template (process_tb_to_bs → inject_with_config → unknown
+        # template → process_tb_to_bs → inject_with_config → ...) until
+        # Python's recursion limit is hit, surfacing as a generic
+        # "maximum recursion depth exceeded" error with no useful
+        # traceback. This bug was previously masked because
+        # bs_inject_config.py was in a broken/disabled state and this
+        # branch never actually executed. The correct fallback is to
+        # call inject_into_bs() directly — the actual heuristic
+        # injection function — bypassing process_tb_to_bs() entirely so
+        # there's no risk of re-entering this same routing decision.
         try:
-            from tb_processor2_fixed import process_tb_to_bs
-            return process_tb_to_bs(tb_path=tb_path,
-                                     bs_template_path=template,
-                                     output_path=output)
+            from tb_processor import inject_into_bs, get_aggregated_values as _gav
+            aggregated = _gav(accounts)
+            result = inject_into_bs(
+                template, output, aggregated,
+                mapping_overrides=None,
+                individual_accounts=accounts,
+            )
+            result["analysis"] = analysis
+            return result
         except Exception as e:
             return {"status": "error", "errors": [str(e)], "log": log}
 
@@ -419,8 +442,53 @@ def inject_with_config(tb_path: str,
 
     written_lt = set()
 
+    # ── 2b. Short-term borrowings (CC/OD accounts classified directly) ──
+    # FIX: the classifier now correctly tags CC/OD accounts as
+    # 'st_borrowings' directly (not 'lt_borrowings'), so the legacy
+    # "CC A/C overdraft → STB" special-case inside the LT loop below
+    # never fires anymore — that account never enters the LT loop at all.
+    # Handle st_borrowings-classified accounts here directly by matching
+    # their name against any "stb_*" (non-total) config key's label.
+    log.append("\n[STB] Short-term borrowings")
+    written_stb = set()
+    for a in accounts:
+        if a.get("bs_head") != "st_borrowings": continue
+        net = abs(a["net"])
+        if net == 0: continue
+        name = a["name"]
+        name_words = [w for w in name.lower().split() if len(w) > 3]
+        matched = False
+        for _sk in [k for k in n_cfg if k.startswith("stb_") and "total" not in k]:
+            if _sk in written_stb: continue
+            _e = n_cfg[_sk]
+            if "label" in _e and any(w in _e["label"].lower() for w in name_words):
+                ws_n.cell(_e["row"], cy).value = net
+                written_stb.add(_sk)
+                log.append(f"  STB R{_e['row']} = {net:,.2f}  [{name}]")
+                matched = True
+                break
+        if not matched:
+            log.append(f"  STB: no key for '{name}' → skipped")
+    for fkey in ["stb_total_a", "stb_total_b", "stb_total_ab"]:
+        _ensure_formula(n_cfg, fkey, ws_n, log)
+
     # ── 3. LT Borrowings ──
     log.append("\n[LT] Long-term borrowings")
+    # FIX: Client_BS_2025.xlsx (used as the AS Traders test template) has
+    # pre-existing stray numeric values left over in this section from an
+    # earlier/different run — e.g. R12 and R20 had leftover amounts with
+    # no label, that silently double-count alongside freshly-injected
+    # values once SUM(D8:D12)/SUM(D18:D20) range formulas are applied.
+    # Clear any unlabeled-but-nonzero cell in the LT section before
+    # writing fresh data, exactly like the equivalent fix already applied
+    # to the heuristic injector this session.
+    for r in range(7, 22):
+        b_lbl = ws_n.cell(r, 2).value
+        d_val = ws_n.cell(r, cy).value
+        if (not b_lbl or str(b_lbl).strip() == "") and isinstance(d_val, (int, float)) and d_val != 0:
+            log.append(f"  LT: cleared stray leftover value {d_val:,.2f} at R{r} (no label)")
+            ws_n.cell(r, cy).value = None
+
     for a in accounts:
         if a.get("bs_head") not in ("lt_borrowings",): continue
         net = abs(a["net"])
@@ -459,6 +527,44 @@ def inject_with_config(tb_path: str,
     for fkey in ["lt_total_a","lt_total_b","lt_total_ab"]:
         _ensure_formula(n_cfg, fkey, ws_n, log)
 
+    # ── 3b. Details: Unsecured loans (named lenders) ──────────────────
+    # FIX: _LT_KEYWORD_MAP only covers the 3 secured HDFC loans by exact
+    # keyword — it has no entries for individually-named unsecured
+    # lenders (e.g. "ANIL KUMAR", "ANJALI GOEL", ...), so every such
+    # account fell through to "LT: no key for ... → skipped" and never
+    # reached the BS at all, even though Details!D7:D15 has one row per
+    # named lender exactly for this purpose (Total at D16, referenced by
+    # notes to bs!D18). Match by name into those rows, same pattern as
+    # the Sundry Creditors matching just below.
+    if "loan_related_rows" in det:
+        log.append("\n[DET] Details: unsecured loans (named lenders)")
+        from tb_processor import _fuzzy_match_name as _fmn_loans
+        loan_rel_rows = det["loan_related_rows"]
+        unsec_accts = [a for a in accounts
+                       if a.get("bs_head") == "lt_borrowings"
+                       and a["net"] < 0
+                       and _lt_key_for(a["name"]) is None]  # not already handled above
+        written_loan_rel = set()
+        # Clear stale values in the named-lender rows first (contamination guard)
+        for r in loan_rel_rows:
+            ws_det.cell(r, det["col_cy"]).value = None
+        for a in unsec_accts:
+            net  = abs(a["net"])
+            name = a["name"]
+            matched = False
+            for r in loan_rel_rows:
+                if r in written_loan_rel: continue
+                b = ws_det.cell(r, 2).value
+                if b and _fmn_loans(name, str(b)):
+                    _w(ws_det, r, det["col_cy"], net, log, f"UnsecLoan:{name}")
+                    written_loan_rel.add(r)
+                    matched = True
+                    break
+            if not matched:
+                log.append(f"  UnsecLoan: no row for '{name}' — {net:,.2f} skipped")
+        if "loan_related_total" in det:
+            _ensure_formula(det, "loan_related_total", ws_det, log)
+
     # ── 4. Details: Creditors ──
     log.append("\n[DET] Details: creditors")
     cred_rows  = det["creditor_rows"]
@@ -466,7 +572,7 @@ def inject_with_config(tb_path: str,
         [a for a in accounts if a.get("bs_head") == "trade_payables" and a["net"] < 0],
         key=lambda a: -len(a["name"])
     )
-    from tb_processor2_fixed import _fuzzy_match_name
+    from tb_processor import _fuzzy_match_name
     written_cred = set()
 
     # Clear all creditor CY cells first (remove stale dates / old values)
@@ -498,17 +604,80 @@ def inject_with_config(tb_path: str,
                 matched = True
                 break
         if not matched:
-            # Find first empty creditor row (no label, no value)
+            # FIX: this previously only checked the VALUE cell for
+            # "emptiness" (None or 0), but never checked the LABEL cell
+            # (column B) at all — despite the comment saying "no label,
+            # no value". Rows from a PRIOR YEAR's run often still hold a
+            # stale creditor name in column B even after their value was
+            # cleared to 0 by the "Clear all creditor CY cells" step
+            # above (which only clears col_cy, not col B). Picking such
+            # a row for a genuinely NEW creditor wrote the new amount
+            # under the OLD, unrelated creditor's name — e.g. "JINDAL
+            # PLASTIC STORE MALERKOTLA"'s ₹8,000 ended up displayed as
+            # "Aggarwal Crockery House"'s amount, while the real
+            # Aggarwal Crockery House entry (₹29,655) was display
+            # alongside whatever name was sitting in ITS assigned row.
+            # Now requires the label cell to ALSO be blank, and writes
+            # the new account's own name into it so the row's identity
+            # is correct, not just its number.
             for r in cred_rows:
                 if r in written_cred: continue
+                b = ws_det.cell(r, 2).value
                 d = ws_det.cell(r, det["col_cy"]).value
-                if d is None or d == 0:
+                label_blank = (b is None or str(b).strip() == "")
+                value_blank = (d is None or d == 0)
+                if label_blank and value_blank:
+                    _w(ws_det, r, 2, name, log, f"Cred new label:{name}")
                     _w(ws_det, r, det["col_cy"], net, log, f"Cred new:{name}")
                     written_cred.add(r)
                     matched = True
                     break
             if not matched:
-                log.append(f"  Cred: no row for '{name}' — {net:,.2f} skipped")
+                # FIX: this template only has ONE genuinely blank row
+                # (label AND value both empty) within the dedicated
+                # creditor_rows range — but the TB can have far more new
+                # creditors than that (AS Traders had 7+ new creditors
+                # vs. 1 spare row). Rather than silently skip every
+                # account beyond the first, or risk insert_rows()
+                # corrupting nearby formulas (confirmed elsewhere this
+                # session to duplicate/destroy shared formulas), scan
+                # the WHOLE Details sheet for a genuinely blank,
+                # non-merged row outside the dedicated section and place
+                # the account there — clearly logged as an overflow so
+                # it's easy to spot and isn't silently miscounted, since
+                # it sits outside the section's own SUM total formula.
+                placed_elsewhere = False
+                for r in range(1, 250):
+                    if r in written_cred:
+                        continue
+                    if r <= 5:
+                        continue
+                    b_ov = ws_det.cell(r, 2).value
+                    d_ov = ws_det.cell(r, det["col_cy"]).value
+                    if b_ov is not None or d_ov not in (None, 0):
+                        continue
+                    is_merged_row = any(
+                        mr.min_row <= r <= mr.max_row and mr.min_col <= 2 <= mr.max_col
+                        for mr in ws_det.merged_cells.ranges
+                    )
+                    if is_merged_row:
+                        continue
+                    above = ws_det.cell(r - 1, 2).value if r > 1 else None
+                    if above and "total" in str(above).strip().lower():
+                        continue
+                    if _w(ws_det, r, 2, name, log, f"Cred OVERFLOW label:{name}") and \
+                       _w(ws_det, r, det["col_cy"], net, log, f"Cred OVERFLOW:{name}"):
+                        written_cred.add(r)
+                        log.append(
+                            f"  ⚠ OVERFLOW: '{name}' ({net:,.2f}) placed at Details!R{r} "
+                            f"— no spare labeled row in the creditor section; NOT included "
+                            f"in that section's Total formula. Add a row manually if this "
+                            f"account should be counted there."
+                        )
+                        placed_elsewhere = True
+                        break
+                if not placed_elsewhere:
+                    log.append(f"  Cred: no row for '{name}' — {net:,.2f} skipped")
 
     # ── 5. Details: Trade Receivables ──
     log.append("\n[DET] Details: debtors")
@@ -663,9 +832,6 @@ def inject_with_config(tb_path: str,
         if a.get("bs_head") != "other_cl": continue
         if abs(a["net"]) == 0: continue
         name = a["name"]
-        # Skip advance_from_customer reclassified accounts
-        if a.get("reclassified_from") == "trade_rec":
-            continue
         key = _ocl_key_for(name)
         if not key:
             key = "ocl_salary"   # fallback bucket
@@ -676,7 +842,35 @@ def inject_with_config(tb_path: str,
             entry = n_cfg[key]
             _w(ws_n, entry["row"], cy, total, log, f"OCL:{key}")
         else:
-            log.append(f"  OCL: no config row for key '{key}' (total {total:,.2f})")
+            # FIX: previously just logged "no config row" and dropped
+            # the amount silently — this was the actual mechanism by
+            # which Advance From Customers vanished from the balance
+            # sheet entirely (no per-template config row exists for
+            # it). Find a genuinely blank row near the OCL section
+            # (just below its own Total, before the next section
+            # starts) and place it there instead, clearly flagged as
+            # not yet included in the section's own SUM formula so a
+            # human can extend that formula or move the row manually.
+            _ocl_total_row = n_cfg.get("ocl_total", {}).get("row")
+            _placed = False
+            if _ocl_total_row:
+                for _r in range(_ocl_total_row + 1, _ocl_total_row + 6):
+                    _b = ws_n.cell(_r, 2).value
+                    _d = ws_n.cell(_r, cy).value
+                    if _b is None and (_d is None or _d == 0):
+                        _w(ws_n, _r, 2, key.replace("_", " ").title(), log, f"OCL overflow label:{key}")
+                        _w(ws_n, _r, cy, total, log, f"OCL overflow:{key}")
+                        log.append(
+                            f"  ⚠ OVERFLOW: '{key}' ({total:,.2f}) placed at "
+                            f"{ws_n.title}!R{_r} — no config row exists for this "
+                            f"category and it is NOT included in the OCL Total "
+                            f"formula at R{_ocl_total_row}. Extend that formula "
+                            f"or move this row manually."
+                        )
+                        _placed = True
+                        break
+            if not _placed:
+                log.append(f"  OCL: no config row for key '{key}' (total {total:,.2f}) — SKIPPED, needs manual entry")
 
     _ensure_formula(n_cfg, "ocl_total", ws_n, log)
 
@@ -1007,6 +1201,8 @@ def inject_with_config(tb_path: str,
         # Find the bs row whose col-B label matches the key concept
         _BS_LABEL_MAP = {
             "lt_borrowings":   ["long-term borrowing"],
+            "stb":             ["short-term borrowing"],
+            "trade_payables":  ["trade payable"],
             "trade_pay_msme":  ["micro, small"],
             "trade_pay_other": ["other than micro"],
             "other_cl":        ["other current liabilit"],
