@@ -938,15 +938,36 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                         # as the new PY formula. Otherwise fall back to old behaviour.
                         new_py_formula = None
                         if cy_f_text and "!" not in cy_f_text:
-                            # Only translate if the CY formula references ONLY the
-                            # cy_l column (e.g. SUM(D14:D15), D41+D42, etc.) — safe
-                            # to do a column-letter substitution without breaking
-                            # cross-sheet refs or multi-column formulas. The "!"
-                            # check excludes cross-sheet refs like =Details!D19,
-                            # where "D19" would otherwise be misread as a same-
-                            # sheet column-D reference.
+                            # Only translate if the CY formula references ONLY
+                            # column(s) that are CY columns registered for THIS
+                            # sheet (e.g. SUM(D14:D15), D41+D42 for a single-pair
+                            # sheet like "notes to bs"; or "F20-SUM(B9:B16)" for
+                            # a multi-pair sheet like "GROSS PROFIT", which has
+                            # TWO registered pairs [(B,C),(F,G)] and can mix both
+                            # in one formula) — safe to do a column-letter
+                            # substitution without breaking cross-sheet refs.
+                            # The "!" check excludes cross-sheet refs like
+                            # =Details!D19, where "D19" would otherwise be
+                            # misread as a same-sheet column-D reference.
+                            #
+                            # FIX: the original check (col_refs == {cy_l}) only
+                            # accepted a formula using EXACTLY the single column
+                            # pair currently being iterated — a formula mixing
+                            # columns from two DIFFERENT registered pairs on the
+                            # same sheet (e.g. GROSS PROFIT's B and F together)
+                            # was rejected and fell through to a plain-value
+                            # overwrite, silently losing the formula.
                             col_refs = set(re.findall(r'\b([A-Z]+)\d+\b', cy_f_text))
-                            if col_refs == {cy_l}:
+                            sheet_pairs = col_pairs or [(cy_l, py_l)]
+                            sheet_cy_cols = {c for c, p in sheet_pairs}
+                            if col_refs and col_refs <= sheet_cy_cols:
+                                translated = cy_f_text
+                                for _cyc, _pyc in sheet_pairs:
+                                    translated = re.sub(
+                                        rf'\b{_cyc}(\d+)\b', rf'{_pyc}\1', translated
+                                    )
+                                new_py_formula = translated
+                            elif col_refs == {cy_l}:
                                 translated = re.sub(
                                     rf'\b{cy_l}(\d+)\b', rf'{py_l}\1', cy_f_text
                                 )
@@ -996,10 +1017,42 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                         # column today.
                         new_py_formula2 = None
                         if cy_f_text and "!" not in cy_f_text:
-                            # Same-sheet formula (e.g. SUM(D125+D128+D132)) —
-                            # safe to translate column letters directly.
+                            # Same-sheet formula. Most sheets have a
+                            # single CY/PY column pair (e.g. D->E), so
+                            # translating cy_l->py_l alone is enough.
+                            # BUT some sheets (e.g. "GROSS PROFIT", with
+                            # registered pairs [(B,C), (F,G)]) can have
+                            # ONE formula referencing columns from
+                            # MULTIPLE pairs at once, e.g.
+                            # "=F20-SUM(B9:B16)" uses both the B/C pair
+                            # AND the F/G pair in the same cell. The
+                            # original check only allowed a formula
+                            # using EXACTLY the single column cy_l,
+                            # which rejected this formula entirely (its
+                            # col_refs were {B, F}, not {B}) and it fell
+                            # through to a plain-value overwrite,
+                            # silently losing the cross-column formula
+                            # relationship.
+                            #
+                            # Fix: gather every CY/PY column pair
+                            # registered for THIS sheet, and accept the
+                            # formula if every column it references
+                            # belongs to one of those known CY columns —
+                            # translating all of them together in one
+                            # pass — rather than requiring the formula
+                            # to use only the one pair currently being
+                            # iterated.
                             col_refs2 = set(re.findall(r'\b([A-Z]+)\d+\b', cy_f_text))
-                            if col_refs2 == {cy_l}:
+                            sheet_pairs = col_pairs or [(cy_l, py_l)]
+                            sheet_cy_cols = {c for c, p in sheet_pairs}
+                            if col_refs2 and col_refs2 <= sheet_cy_cols:
+                                translated_multi = cy_f_text
+                                for _cyc, _pyc in sheet_pairs:
+                                    translated_multi = re.sub(
+                                        rf'\b{_cyc}(\d+)\b', rf'{_pyc}\1', translated_multi
+                                    )
+                                new_py_formula2 = translated_multi
+                            elif col_refs2 == {cy_l}:
                                 new_py_formula2 = re.sub(
                                     rf'\b{cy_l}(\d+)\b', rf'{py_l}\1', cy_f_text
                                 )
@@ -1129,6 +1182,7 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
     # BUG 1 FIX: Build insertions dict for PY cells that don't exist in XML
     # These are CY values where there's no existing PY <c> element to overwrite
     insertions = {}  # {row_num: {py_letter: val_str}}
+    insertion_formulas = {}  # {row_num: {py_letter: formula_text}}
     existing_py_refs = set()
     for row_el in sd:
         for cell_el in row_el:
@@ -1141,8 +1195,52 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
         for rn, val in vals.items():
             py_ref = f"{py_l}{rn}"
             if py_ref not in existing_py_refs:
-                # PY cell doesn't exist — need to insert it
+                # PY cell doesn't exist — need to insert it.
                 insertions.setdefault(rn, {})[py_l] = _fmt_num(val)
+                # FIX: this previously ALWAYS inserted a plain value,
+                # even when CY has a formula at this exact row — the
+                # PY cell genuinely doesn't exist as a <c> element in
+                # the source XML at all (a common case: a section was
+                # extended/reordered at some point and a row that should
+                # have a PY-column cell simply never got one written),
+                # so this insertion path runs completely separately from
+                # (and was never reached by) the formula-translation
+                # logic above, which only operates on cells already
+                # found via the main row-iteration loop. Build the same
+                # kind of translated formula here too, so a brand-new PY
+                # cell ends up with a live formula (mirroring CY's, with
+                # this sheet's CY/PY columns swapped) instead of a frozen
+                # number, exactly like the "PY cell exists but has no
+                # formula" case already handles.
+                if rn in frows:
+                    cy_ref_ins = f"{cy_l}{rn}"
+                    cy_f_text_ins = None
+                    for _row_el2 in sd:
+                        for _cell_el2 in _row_el2:
+                            if _cell_el2.get("r") == cy_ref_ins:
+                                _f2 = _cell_el2.find(f"{{{_NS}}}f")
+                                if _f2 is not None and _f2.text:
+                                    cy_f_text_ins = _f2.text
+                                break
+                        if cy_f_text_ins is not None:
+                            break
+                    if cy_f_text_ins and "!" not in cy_f_text_ins:
+                        col_refs_ins = set(re.findall(r'\b([A-Z]+)\d+\b', cy_f_text_ins))
+                        sheet_pairs_ins = col_pairs or [(cy_l, py_l)]
+                        sheet_cy_cols_ins = {c for c, p in sheet_pairs_ins}
+                        translated_ins = None
+                        if col_refs_ins and col_refs_ins <= sheet_cy_cols_ins:
+                            translated_ins = cy_f_text_ins
+                            for _cyc2, _pyc2 in sheet_pairs_ins:
+                                translated_ins = re.sub(
+                                    rf'\b{_cyc2}(\d+)\b', rf'{_pyc2}\1', translated_ins
+                                )
+                        elif col_refs_ins == {cy_l}:
+                            translated_ins = re.sub(
+                                rf'\b{cy_l}(\d+)\b', rf'{py_l}\1', cy_f_text_ins
+                            )
+                        if translated_ins:
+                            insertion_formulas.setdefault(rn, {})[py_l] = translated_ins
 
     if not changes and not insertions:
         return xml_bytes
@@ -1260,7 +1358,16 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                                             key=lambda x: _col_idx(x[0])):
                     ref = f"{py_l}{rn}"
                     if ref not in existing_refs:
-                        new_cells += f'<c r="{ref}"><v>{val_str}</v></c>'
+                        _f_text = insertion_formulas.get(rn, {}).get(py_l)
+                        if _f_text:
+                            _f_text_esc = (
+                                _f_text.replace("&", "&amp;")
+                                       .replace("<", "&lt;")
+                                       .replace(">", "&gt;")
+                            )
+                            new_cells += f'<c r="{ref}"><f>{_f_text_esc}</f><v>{val_str}</v></c>'
+                        else:
+                            new_cells += f'<c r="{ref}"><v>{val_str}</v></c>'
                 if new_cells:
                     row_xml = row_xml.replace("</row>", new_cells + "</row>")
         return row_xml
