@@ -1,0 +1,69 @@
+"""
+sanitize_template.py
+=====================
+Strips a previously-generated/contaminated CA Toolkit balance sheet workbook
+down to a reusable BLANK TEMPLATE: keeps every formula and structural label,
+but clears hardcoded client numbers that tb_processor.py's injection logic
+leaves behind in cells it won't overwrite (since it only writes into empty
+or formula cells, never into pre-existing plain numbers).
+
+Targets the specific sheets/columns tb_processor.py actually injects into:
+  - notes to bs        (cols D, E)
+  - notes to p&l        (cols D, E)
+  - GROSS PROFIT        (cols B, C, E, F  — purchase/sale value columns)
+  - Details             (col D — debtor/creditor amounts)
+  - capital             (cols C, D, E, F, G — partner figures; row 8 name too)
+  - Fixed Assets C. Yr. / Fixed Assets P. Yr. (numeric columns only)
+
+Rule: clear a cell ONLY if its value is a plain int/float (never touches
+formulas, never touches text labels/headers — so template structure,
+section names, and formula chains are fully preserved).
+
+Usage:
+    python sanitize_template.py input.xlsx output_blank_template.xlsx
+"""
+import sys
+from openpyxl import load_workbook
+
+TARGETS = {
+    "notes to bs":              {"cols": [4, 5],          "min_row": 1, "max_row": 250},
+    "notes to p&l":              {"cols": [4, 5],          "min_row": 1, "max_row": 250},
+    "GROSS PROFIT":              {"cols": [2, 3, 5, 6],    "min_row": 1, "max_row": 60},
+    "Details":                    {"cols": [4],             "min_row": 1, "max_row": 250},
+    "capital":                    {"cols": [3, 4, 5, 6, 7], "min_row": 7, "max_row": 35},
+    "Fixed Assets C. Yr.":       {"cols": list(range(2, 12)), "min_row": 1, "max_row": 60},
+    "Fixed Assets P. Yr.":       {"cols": list(range(2, 12)), "min_row": 1, "max_row": 60},
+}
+
+
+def sanitize(in_path, out_path):
+    wb = load_workbook(in_path, data_only=False)
+    cleared = []
+
+    for sheet_name, cfg in TARGETS.items():
+        if sheet_name not in wb.sheetnames:
+            continue
+        ws = wb[sheet_name]
+        for row in ws.iter_rows(min_row=cfg["min_row"], max_row=cfg["max_row"]):
+            for cell in row:
+                if cell.column not in cfg["cols"]:
+                    continue
+                val = cell.value
+                # Only clear plain numbers — never formulas, never text labels.
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    cleared.append(f"{sheet_name}!{cell.coordinate} = {val}")
+                    cell.value = None
+
+    wb.save(out_path)
+    return cleared
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("Usage: python sanitize_template.py input.xlsx output_blank_template.xlsx")
+        sys.exit(1)
+    cleared = sanitize(sys.argv[1], sys.argv[2])
+    print(f"Cleared {len(cleared)} hardcoded value(s):")
+    for c in cleared:
+        print(" -", c)
+    print(f"\nSaved blank template to: {sys.argv[2]}")
