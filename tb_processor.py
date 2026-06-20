@@ -682,23 +682,82 @@ def _parse_tb_pdf_text_fallback(pdf_path):
     import pdfplumber, re
 
     all_lines = []
+    # FIX: a line with only ONE amount on it gives no way to tell, from
+    # text alone, whether that number was under the "Debit Bal." or
+    # "Credit Bal." column — the previous logic guessed purely from the
+    # account's GROUP (e.g. "Sundry Creditors" -> assume credit). That
+    # heuristic is right for the vast majority of accounts in a group,
+    # but wrong for genuine exceptions a TB can legitimately contain —
+    # e.g. a creditor with a DEBIT balance (supplier overpaid in advance)
+    # sitting inside an otherwise credit-side "Sundry Creditors" group, or
+    # a debtor with a CREDIT balance inside "Sundry Debtors". Those
+    # specific accounts got silently flipped to the wrong side with no
+    # way to detect it from group alone. Using each number's actual X
+    # coordinate against the PDF's own "Debit Bal." / "Credit Bal."
+    # column positions resolves these exactly, instead of guessing.
+    _pos_amount_side = {}   # {amount_text: 'debit'|'credit'}
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
+        for page_idx, page in enumerate(pdf.pages):
             text = page.extract_text() or ""
             for line in text.split("\n"):
                 l = line.strip()
                 if l:
                     all_lines.append(l)
+            try:
+                words = page.extract_words()
+            except Exception:
+                words = []
+            debit_x = credit_x = None
+            for w in words:
+                if w["text"].strip().rstrip(".") == "Debit" and debit_x is None:
+                    debit_x = (w["x0"], w["x1"])
+                elif w["text"].strip().rstrip(".") == "Credit" and credit_x is None:
+                    credit_x = (w["x0"], w["x1"])
+            if debit_x is None or credit_x is None:
+                continue
+            # Column boundary = midpoint between the two header labels'
+            # nearest edges; anything left of it is the debit column,
+            # right of it is the credit column. Keyed by the amount text
+            # itself (not page/line position) — threading exact line
+            # coordinates through the existing flat extract_text()-based
+            # pipeline below isn't practical, and exact decimal amounts
+            # (e.g. "6,00,000.00") are distinctive enough in practice that
+            # this is a large accuracy improvement over guessing purely
+            # from group name, even though it isn't a perfect 1:1 mapping
+            # in the rare case the exact same amount appears more than
+            # once across both columns in the same document.
+            amt_re_w = re.compile(r'^[\d,]+\.\d{2}$')
+            for w in words:
+                if amt_re_w.match(w["text"]):
+                    side = "debit" if w["x0"] < (debit_x[1] + credit_x[0]) / 2.0 else "credit"
+                    _pos_amount_side[w["text"]] = side
+
     if not all_lines:
         return None
 
     num_re = re.compile(r'([\d,]+\.\d{2})')
     skip_patterns = {"trial balance", "as on ", "page no", "continued",
                      "focal point", "punjab", "phase-", "e-254"}
-    credit_groups = {"capital account", "secured loans", "unsecured loans",
-                     "sundry creditors", "sundry payables", "sales account",
-                     "indirect incomes", "profit & loss account",
-                     "current liabilities", "duties & taxes"}
+    # FIX: the previous EXACT-match whitelist only covered a handful of
+    # literal group names ("capital account", "secured loans", ...),
+    # so any TB using slightly different (but extremely common) phrasing —
+    # "Advance From Customers", "Provisions/Expenses Payable", "Sundry
+    # Payable" (singular), "PURCHASE A/C" mixed in with liability-side
+    # groups, etc. — silently fell through to the debit-side default,
+    # flipping the Dr/Cr sign for every account in that group. Switched to
+    # a substring-based keyword check covering the actual recurring
+    # liability/income vocabulary instead of an exhaustive literal list.
+    _credit_group_keywords = (
+        "capital", "secured loan", "unsecured loan", "creditor",
+        "payable", "sale", "income", "profit & loss account",
+        "profit and loss account", "current liabilit", "duties & tax",
+        "duties and tax", "advance from customer", "reserve", "provision",
+        "outstanding expense", "bills payable",
+    )
+
+    def _is_credit_group(group_name):
+        gl = group_name.lower()
+        return any(kw in gl for kw in _credit_group_keywords)
 
     current_group = ""
     accounts = []
@@ -710,6 +769,31 @@ def _parse_tb_pdf_text_fallback(pdf_path):
             continue
         if ll == "particulars debit amount credit amount":
             continue
+        # FIX: this PDF layout (and likely others like it) repeats a
+        # column-header line — e.g. "S.No. Account Debit Bal. (`) Credit
+        # Bal. (`)" — directly after EVERY "Group : X" section header,
+        # right before that group's actual account rows. Since this line
+        # has no decimal-formatted amount in it, it fell through to the
+        # "no numbers found -> treat as a new group name" branch below,
+        # immediately overwriting the just-set, correct group name with
+        # this header text on every single section — so every account in
+        # the whole document ended up tagged with the same wrong "group"
+        # (the literal column-header string) instead of its real group.
+        # Any classification logic that relies on the TB group (rather
+        # than the account name alone) then silently broke for every
+        # account in the file.
+        if ("debit" in ll and "credit" in ll) or \
+           (ll.startswith("s.no") and "account" in ll):
+            continue
+        # "Group : X" lines should set current_group to just "X" (the
+        # literal "Group :" prefix isn't part of any GROUP_HEAD_MAP /
+        # GROUP_KEYWORDS entry, so leaving it in would prevent the group
+        # from ever being recognised downstream).
+        if ll.startswith("group"):
+            _gm = re.match(r"^group\s*:?\s*(.+)$", line.strip(), re.I)
+            if _gm:
+                current_group = _gm.group(1).strip()
+                continue
         if not company_name and line.isupper() and len(line) > 3 and not num_re.search(line):
             company_name = line
             continue
@@ -729,11 +813,36 @@ def _parse_tb_pdf_text_fallback(pdf_path):
             continue
         if not name:
             continue
+        # FIX: "Total" (per-group subtotal) and "Grand Total" (document
+        # total) lines DO contain two decimal-formatted numbers, so they
+        # don't fall into the "no numbers -> group name" branch above —
+        # they were instead falling all the way through to here and being
+        # appended to `accounts` as if they were genuine individual
+        # accounts (e.g. an account literally named "Total" with the
+        # group's debit/credit subtotal as its amount, and a final "Grand
+        # Total" entry with the whole TB's grand total). Besides being
+        # nonsensical entries that show up in the Manual Review / mapping
+        # UI, every such line silently double-counts that group's total
+        # into the aggregated figures alongside its individual accounts.
+        # The primary table-based parser already filters these out; this
+        # fallback parser was missing the same guard.
+        if re.match(r"^(total|grand total|sub\s*total|opening|closing|"
+                    r"balance\s*(c/d|b/d))\b", name, re.I):
+            continue
         dr_amt = 0.0
         cr_amt = 0.0
         if len(nums) == 1:
             val = float(nums[0].replace(',', ''))
-            if current_group.lower() in credit_groups:
+            # Prefer the actual column position from the PDF (exact) over
+            # the group-name heuristic (a reasonable guess, but wrong for
+            # any account whose balance is on the opposite side from its
+            # group's usual convention).
+            _pos_side = _pos_amount_side.get(nums[0])
+            if _pos_side == "credit":
+                cr_amt = val
+            elif _pos_side == "debit":
+                dr_amt = val
+            elif _is_credit_group(current_group):
                 cr_amt = val
             else:
                 dr_amt = val
@@ -1208,6 +1317,26 @@ def _classify_single(name, net_amount, group=None):
     """Classify a single account name. Returns (head_key, confidence)."""
     name_lower = name.lower().strip()
     group_lower = (group or "").lower().strip()
+    # FIX: Tally/Busy TBs very commonly name groups like "PURCHASE A/C",
+    # "SALE A/C", "CURRENT LIABILITIES A/C" etc. — using the "A/C"
+    # abbreviation instead of the full word "ACCOUNT". GROUP_HEAD_MAP only
+    # has entries for the spelled-out forms ("purchase account", "purchase
+    # accounts", "purchases"), so "purchase a/c" matched NEITHER the exact
+    # lookup nor the partial-substring fallback, meaning the group-based
+    # override never fired for these — letting generic name-keyword
+    # matching decide instead. That's how accounts like "RAW MATERIAL" and
+    # "PACKING MATERIAL" (literally listed under Group: PURCHASE A/C, i.e.
+    # purchases made during the year) got silently misclassified as
+    # `inventories` instead of `purchases`: those exact phrases are ALSO
+    # legitimate inventory keywords (for TBs where they really do represent
+    # closing stock), and with no group override to disambiguate, the
+    # name-keyword match won by default — hugely inflating the "closing
+    # stock" figure and corrupting Net Profit / Total Assets on the
+    # website's summary page (a multi-crore RAW MATERIAL purchase is not a
+    # multi-crore stock balance). Normalising "a/c" -> "account" here lets
+    # the group lookup work the same way it already does for the
+    # spelled-out form, for every classification call site.
+    group_lower = re.sub(r"\ba/c\b", "account", group_lower)
 
     # ── Smart rules based on name + balance sign ──────────────────────
     # Rule: "loan" in name + CREDIT balance = borrowing (not fixed asset)
@@ -4656,10 +4785,22 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             elif "closing stock" in n:
                 closing_stock_from_tb += abs(a.get("net", 0))
 
-    # If no explicit opening/closing rows, treat the whole inventories aggregate
-    # as opening stock (typical Tally TB convention).
+    # If no explicit opening/closing rows, the TB's undifferentiated stock
+    # balance must be treated as CLOSING stock, never opening. A trial
+    # balance is, by definition, a snapshot as of the balance sheet date
+    # (period END) — there is no such thing as "opening stock" sitting in
+    # a TB, since opening stock is necessarily LAST year's closing figure
+    # and isn't available from this year's TB at all. Treating it as
+    # opening stock (the previous behaviour) silently flipped the sign of
+    # this figure in the Net Profit calculation — subtracting it as a cost
+    # instead of adding it as a closing asset — which alone was enough to
+    # swing a genuinely profitable, tallying business into a large fake
+    # loss and a large fake Assets/Liabilities mismatch on the website's
+    # summary page, even though the actual generated spreadsheet (which
+    # computes everything via its own template formulas, not this
+    # redundant aggregate) was correct.
     if opening_stock == 0 and closing_stock_from_tb == 0:
-        opening_stock = inventories_total
+        closing_stock_from_tb = inventories_total
 
     # Closing stock used in the BS = explicit value if TB has one,
     # otherwise the Trading A/c balancing figure.
