@@ -3160,6 +3160,13 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 if _found_sales_gst_row:
                     break
 
+            # Accounts whose value gets written into GROSS PROFIT (either
+            # matched to an existing row or appended as a new one) end up
+            # here — used below to prevent the separate "inject into notes
+            # to p&l" step from writing the SAME figure a second time as a
+            # redundant duplicate row.
+            _gp_handled_sale_ids = set()
+
             if _gp_sale_is_formula_driven:
                 injected.append(
                     "  [GP] Sales: GROSS PROFIT's Sales GST row is a "
@@ -3235,6 +3242,19 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 # Place each TB sale into its matching row
                 sale_row_totals = {}     # {row: amount}
                 unmatched_sales = []
+                # Track which accounts get a value written into GROSS PROFIT
+                # (matched to an existing row OR appended as a new row there)
+                # so the separate "also inject into notes to p&l" step below
+                # never duplicates the SAME figure as a second, redundant
+                # line — notes to p&l!D6 already pulls from GROSS PROFIT via
+                # formula, so writing it again elsewhere just shows the same
+                # sale twice and adds a row that wasn't in the original
+                # template, which is exactly what should never happen:
+                # existing template formulas stay untouched, only their
+                # SOURCE cell gets the value, and row insertion (handled by
+                # the cross-sheet shift fix elsewhere) is the only thing
+                # that should ever shift anything.
+                _gp_handled_sale_ids = set()
                 for acct in sale_accounts:
                     name_norm = _norm_gst(acct["name"])
                     best_row = None
@@ -3253,6 +3273,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         if len(sale_label_rows) == 1:
                             best_row, best_label = next(iter(sale_label_rows.values()))
                             sale_row_totals[best_row] = sale_row_totals.get(best_row, 0) + abs(acct["net"])
+                            _gp_handled_sale_ids.add(id(acct))
                         else:
                             unmatched_sales.append(acct)
                         continue
@@ -3268,6 +3289,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         unmatched_sales.append(acct)
                         continue
                     sale_row_totals[best_row] = sale_row_totals.get(best_row, 0) + abs(acct["net"])
+                    _gp_handled_sale_ids.add(id(acct))
 
                 # Write each label-matched row — NEVER write to a Total row
                 for row, amt in sale_row_totals.items():
@@ -3288,6 +3310,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                             break
                         if _safe_write(ws_gp, next_row, _sale_lbl_col, acct["name"]):
                             _safe_write(ws_gp, next_row, _sale_val_col, abs(acct["net"]))
+                            _gp_handled_sale_ids.add(id(acct))
                             injected.append(
                                 f"GROSS PROFIT!{chr(64+_sale_val_col)}{next_row} "
                                 f"(Sale unmatched: {acct['name']}) = {abs(acct['net']):,.2f}"
@@ -3303,6 +3326,14 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
                 still_unmatched_sale2 = []
                 for acct in sale_accounts:
+                    if id(acct) in _gp_handled_sale_ids:
+                        # Already written into GROSS PROFIT above, and
+                        # notes to p&l!D6 pulls from there via formula
+                        # (e.g. ='GROSS PROFIT'!F10) — writing the same
+                        # figure again here would duplicate it as a second,
+                        # redundant "Sales" line that was never part of the
+                        # original template.
+                        continue
                     amt = abs(acct["net"])
                     if amt <= 0: continue
                     acct_rate = _extract_rate(acct["name"])
@@ -3399,6 +3430,11 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         _gp_purchase_is_formula_driven = True
                     break
 
+            # Accounts whose value gets written into GROSS PROFIT end up
+            # here — used below to prevent the "inject into notes to p&l"
+            # step from duplicating the same figure as a redundant row.
+            _gp_handled_purch_ids = set()
+
             if _gp_purchase_is_formula_driven:
                 injected.append(
                     "  [GP] Purchases: GROSS PROFIT's Purchase row is a "
@@ -3450,6 +3486,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
                 purch_row_totals = {}
                 unmatched_purch = []
+                _gp_handled_purch_ids = set()
                 for acct in purchase_accounts:
                     name_norm = _norm_gst(acct["name"])
                     best_row = None
@@ -3464,6 +3501,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         unmatched_purch.append(acct)
                     else:
                         purch_row_totals[best_row] = purch_row_totals.get(best_row, 0) + abs(acct["net"])
+                        _gp_handled_purch_ids.add(id(acct))
 
                 for row, amt in purch_row_totals.items():
                     if row in purch_total_rows:
@@ -3480,6 +3518,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                             break
                         if _safe_write(ws_gp, next_row, 1, acct["name"]):
                             _safe_write(ws_gp, next_row, 2, abs(acct["net"]))
+                            _gp_handled_purch_ids.add(id(acct))
                             injected.append(
                                 f"GROSS PROFIT!B{next_row} (Purchase unmatched: {acct['name']}) = {abs(acct['net']):,.2f}"
                             )
@@ -3526,6 +3565,11 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 still_unmatched_purch = []
                 if purch_start and purch_end:
                     for acct in purchase_accounts:
+                        if id(acct) in _gp_handled_purch_ids:
+                            # Already written into GROSS PROFIT above —
+                            # writing it again here would duplicate the
+                            # same figure as a second, redundant row.
+                            continue
                         amt = abs(acct["net"])
                         if amt <= 0:
                             continue
