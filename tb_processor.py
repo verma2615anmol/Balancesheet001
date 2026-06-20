@@ -506,6 +506,9 @@ def parse_tb_pdf(pdf_path):
                     _am_gw = _amt_re_gw.match(_ln)
                     if _am_gw:
                         _name_gw = _am_gw.group(1).strip()
+                        # Same fix as the table-based parser below: strip a
+                        # leading merged "S.No." prefix if present.
+                        _name_gw = _re_gw.sub(r"^\d{1,3}\.\s*", "", _name_gw).strip()
                         _f = _pi_gw(_am_gw.group(2))
                         _s = _pi_gw(_am_gw.group(3)) if _am_gw.group(3) else None
                         if _s is not None:
@@ -593,6 +596,23 @@ def parse_tb_pdf(pdf_path):
                     while len(cells) < 3:
                         cells.append("")
                     name, dr_str, cr_str = cells[0], cells[1], cells[2]
+
+                    # FIX: some Trial Balance PDF layouts (e.g. K.D. Knitwear's)
+                    # have no ruling line between the "S.No." and "Account"
+                    # columns, so pdfplumber's extract_tables() merges them
+                    # into ONE cell — e.g. "1. Sales" instead of separate
+                    # "1." / "Sales" cells. That stray leading serial number
+                    # survives into the account name and silently breaks every
+                    # downstream exact/fuzzy name match: "1. Sales" doesn't
+                    # match the "Sales" classification keyword cleanly, and
+                    # _norm_gst("1. Sales") normalises to "1." instead of ""
+                    # (which would at least be recognised as a generic/empty
+                    # name) — so it neither matches a known head by keyword
+                    # nor gets handled by the single-candidate-row shortcut in
+                    # the GROSS PROFIT sales-row matcher, and ends up
+                    # spuriously appended as a brand new row instead of being
+                    # written into the correct existing template row.
+                    name = re.sub(r"^\d{1,3}\.\s*", "", name).strip()
 
                     if not name:
                         # Subtotal row — ignore.
@@ -697,6 +717,9 @@ def _parse_tb_pdf_text_fallback(pdf_path):
             continue
         nums = num_re.findall(line)
         name = num_re.sub('', line).strip()
+        # Same fix as the primary table-based parser: strip a leading
+        # merged "S.No." prefix if present (e.g. "1. Sales" -> "Sales").
+        name = re.sub(r"^\d{1,3}\.\s*", "", name).strip()
         if not nums:
             if name and len(name) > 1 and name not in ("0.01", ""):
                 nl = name.lower()
