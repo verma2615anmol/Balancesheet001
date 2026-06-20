@@ -3149,11 +3149,30 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 unmatched_sales = list(sale_accounts)
             else:
                 # Build label→row map by scanning the Sales side of GROSS PROFIT.
-                # Sale rows live in col D (label) with amounts in col E.
+                # Sale rows live in col D (label) with amounts in col E —
+                # EXCEPT some templates (this one included) shift the whole
+                # sales-side table one column right, using col E (label) /
+                # col F (amount) instead. The formula-driven detection above
+                # already checks both (4,5) and (5,6) layouts; this scan was
+                # hardcoded to (4,5) only, so on an E/F-layout template it
+                # picked up unrelated column-D header text instead — in this
+                # case the literal date string '31.03.2022' (a 3rd "previous
+                # year" column header), which then got treated as if it were
+                # a genuine sale sub-row label.
+                _sale_lbl_col, _sale_val_col = (4, 5)
+                for r in range(1, 40):
+                    _probe = gp_cache.get((r, 5))
+                    if _probe and "sales" in str(_probe).strip().lower() \
+                            and "gst" in str(_probe).strip().lower():
+                        _sale_lbl_col, _sale_val_col = (5, 6)
+                        break
+
+                _date_like = re.compile(r'^\d{1,2}[./]\d{1,2}[./]\d{2,4}$')
+
                 sale_label_rows = {}
                 sale_total_rows = set()
                 for r in range(1, 40):
-                    lbl = gp_cache.get((r, 4))   # col D = sales-side label
+                    lbl = gp_cache.get((r, _sale_lbl_col))
                     if not lbl:
                         continue
                     lbl_s = str(lbl).strip()
@@ -3164,16 +3183,31 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     # labels and shouldn't influence row placement.
                     if lbl_s.startswith("="):
                         continue
+                    # Skip date-shaped strings (e.g. '31.03.2022' year-header
+                    # text) — never a genuine sale sub-row label.
+                    if _date_like.match(lbl_s):
+                        continue
                     lbl_low = lbl_s.lower()
-                    # Skip section headers (SALES, CLOSING STOCK) and totals
-                    if lbl_low in ("sales", "closing stock", "") or "total" in lbl_low:
+                    # Skip section headers (SALES, CLOSING STOCK), generic
+                    # column headers (PARTICULARS), and totals
+                    if lbl_low in ("sales", "closing stock", "particulars", "") \
+                            or "total" in lbl_low:
                         if "total" in lbl_low:
                             sale_total_rows.add(r)
                         continue
                     if "as certified" in lbl_low or "proprietor" in lbl_low:
                         continue
                     # This is a sub-item row — record it
-                    sale_label_rows[_norm_gst(lbl_s)] = (r, lbl_s)
+                    _norm_lbl = _norm_gst(lbl_s)
+                    if not _norm_lbl:
+                        # Label normalised to nothing (e.g. it was ONLY the
+                        # word "Sales"/"GST"/etc, stripped entirely) — an
+                        # empty key would later match EVERY account via the
+                        # "name_norm in lbl_norm" substring fallback below
+                        # (an empty string is a substring of anything in
+                        # Python), causing spurious matches. Skip it.
+                        continue
+                    sale_label_rows[_norm_lbl] = (r, lbl_s)
 
                 # Place each TB sale into its matching row
                 sale_row_totals = {}     # {row: amount}
@@ -3182,6 +3216,23 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     name_norm = _norm_gst(acct["name"])
                     best_row = None
                     best_label = None
+                    if not name_norm:
+                        # Account name normalised to nothing (e.g. the
+                        # account is literally just "Sales") — there's no
+                        # specific GST-rate signal to match against. If the
+                        # template has exactly one real sale sub-row, that's
+                        # almost certainly where this generic figure belongs
+                        # (common case: TB just has one "Sales" line, template
+                        # has one "Sales GST <rate>" row). Match there
+                        # directly rather than appending a redundant new row.
+                        # With zero or multiple candidate rows there's no
+                        # safe single choice, so fall through to unmatched.
+                        if len(sale_label_rows) == 1:
+                            best_row, best_label = next(iter(sale_label_rows.values()))
+                            sale_row_totals[best_row] = sale_row_totals.get(best_row, 0) + abs(acct["net"])
+                        else:
+                            unmatched_sales.append(acct)
+                        continue
                     # Prefer exact normalised match, else substring either-way
                     if name_norm in sale_label_rows:
                         best_row, best_label = sale_label_rows[name_norm]
@@ -3199,8 +3250,10 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 for row, amt in sale_row_totals.items():
                     if row in sale_total_rows:
                         continue
-                    if _safe_write(ws_gp, row, 5, amt):
-                        injected.append(f"GROSS PROFIT!E{row} (Sale {amt:,.2f})")
+                    if _safe_write(ws_gp, row, _sale_val_col, amt):
+                        injected.append(
+                            f"GROSS PROFIT!{chr(64+_sale_val_col)}{row} (Sale {amt:,.2f})"
+                        )
 
                 # Unmatched sales — append below the last sale sub-row but ABOVE total
                 if unmatched_sales and sale_label_rows:
@@ -3210,10 +3263,11 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         # Stop if we'd overwrite a total / closing-stock row
                         if next_row in sale_total_rows:
                             break
-                        if _safe_write(ws_gp, next_row, 4, acct["name"]):
-                            _safe_write(ws_gp, next_row, 5, abs(acct["net"]))
+                        if _safe_write(ws_gp, next_row, _sale_lbl_col, acct["name"]):
+                            _safe_write(ws_gp, next_row, _sale_val_col, abs(acct["net"]))
                             injected.append(
-                                f"GROSS PROFIT!E{next_row} (Sale unmatched: {acct['name']}) = {abs(acct['net']):,.2f}"
+                                f"GROSS PROFIT!{chr(64+_sale_val_col)}{next_row} "
+                                f"(Sale unmatched: {acct['name']}) = {abs(acct['net']):,.2f}"
                             )
                             next_row += 1
 
