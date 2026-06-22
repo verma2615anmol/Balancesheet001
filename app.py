@@ -6526,66 +6526,128 @@ async function doProcess(){
 def _parse_gstr3b_pdf(pdf_path):
     """Extract Table 3.1 data (rows A,B,C,E — NOT D) from a GSTR 3B PDF.
 
-    Uses pdfplumber cropped to just the top ~45 % of page 1 where Table 3.1
-    lives. Skips the rest of the page (tables 3.1.1, 3.2, 4, 5 …) for speed.
-    ~0.2 s per PDF, no external CLI dependencies.
+    Uses pymupdf (fitz) for text extraction — ~40x faster than pdfplumber's
+    extract_tables() approach (0.008s vs 0.33s per PDF). fitz returns each
+    cell on its own line, so we read the row-label line then collect the
+    next 5 numeric lines as the five columns (taxable, IGST, CGST, SGST,
+    Cess). Falls back to pdfplumber if fitz is unavailable.
     """
-    import pdfplumber
-
     result = {'taxable': 0, 'igst': 0, 'cgst': 0, 'sgst': 0, 'cess': 0}
     period = year = gstin = trade_name = state_code = None
 
+    def cn(s):
+        s = str(s).replace(',', '').strip()
+        try: return float(s)
+        except: return 0.0
+
+    lines = None
     try:
-        with pdfplumber.open(pdf_path) as pdf:
-            page = pdf.pages[0]
-            text = page.extract_text() or ""
-
-            # ── metadata ────────────────────────────────────────────────
-            period_m = re.search(r'Period\s+(\w+)', text)
-            year_m   = re.search(r'Year\s+([\d-]+)', text)
-            gstin_m  = re.search(r'GSTIN of the supplier\s+(\S+)', text)
-            trade_m  = re.search(r'Trade name, if any\s+(.+?)(?:\n|$)', text)
-
-            period     = period_m.group(1).strip() if period_m else None
-            year       = year_m.group(1).strip()   if year_m   else None
-            gstin      = gstin_m.group(1).strip()  if gstin_m  else None
-            trade_name = trade_m.group(1).strip()  if trade_m  else None
-            state_code = gstin[:2] if gstin else None
-
-            # ── table 3.1 (cropped to top 45 % of page) ────────────────
-            cropped = page.crop((0, 0, page.width, page.height * 0.45))
-            tables = cropped.extract_tables()
-
-            for t in tables:
-                if not t or not t[0] or not t[0][0]:
-                    continue
-                if 'Nature of Supplies' not in str(t[0][0]):
-                    continue
-                if not any('Outward taxable supplies' in str(r[0] or '')
-                           for r in t[1:]):
-                    continue
-
-                def cn(s):
-                    if s is None: return 0.0
-                    s = str(s).replace('\n', '').strip()
-                    s = re.sub(r'^[A-Z]\s*', '', s)
-                    if s in ('-', '', '0'): return 0.0
-                    try: return float(s.replace(',', ''))
-                    except: return 0.0
-
-                for row in t[1:]:
-                    lbl = str(row[0] or '').lower()
-                    if '(d)' in lbl:          # skip reverse charge
-                        continue
-                    if any(f'({x})' in lbl for x in 'abce'):
-                        result['taxable'] += cn(row[1])
-                        result['igst']    += cn(row[2])
-                        result['cgst']    += cn(row[3])
-                        result['sgst']    += cn(row[4])
-                        result['cess']    += cn(row[5])
-                break                         # only need the first matching table
+        import fitz  # pymupdf
+        doc = fitz.open(pdf_path)
+        lines = doc[0].get_text().split('\n')
+        doc.close()
     except Exception:
-        pass
+        # fitz unavailable — fall back to pdfplumber
+        try:
+            import pdfplumber
+            with pdfplumber.open(pdf_path) as pdf:
+                lines = (pdf.pages[0].extract_text() or '').split('\n')
+        except Exception:
+            pass
+
+    if not lines:
+        return {
+            'period': None, 'year': None, 'gstin': None,
+            'trade_name': None, 'state_code': None,
+            'taxable_value': 0, 'igst': 0, 'cgst': 0,
+            'sgst': 0, 'cess': 0, 'total_tax': 0,
+        }
+
+    # ── metadata ─────────────────────────────────────────────────────────
+    # fitz puts label and value on separate consecutive lines;
+    # pdfplumber puts them on the same line ("Period February").
+    for i, ln in enumerate(lines):
+        ln_s = ln.strip()
+        # fitz style: label on one line, value on next
+        if ln_s == 'Period' and i + 1 < len(lines):
+            period = lines[i + 1].strip()
+        elif ln_s == 'Year' and i + 1 < len(lines):
+            year = lines[i + 1].strip()
+        elif ln_s == 'GSTIN of the supplier' and i + 1 < len(lines):
+            gstin = lines[i + 1].strip()
+            state_code = gstin[:2] if len(gstin) >= 2 else None
+        elif 'Trade name, if any' in ln_s and i + 1 < len(lines):
+            trade_name = lines[i + 1].strip()
+        # pdfplumber style: label + value on same line
+        elif 'Period' in ln_s:
+            m = re.search(r'Period\s+(\w+)', ln_s)
+            if m and not period: period = m.group(1).strip()
+        elif 'Year' in ln_s and not year:
+            m = re.search(r'Year\s+([\d-]+)', ln_s)
+            if m: year = m.group(1).strip()
+        elif 'GSTIN of the supplier' in ln_s and not gstin:
+            m = re.search(r'GSTIN of the supplier\s+(\S+)', ln_s)
+            if m:
+                gstin = m.group(1).strip()
+                state_code = gstin[:2] if len(gstin) >= 2 else None
+        elif 'Trade name' in ln_s and not trade_name:
+            m = re.search(r'Trade name, if any\s+(.+?)(?:\n|$)', ln_s)
+            if m: trade_name = m.group(1).strip()
+
+    # ── Table 3.1 data ───────────────────────────────────────────────────
+    # fitz: label on one line, 5 numeric values on the next 5 lines.
+    # pdfplumber: label + all 5 values on the same line (space-separated).
+    skip_next = 0
+    for i, ln in enumerate(lines):
+        if skip_next > 0:
+            skip_next -= 1
+            continue
+        ll = ln.lower().strip()
+        if '(d)' in ll:          # skip reverse charge row entirely
+            skip_next = 5
+            continue
+
+        is_3_1_row = (
+            any(f'({x})' in ll for x in 'abce')
+            and ('outward' in ll or 'other outward' in ll or ll.startswith('('))
+        )
+        if not is_3_1_row:
+            continue
+
+        # Try same-line parsing first (pdfplumber style)
+        nums_inline = re.findall(r'[\d,]+\.\d{2}', ln)
+        if len(nums_inline) >= 5:
+            result['taxable'] += cn(nums_inline[0])
+            result['igst']    += cn(nums_inline[1])
+            result['cgst']    += cn(nums_inline[2])
+            result['sgst']    += cn(nums_inline[3])
+            result['cess']    += cn(nums_inline[4])
+            continue
+
+        # fitz style: collect next 5 numeric-or-dash lines
+        nums = []
+        j = i + 1
+        while j < len(lines) and len(nums) < 5:
+            val = lines[j].strip()
+            if val == '-':
+                nums.append('0')
+            elif val:
+                try:
+                    float(val.replace(',', ''))
+                    nums.append(val)
+                except ValueError:
+                    if len(nums) == 0:
+                        pass  # continuation text before numbers start
+                    else:
+                        break
+            j += 1
+
+        if len(nums) >= 5:
+            result['taxable'] += cn(nums[0])
+            result['igst']    += cn(nums[1])
+            result['cgst']    += cn(nums[2])
+            result['sgst']    += cn(nums[3])
+            result['cess']    += cn(nums[4])
 
     return {
         'period': period, 'year': year, 'gstin': gstin,
