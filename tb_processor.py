@@ -3705,6 +3705,52 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 if unmatched_purch and purch_label_rows:
                     last_sub_row = max(r for r, _ in purch_label_rows.values())
                     next_row = last_sub_row + 1
+
+                    # FIX: when all TB purchases are unmatched because the
+                    # template uses GST-rate sub-rows (e.g. "Purchases GST
+                    # 12% Local") while the TB has generic accounts (e.g.
+                    # "GOODS PURCHASE A/C"), appending after last_sub_row
+                    # MIGHT land outside the formula range that notes to
+                    # p&l's "Purchases" cell pulls from (e.g.
+                    # =SUM('GROSS PROFIT'!B13:B17)). Even if next_row is
+                    # still within the GROSS PROFIT section bounds, a
+                    # value written there is invisible to that formula.
+                    # Detect the actual formula range end from notes to
+                    # p&l (if available) and compare against next_row.
+                    _formula_range_end = _purch_end_row  # default: section end
+                    if ws_npl:
+                        import re as _re_fr
+                        for _fr_r in range(1, 50):
+                            _fr_v = ws_npl.cell(_fr_r, 4).value
+                            if isinstance(_fr_v, str) and 'GROSS PROFIT' in _fr_v:
+                                _m = _re_fr.search(
+                                    r"'GROSS PROFIT'!\$?[A-Z]+\$?(\d+):\$?[A-Z]+\$?(\d+)",
+                                    _fr_v)
+                                if _m:
+                                    _formula_range_end = int(_m.group(2)) + 1
+                                    break
+
+                    _all_unmatched = len(unmatched_purch) == len(purchase_accounts)
+                    _outside_formula = next_row >= _formula_range_end
+                    if _all_unmatched and _outside_formula and purch_label_rows:
+                        # Find first sub-row with an empty B cell (writable)
+                        _first_avail = None
+                        for _pr_r, _pr_lbl in sorted(purch_label_rows.values()):
+                            if ws_gp.cell(_pr_r, 2).value is None:
+                                _first_avail = _pr_r
+                                break
+                        if _first_avail:
+                            _total = sum(abs(a["net"]) for a in unmatched_purch)
+                            if _safe_write(ws_gp, _first_avail, 2, _total):
+                                for a in unmatched_purch:
+                                    _gp_handled_purch_ids.add(id(a))
+                                injected.append(
+                                    f"GROSS PROFIT!B{_first_avail} (Purchases aggregated "
+                                    f"into first sub-row, {len(unmatched_purch)} unmatched "
+                                    f"accounts totalling {_total:,.2f})"
+                                )
+                                unmatched_purch = []  # all handled
+
                     for acct in unmatched_purch:
                         if next_row in purch_total_rows:
                             break
