@@ -3422,13 +3422,17 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         # account is literally just "Sales") — there's no
                         # specific GST-rate signal to match against. If the
                         # template has exactly one real sale sub-row, that's
-                        # almost certainly where this generic figure belongs
-                        # (common case: TB just has one "Sales" line, template
-                        # has one "Sales GST <rate>" row). Match there
-                        # directly rather than appending a redundant new row.
-                        # With zero or multiple candidate rows there's no
-                        # safe single choice, so fall through to unmatched.
-                        if len(sale_label_rows) == 1:
+                        # almost certainly where this generic figure belongs.
+                        # FIX: even when there are multiple GST-rate sub-rows
+                        # (e.g. "Sales GST Local 12%", "Local 18%", "Local 5%"),
+                        # a TB with a single undifferentiated "Sales" account
+                        # has no rate signal to distribute across sub-rows —
+                        # the entire amount belongs in the first available row.
+                        # Appending as a new row (the old behaviour when count
+                        # != 1) overrode the PURCHASES / CLOSING STOCK section
+                        # with a stray "Sales" label row and the amount in the
+                        # wrong column, corrupting the GROSS PROFIT layout.
+                        if len(sale_label_rows) >= 1:
                             best_row, best_label = next(iter(sale_label_rows.values()))
                             sale_row_totals[best_row] = sale_row_totals.get(best_row, 0) + abs(acct["net"])
                             _gp_handled_sale_ids.add(id(acct))
@@ -3459,12 +3463,24 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         )
 
                 # Unmatched sales — append below the last sale sub-row but ABOVE total
+                # Also hard-stop before any "CLOSING STOCK", "PURCHASES", or
+                # formula-bearing row to avoid overwriting those sections.
                 if unmatched_sales and sale_label_rows:
                     last_sub_row = max(r for r, _ in sale_label_rows.values())
+                    # Find the next section header row below last_sub_row
+                    _sale_stop_row = None
+                    for _ssr in range(last_sub_row + 1, 40):
+                        _sv = gp_cache.get((_ssr, _sale_lbl_col))
+                        if _sv and str(_sv).strip().lower() in (
+                                'closing stock', 'closing stock ', 'purchases',
+                                'total', 'gross profit', 'gross profit '):
+                            _sale_stop_row = _ssr
+                            break
                     next_row = last_sub_row + 1
                     for acct in unmatched_sales:
-                        # Stop if we'd overwrite a total / closing-stock row
                         if next_row in sale_total_rows:
+                            break
+                        if _sale_stop_row and next_row >= _sale_stop_row:
                             break
                         if _safe_write(ws_gp, next_row, _sale_lbl_col, acct["name"]):
                             _safe_write(ws_gp, next_row, _sale_val_col, abs(acct["net"]))
@@ -3610,22 +3626,42 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 gp_cache = _cache.get("GROSS PROFIT", {})
                 purch_label_rows = {}
                 purch_total_rows = set()
-                for r in range(1, 40):
+                # FIX: only scan rows between "PURCHASES" and the next
+                # major header (DIRECT EXPENSES / GROSS PROFIT).
+                # Previously scanning from row 1 picked up title rows
+                # ("TRADING ACCOUNT...", "PARTICULARS") and Direct
+                # Expenses rows ("Cartage Inward") as fake purchase
+                # targets, causing all real purchase accounts to be
+                # "unmatched" and appended at wrong positions that
+                # overwrote GROSS PROFIT formula cells.
+                _purch_start_row = None
+                _purch_end_row = None
+                for _pr in range(1, 40):
+                    _plbl = gp_cache.get((_pr, 1))
+                    if not _plbl: continue
+                    _plbl_l = str(_plbl).strip().lower().rstrip()
+                    if _plbl_l == "purchases" and _purch_start_row is None:
+                        _purch_start_row = _pr + 1
+                    elif _purch_start_row and _plbl_l in (
+                            "direct expenses", "gross profit", "gross profit ",
+                            "closing stock", "closing stock ", "total", "sales"):
+                        _purch_end_row = _pr
+                        break
+                if _purch_start_row is None:
+                    _purch_start_row = 1
+                if _purch_end_row is None:
+                    _purch_end_row = 40
+
+                for r in range(_purch_start_row, _purch_end_row):
                     lbl = gp_cache.get((r, 1))  # col A
                     if not lbl:
                         continue
                     lbl_s = str(lbl).strip()
                     if not lbl_s:
                         continue
-                    # Skip formula-text labels entirely (these belong to
-                    # OTHER sections like Direct Expenses that just
-                    # happen to use a cross-sheet reference for their
-                    # label — not a real purchase sub-row label).
                     if lbl_s.startswith("="):
                         continue
                     lbl_low = lbl_s.lower()
-                    # Skip headers and totals (PURCHASES, DIRECT EXPENSES, OPENING STOCK,
-                    # GROSS PROFIT, TOTAL).
                     if lbl_low in ("purchases", "direct expenses", "opening stock",
                                     "gross profit"):
                         continue
@@ -3634,11 +3670,6 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         continue
                     norm = _norm_gst(lbl_s)
                     if not norm:
-                        # Empty normalised label (e.g. a lone generic
-                        # "Purchase GST" header with nothing distinguishing
-                        # it) can't be reliably matched against — skip it
-                        # as a match target, but don't let it influence
-                        # last_sub_row below either.
                         continue
                     purch_label_rows[norm] = (r, lbl_s)
 
@@ -3668,12 +3699,21 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         injected.append(f"GROSS PROFIT!B{row} (Purchase {amt:,.2f})")
 
                 # Append unmatched purchase accounts below last sub-row, above TOTAL
+                # Hard cap: never write at or beyond the Direct Expenses /
+                # Gross Profit header row (_purch_end_row) — those rows
+                # contain important formulas that must not be overwritten.
                 if unmatched_purch and purch_label_rows:
                     last_sub_row = max(r for r, _ in purch_label_rows.values())
                     next_row = last_sub_row + 1
                     for acct in unmatched_purch:
                         if next_row in purch_total_rows:
                             break
+                        if next_row >= _purch_end_row:
+                            skipped.append(
+                                f"purch '{acct['name']}': no room in GROSS PROFIT "
+                                f"purchase section (next_row {next_row} >= end {_purch_end_row})"
+                            )
+                            continue
                         if _safe_write(ws_gp, next_row, 1, acct["name"]):
                             _safe_write(ws_gp, next_row, 2, abs(acct["net"]))
                             _gp_handled_purch_ids.add(id(acct))
@@ -3889,12 +3929,17 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                     break
                         if placed:
                             continue
-                        # Append as new labelled sub-row before TOTAL
+                        # Append as new labelled sub-row before TOTAL.
+                        # Use the LIVE worksheet (not the stale cache) to
+                        # check whether a row is still free — earlier
+                        # writes in the same run (e.g. purchase appends)
+                        # won't be reflected in the cache, so we'd
+                        # accidentally overwrite them.
                         for r in range(de_header_row + 1, de_end_row):
                             if r in used_rows:
                                 continue
-                            cur_lbl = gp_cache_de.get((r, 1))
-                            cur_amt = gp_cache_de.get((r, 2))
+                            cur_lbl = ws_gp.cell(r, 1).value
+                            cur_amt = ws_gp.cell(r, 2).value
                             if (not cur_lbl or str(cur_lbl).strip() == "") and (
                                 cur_amt is None or cur_amt == 0
                             ):
