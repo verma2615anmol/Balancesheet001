@@ -353,11 +353,28 @@ CLASSIFICATION_PRIORITY = [
     "advance_from_customer", "advance_to_supplier",
     "trade_payables", "trade_rec",
     "finance_cost",   # Must be before cash_bank so "LOAN INTEREST" doesn't match "bank"
+    # FIX: direct_expenses must be checked BEFORE employee_expenses.
+    # employee_expenses has a broad "wage" keyword (meant to catch combined
+    # "Salary & Wages" accounts), but direct_expenses has the more specific
+    # "wages a/c" / "factory wages" / "labour wages" phrasings for
+    # manufacturing labour cost — which belongs in the Trading A/c's Direct
+    # Expenses section, not the P&L's Employee Benefits note. With the old
+    # order, a plain "WAGES A/C" account (TB group: Expenses Direct/Mfg.)
+    # matched employee_expenses' generic "wage" keyword first and never
+    # got a chance to match direct_expenses' more specific keyword — so it
+    # was classified as employee_expenses entirely, then ALSO got written
+    # into the wrong notes-to-p&l sub-row (its large amount landing under
+    # "Salaries" and bumping the real Salary account down into "Bonus"),
+    # while GROSS PROFIT's actual "Wages" row stayed blank — corrupting
+    # both the P&L employee-expense breakdown AND the Trading Account's
+    # Cost of Material Consumed figure (which depends on Direct Expenses
+    # being present).
+    "direct_expenses",
     "employee_expenses",
     "cash_bank", "inventories",
     "st_provisions",
     "st_borrowings", "lt_borrowings",
-    "direct_expenses", "purchases", "revenue", "other_income",
+    "purchases", "revenue", "other_income",
     "fixed_assets", "non_current_investments",
     "stla",
     "capital",
@@ -1337,6 +1354,18 @@ def _classify_single(name, net_amount, group=None):
     # the group lookup work the same way it already does for the
     # spelled-out form, for every classification call site.
     group_lower = re.sub(r"\ba/c\b", "account", group_lower)
+
+    # Rule: TB group explicitly indicates direct/manufacturing expenses
+    # (e.g. "Expenses (Direct/Mfg.)", "Direct Expenses", "Direct Exp -
+    # Manufacturing") — route to direct_expenses regardless of word order,
+    # since none of these phrasings match any GROUP_HEAD_MAP entry (exact
+    # or partial-substring) due to the differing word order, which
+    # previously let accounts like "WAGES A/C" fall through to generic
+    # name-keyword matching and get misclassified as employee_expenses.
+    if group_lower and re.search(r"\bdirect\b", group_lower) and (
+            "expense" in group_lower or "mfg" in group_lower
+            or "manufactur" in group_lower):
+        return "direct_expenses", "high"
 
     # ── Smart rules based on name + balance sign ──────────────────────
     # Rule: "loan" in name + CREDIT balance = borrowing (not fixed asset)
@@ -4011,10 +4040,20 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         if a.get("bs_head") == "employee_expenses"
                         and "payable" not in a.get("name","").lower()
                         and abs(a.get("net", 0)) > 0]
-        # Also include salary, wages, ESI, bonus, leave from other_expenses
+        # Also include salary, ESI, bonus, leave from other_expenses ONLY.
+        # FIX: this used to also sweep in "direct_expenses"-classified
+        # accounts whose name happened to contain "wage"/"labor" — but
+        # those accounts (e.g. manufacturing "WAGES A/C") already get
+        # written into GROSS PROFIT's own Direct Expenses sub-rows via the
+        # dedicated B2 injection block above. Sweeping them in here too
+        # wrote the SAME figure a second time into the P&L's Employee
+        # Benefits note (and, since "Salaries" was usually the first open
+        # slot, often landed there and bumped the real Salary account down
+        # into "Bonus") — duplicating the amount and corrupting both
+        # sections' labelling.
         for a in individual_accounts:
             name_l = a.get("name","").lower()
-            if a.get("bs_head") in ("other_expenses", "direct_expenses"):
+            if a.get("bs_head") == "other_expenses":
                 if any(kw in name_l for kw in ["salary", "wage", "e.s.i", "esi ",
                        "bonus", "leave with", "labour refreshment", "labor"]):
                     if "payable" not in name_l and abs(a.get("net", 0)) > 0:
@@ -4591,10 +4630,23 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             _npl = _wb2["notes to p&l"]
             _r6_label = str(_npl.cell(6, 2).value or "").strip().lower()
             _r20_label = str(_npl.cell(20, 2).value or "").strip().lower()
+            # Fashion Adda layout: GROSS PROFIT sales in col E (E11:E16).
+            # KD Knitwear / others: sales in col F (F10). Distinguish so
+            # this patch never fires on a template whose row-20 label
+            # also contains "purchase" but uses a different GP structure.
+            _fa_gp_check = False
+            if "GROSS PROFIT" in _wb2.sheetnames:
+                _gp_chk = _wb2["GROSS PROFIT"]
+                _fa_gp_check = any(
+                    isinstance(_gp_chk.cell(r, 5).value, (int, float))
+                    and not isinstance(_gp_chk.cell(r, 6).value, (int, float))
+                    for r in range(9, 20)
+                )
             _is_fashion_adda_layout = (
                 "revenue" in str(_npl.cell(5, 2).value or "").lower()
                 and "sale" in _r6_label
                 and ("purchase" in _r20_label or _r20_label == "")
+                and _fa_gp_check
             )
             if _is_fashion_adda_layout:
                 # Fix 1: Revenue formula — must cover all 6 sale rows (E11:E16)
