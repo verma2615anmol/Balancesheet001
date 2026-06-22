@@ -6675,10 +6675,36 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
     col_headers = {str(c.value).strip(): c.column - 1 for c in header_row if c.value}
     log.append(f"Sales columns found: {', '.join(col_headers.keys())}")
 
+    # FIX: Find the "Month" column index dynamically rather than
+    # hardcoding col 0 (col A). Spreadsheets like Sale___Purchase.xlsx
+    # have col A blank with "Month" in col B — hardcoding row[0] then
+    # causes every month name to be read as None, so sales_data ends up
+    # empty and the consolidated-column auto-detect fails with "Could not
+    # find sales data column" even though the data is perfectly present.
+    month_col_idx = 0  # default col A
+    for hdr, idx in col_headers.items():
+        if hdr.lower() in ('month', 'months', 'period'):
+            month_col_idx = idx
+            break
+
+    def _parse_sales_val(val):
+        """Parse a sales value that may be a float, int, or a
+        comma-formatted string like '60,26,09,168.43' (Indian number
+        format). Returns float or 0.0."""
+        if val is None:
+            return 0.0
+        if isinstance(val, (int, float)):
+            return float(val)
+        s = str(val).strip().replace(',', '')
+        try:
+            return float(s)
+        except (ValueError, TypeError):
+            return 0.0
+
     # Read month-wise sales data
     sales_data = {}
     for row in rows[header_idx + 1:]:
-        month_val = row[0].value
+        month_val = row[month_col_idx].value if len(row) > month_col_idx else None
         if month_val is None:
             continue
         ms = str(month_val).strip()
@@ -6689,8 +6715,8 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
             if hdr.lower() in ('month', 'months', 'period'):
                 continue
             try:
-                val = row[idx].value
-                sales_data[ms][hdr] = float(val) if val is not None else 0.0
+                val = row[idx].value if len(row) > idx else None
+                sales_data[ms][hdr] = _parse_sales_val(val)
             except:
                 sales_data[ms][hdr] = 0.0
 
