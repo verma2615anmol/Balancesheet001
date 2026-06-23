@@ -969,20 +969,23 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                                 )
                                 new_py_formula = translated
                         elif cy_f_text and "!" in cy_f_text:
-                            # FIX: cross-sheet range formulas like
-                            # =SUM('GROSS PROFIT'!B13:B17) — translate both
-                            # the start-cell AND range-end column letter for
-                            # every referenced sheet in shift_map.
+                            # Cross-sheet range formula translation — safe HERE
+                            # because BOTH PY and CY cells are formulas (py_has_formula=True).
+                            # When PY already has a formula, translating CY's formula
+                            # for it cannot introduce circular references that weren't
+                            # already present. This handles cases like:
+                            # CY D19 = =SUM('GROSS PROFIT'!B13:B17)
+                            # PY E19 = =SUM('GROSS PROFIT'!C13:C17)  ← translate to keep live
                             _xref_re2 = re.compile(
                                 r"(?:'([^']+)'|([A-Za-z][A-Za-z0-9_ ]*))"
                                 r"!\$?([A-Z]+)\$?(\d+)"
                                 r"(?::\$?([A-Z]+)\$?(\d+))?"
                             )
                             _srefs2 = _xref_re2.findall(cy_f_text)
-                            _bare_cy = bool(re.search(
+                            _bare_cy2 = bool(re.search(
                                 r'(?<![!A-Za-z0-9_])' + re.escape(cy_l) + r'\d+\b', cy_f_text
                             ))
-                            if _srefs2 and not _bare_cy:
+                            if _srefs2 and not _bare_cy2:
                                 _safe2 = True
                                 _trans2 = cy_f_text
                                 for _s1, _s2, _rc, _rr, _rc2, _rr2 in _srefs2:
@@ -1012,6 +1015,13 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                                             )
                                 if _safe2:
                                     new_py_formula = _trans2
+                        # The correct behaviour for this path is: write the CY
+                        # VALUE (the plain number) to the PY cell, exactly like
+                        # any other CY-constant → PY-value shift. The cross-sheet
+                        # formula translation is only applied when BOTH CY and PY
+                        # cells are already formulas (the 'if py_has_formula and
+                        # rn in frows' branch above), where we can safely translate
+                        # the formula range without risk of introducing circularity.
 
                         if new_py_formula:
                             changes[ref] = ("set_f", (new_py_formula, _fmt_num(vals[rn])))
@@ -1064,60 +1074,15 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                                 new_py_formula2 = re.sub(
                                     rf'\b{cy_l}(\d+)\b', rf'{py_l}\1', cy_f_text
                                 )
-                        elif cy_f_text and "!" in cy_f_text:
-                            # Cross-sheet reference(s), e.g. "=Details!D60"
-                            # or "=SUM('GROSS PROFIT'!B13:B17)".
-                            # FIX: the previous regex matched only single-cell
-                            # refs (Sheet!ColRow) and missed the range-end
-                            # cell in SUM('GROSS PROFIT'!B13:B17) — it
-                            # captured B13 but never B17, so the translated
-                            # formula became SUM('GROSS PROFIT'!C13:B17)
-                            # which Excel evaluates as 0.
-                            _xref_re = re.compile(
-                                r"(?:'([^']+)'|([A-Za-z][A-Za-z0-9_ ]*))"
-                                r"!\$?([A-Z]+)\$?(\d+)"
-                                r"(?::\$?([A-Z]+)\$?(\d+))?"
-                            )
-                            sheet_refs = _xref_re.findall(cy_f_text)
-                            has_bare_cy_ref = bool(re.search(
-                                r'(?<![!A-Za-z0-9_])' + re.escape(cy_l) + r'\d+\b', cy_f_text
-                            ))
-                            if sheet_refs and not has_bare_cy_ref:
-                                safe = True
-                                translated2 = cy_f_text
-                                for sh1, sh2, rcol, rrow, rcol2, rrow2 in sheet_refs:
-                                    ref_sheet2 = (sh1 or sh2).strip()
-                                    # Translate the start-cell column
-                                    target_py_col = None
-                                    for c4, p4 in (shift_map or {}).get(ref_sheet2, []):
-                                        if c4 == rcol:
-                                            target_py_col = p4
-                                            break
-                                    if not target_py_col:
-                                        safe = False
-                                        break
-                                    translated2 = re.sub(
-                                        rf'\b{re.escape(rcol)}{rrow}\b',
-                                        f"{target_py_col}{rrow}",
-                                        translated2,
-                                        count=1
-                                    )
-                                    # Translate the range-end column if present
-                                    if rcol2 and rrow2:
-                                        target_py_col2 = None
-                                        for c4, p4 in (shift_map or {}).get(ref_sheet2, []):
-                                            if c4 == rcol2:
-                                                target_py_col2 = p4
-                                                break
-                                        if target_py_col2:
-                                            translated2 = re.sub(
-                                                rf':{re.escape(rcol2)}{rrow2}\b',
-                                                f":{target_py_col2}{rrow2}",
-                                                translated2,
-                                                count=1
-                                            )
-                                if safe:
-                                    new_py_formula2 = translated2
+                        # NOTE: cross-sheet formula translation is intentionally
+                        # omitted here. When CY has a cross-sheet formula (e.g.
+                        # ='GROSS PROFIT'!F15) and PY has no formula at all (it
+                        # was a plain number), translating the formula creates
+                        # circular references — e.g. notes to p&l!E23 (plain
+                        # 1485500) translated to ='GROSS PROFIT'!G15, while G15
+                        # already = ='notes to p&l'!E23. Writing the CY VALUE
+                        # as a plain number to the PY cell is the correct and
+                        # safe behaviour here.
 
                         if new_py_formula2:
                             changes[ref] = ("set_f", (new_py_formula2, _fmt_num(vals[rn])))
