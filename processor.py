@@ -506,7 +506,11 @@ def _scan_workbook(filepath: str, closing_year: int) -> tuple:
                 file_sizes[fn] = (0, 0)
 
     sizes = {sn: file_sizes.get(sf, (0, 0)) for sn, sf in smap.items()}
-    big_names = {n for n, (r, c) in sizes.items() if r > BIG_ROWS or c > BIG_COLS}
+    # FIX: sheets with ghost-formatting on entire rows report dimension
+    # "A1:XFD73" (col 16383) even though they only have ~10 data columns.
+    # Never exclude a sheet purely on column count — financial templates
+    # legitimately have at most ~50 columns. Only exclude by ROW count.
+    big_names = {n for n, (r, c) in sizes.items() if r > BIG_ROWS}
 
     # ── Step 2: extract formula-cell refs directly from ZIP XML (regex, no ET)
     #    formula_refs[sheet_file] = set of "ColRow" refs like {"E5","E12"}
@@ -1642,7 +1646,28 @@ def process(input_path: str, output_path: str,
 
     # ── Single-pass scan ──────────────────────────────────────────────────────
     sizes, shift_map, cy_values, cy_formulas, cap_data = _scan_workbook(input_path, closing_year)
-    big_names = {n for n, (r, c) in sizes.items() if r > BIG_ROWS or c > BIG_COLS}
+
+    # FIX: same ghost-column issue as in _scan_workbook — use shift_map
+    # (which was built from actual data detection) as the authority on whether
+    # a sheet truly has large column count vs just bloated row formatting.
+    def _effective_big(n, r, c):
+        if r > BIG_ROWS:
+            return True
+        if c > BIG_COLS:
+            # If shift_map has this sheet and only found cols ≤ BIG_COLS,
+            # the large column count is ghost formatting — not actually big.
+            sm_pairs = shift_map.get(n, [])
+            if sm_pairs:
+                from openpyxl.utils import column_index_from_string
+                max_sm_col = max(
+                    column_index_from_string(col)
+                    for pair in sm_pairs for col in pair
+                )
+                return max_sm_col > BIG_COLS
+            return True  # no shift_map entry → treat as big (conservative)
+        return False
+
+    big_names = {n for n, (r, c) in sizes.items() if _effective_big(n, r, c)}
 
     # Pre-compute which cellXfs style indices use a date/time number format,
     # so PY cells with leftover date-formatted (but empty) styles don't render
