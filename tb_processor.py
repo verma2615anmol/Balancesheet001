@@ -2830,26 +2830,57 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         f"no spare row anywhere in Details sheet — not placed at all"
                     )
 
-        # Trade Receivables D74:D90 (auto-extending if section is full)
+        # Trade Receivables — auto-detect section bounds (not hardcoded rows)
         receivable_accounts = [a for a in individual_accounts
                                if a.get("bs_head") == "trade_rec"
                                and abs(a.get("net", 0)) > 0]
         recv_written = set()
-        recv_end_row = 90  # max row for debtors section
+
+        # FIX: the section start was hardcoded to row 74, but different
+        # templates place the debtor data rows at different row numbers
+        # (e.g. Chadha Sons starts at row 63). Hardcoding caused rows
+        # 63-73 to be skipped entirely, so debtors Aazim/Aijaj etc.
+        # never matched their template rows and fell to the overflow
+        # insert path — duplicating them at rows 91-92 in addition to
+        # their correctly-named rows at 63-64.
+        # Now: scan the Details sheet to find the "TRADE RECEIVABLE"
+        # section header, then use the first data row below it as the
+        # scan start, and the TOTAL row as the scan end.
+        _recv_section_start = 74  # safe fallback
+        _recv_total_row = None
+        for _sr in range(50, 200):
+            _lbl = str(ws_det.cell(_sr, 1).value or ws_det.cell(_sr, 2).value or "").lower()
+            if "trade receivable" in _lbl or "trade rec" in _lbl:
+                _recv_section_start = _sr + 2  # skip header + PARTICULARS row
+            if _recv_total_row is None and _sr > _recv_section_start and (
+                    "total" in _lbl or "sum" in str(ws_det.cell(_sr, 4).value or "").lower()):
+                _recv_total_row = _sr
+                break
+        recv_end_row = (_recv_total_row - 1) if _recv_total_row else 90
 
         for acct in receivable_accounts:
             placed = False
             # First try to match by name
-            for r in range(74, recv_end_row + 1):
+            for r in range(_recv_section_start, recv_end_row + 1):
                 b = det_cache.get((r, 2))
                 if b and _fuzzy_match_name(acct["name"], str(b)) and r not in recv_written:
                     if _safe_write(ws_det, r, 4, abs(acct["net"])):
                         injected.append(f"Details!D{r} ({acct['name']}) = {abs(acct['net']):,.2f}")
                         recv_written.add(r); placed = True
+                    else:
+                        # Cell already non-zero (template pre-populated).
+                        # If the existing value matches the TB amount (same
+                        # person, same year), treat as already placed so we
+                        # don't duplicate via overflow insert.
+                        existing = ws_det.cell(r, 4).value
+                        if existing is not None and abs(float(existing or 0) - abs(acct["net"])) < 1:
+                            recv_written.add(r); placed = True
+                            injected.append(f"Details!D{r} ({acct['name']}) already = {existing} ✓")
+                        # Either way, stop scanning — name was matched here
                     break
             if not placed:
                 # Try first empty row
-                for r in range(74, recv_end_row + 1):
+                for r in range(_recv_section_start, recv_end_row + 1):
                     if det_cache.get((r, 4)) is None and det_cache.get((r, 2)) is None and r not in recv_written:
                         _safe_write(ws_det, r, 2, acct["name"])
                         if _safe_write(ws_det, r, 4, abs(acct["net"])):
@@ -3016,7 +3047,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         # They appear in the same row range as trade receivables (advances section)
         for acct in adv_to_supplier:
             placed = False
-            for r in range(74, 90):
+            for r in range(_recv_section_start, recv_end_row + 1):
                 b = det_cache.get((r, 2))
                 if b and _fuzzy_match_name(acct["name"], str(b)) and r not in recv_written:
                     if _safe_write(ws_det, r, 4, abs(acct["net"])):
@@ -3024,7 +3055,7 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         recv_written.add(r); placed = True
                     break
             if not placed:
-                for r in range(74, 90):
+                for r in range(_recv_section_start, recv_end_row + 1):
                     if det_cache.get((r, 4)) is None and det_cache.get((r, 2)) is None and r not in recv_written:
                         _safe_write(ws_det, r, 2, acct["name"])
                         if _safe_write(ws_det, r, 4, abs(acct["net"])):
@@ -3770,6 +3801,29 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                     f"accounts totalling {_total:,.2f})"
                                 )
                                 unmatched_purch = []  # all handled
+
+                    # FIX: skip appending if the template's purchase sub-rows
+                    # already contain the same total amount (template contaminated
+                    # with previous-year data). Common case: "PURCHASE ACCOUNTS"
+                    # (group-level total account, normalized empty name → unmatched)
+                    # when the template already has "Purchase Local GST 5%" = same
+                    # amount from the prior year — appending would write it twice.
+                    if unmatched_purch and purch_label_rows:
+                        _existing_total = sum(
+                            abs(ws_gp.cell(r, 2).value or 0)
+                            for r, _ in purch_label_rows.values()
+                            if isinstance(ws_gp.cell(r, 2).value, (int, float))
+                        )
+                        _unmatched_total = sum(abs(a["net"]) for a in unmatched_purch)
+                        if _existing_total > 0 and abs(_existing_total - _unmatched_total) < 1:
+                            # Template already has this total — skip to avoid doubling
+                            for a in unmatched_purch:
+                                _gp_handled_purch_ids.add(id(a))
+                                skipped.append(
+                                    f"purch '{a['name']}': template already has {_existing_total:,.2f} "
+                                    f"in existing sub-rows — skipping to prevent doubling"
+                                )
+                            unmatched_purch = []
 
                     for acct in unmatched_purch:
                         if next_row in purch_total_rows:
