@@ -2952,7 +2952,7 @@ function computeForRegime(isNew) {
   totalSurcharge   = surchargeNormal + surchargeSpecial;
 
   // Marginal relief: proper formula — if tax+surcharge exceeds tax-at-threshold + excess income
-  const slabs = isNew ? c.newSlabs : getOldSlabs();
+  // Note: 'slabs' is already declared above via const slabs = isNew ? c.newSlabs : getOldSlabs()
   const mrResult = calcMarginalRelief(normalTax, totalSpecialTax, totalIncome, totalSurcharge, slabs, isNew);
   const marginalRelief = mrResult.relief;
   const marginalReliefDetail = mrResult.detail;
