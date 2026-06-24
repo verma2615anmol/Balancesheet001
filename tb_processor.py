@@ -1487,7 +1487,25 @@ def _classify_single(name, net_amount, group=None):
     if (group_lower and group_lower in GROUP_HEAD_MAP
             and group_lower not in _GENERIC_BARE_GROUPS):
         group_head = GROUP_HEAD_MAP[group_lower]
-        return group_head, "high"
+        # FIX: guard against the TB parser mis-assigning a group header
+        # as the last sub-account of the previous group.  Common case:
+        # "PURCHASE ACCOUNTS" (row immediately after the SALES ACCOUNTS
+        # Total row) gets group='SALES ACCOUNTS' → revenue, even though
+        # its own name and sign both scream purchases.
+        # If the derived group_head disagrees with what the account name
+        # directly maps to in GROUP_HEAD_MAP, and the name's own
+        # GROUP_HEAD_MAP entry exists, trust the name.
+        name_head = GROUP_HEAD_MAP.get(name_lower)
+        if name_head and name_head != group_head:
+            return name_head, "high"
+        # Also apply a sign sanity check: revenue accounts should have a
+        # credit balance (net < 0).  A debit-balance account classified
+        # as revenue via its group is almost certainly a mis-assigned row.
+        if group_head == "revenue" and net_amount > 0:
+            # Re-classify using name keywords instead
+            pass  # fall through to name-based classification below
+        else:
+            return group_head, "high"
 
     # Step 2: Try each head in priority order by name
     for head_key in CLASSIFICATION_PRIORITY:
@@ -2464,7 +2482,9 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                   if w.isdigit() or w in ("cc", "od")]
                 generic_words  = [w for w in a_name_l.split()
                                   if len(w) > 3 and w not in
-                                  {"bank","a/c","ltd","pvt","the","current"}
+                                  {"bank","a/c","ltd","pvt","the","current",
+                                   "assets","accounts","balance","balances",
+                                   "hand","cash","account","other","total"}
                                   and w not in specific_words]
                 matched_row = None
                 # Pass 1: specific words only
@@ -4872,6 +4892,25 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 f_val = _bs.cell(r, 6).value
                 if e_val is not None or f_val is not None:
                     continue  # already has something — don't touch
+                # FIX: skip if the immediately following rows (within 5)
+                # already carry E/F formulas that cover the same section.
+                # Example: bs row 16 "Trade Payables" has Note 4 and E16=None,
+                # but rows 17 (MSME) and 18 (non-MSME) already have E17/E18
+                # formulas that appear in the =SUM(E12:E20) total. Writing
+                # E16 here would count Trade Payables twice in that sum.
+                has_sub_formulas = False
+                for sub_r in range(r + 1, min(r + 6, _bs.max_row + 1)):
+                    sub_note = _bs.cell(sub_r, 4).value
+                    sub_e = _bs.cell(sub_r, 5).value
+                    # If a sub-row has a Note number (different section starts)
+                    # or a label in col B (next header), stop scanning
+                    if isinstance(sub_note, (int, float)) and sub_note != note_no:
+                        break
+                    if sub_e is not None and isinstance(sub_e, str) and sub_e.startswith('='):
+                        has_sub_formulas = True
+                        break
+                if has_sub_formulas:
+                    continue  # sub-rows already handle this — don't write header row
                 total_row = note_total_rows.get(int(note_no))
                 if total_row:
                     _bs.cell(r, 5).value = f"='notes to bs'!D{total_row}"
