@@ -2547,35 +2547,53 @@ function calcSurcharge(tax, totalIncome, isNewRegime) {
 }
 
 // Compute marginal relief separately so it can be shown in detail
-function calcMarginalRelief(normalTax, specialTax, totalIncome, surcharge, slabs, isNew) {
-  const thresholds = [5000000, 10000000, 20000000, 50000000];
-  let relief = 0;
-  let reliefDetail = { applies: false, threshold: 0, taxAtTh: 0, excess: 0, maxAllowed: 0, actualWithSurcharge: 0 };
+function calcMarginalRelief(normalTax, specialTax, totalIncome, surcharge, slabs, isNew, normalTaxable) {
+  // Marginal relief: ensures that crossing a surcharge threshold doesn't leave
+  // the taxpayer worse off than if they had earned just at the threshold.
+  //
+  // Standard ICAI formula for each threshold boundary T:
+  //   maxAllowed = (taxAtT + lowerSurchargeAtT) + (actualIncome - T)
+  //   where taxAtT = slab_tax_on_(T - specialIncomeGross) + specialTax
+  //         lowerSurchargeAtT = taxAtT × rateBelow (rate that applied just below T)
+  //   relief = max(0, actualTaxPlusSurcharge - maxAllowed)
+  //
+  // specialIncomeGross = gross LTCG + STCG income (kept constant at threshold)
+  const specialIncomeGross = totalIncome - (normalTaxable !== undefined ? normalTaxable : 0);
 
-  const totalBaseTax = normalTax + specialTax;
-  const totalWithSurcharge = totalBaseTax + surcharge;
+  // Surcharge rates: {threshold: rate_BELOW_this_threshold}
+  const lowerRates = {5000000: 0, 10000000: 0.10, 20000000: 0.15, 50000000: 0.25};
+  const thresholds  = [5000000, 10000000, 20000000, 50000000];
+
+  const totalBaseTax        = normalTax + specialTax;
+  const totalWithSurcharge  = totalBaseTax + surcharge;
+
+  let relief      = 0;
+  let reliefDetail = { applies: false, threshold: 0, taxAtTh: 0, surchargeAtTh: 0, excess: 0, maxAllowed: 0, actualWithSurcharge: 0 };
 
   for (const th of thresholds) {
     if (totalIncome <= th) break;
-    const excess = totalIncome - th;
 
-    // Tax at threshold: slab tax on exactly the threshold
-    // (keep special rate income same — only reduce normal income proportionally)
-    const normalAtTh = Math.max(0, th - (totalIncome - normalTax / (totalBaseTax || 1) * totalIncome));
-    const slabsToUse = slabs || (isNew ? cfg().newSlabs : getOldSlabs());
-    const taxAtThNormal = calcSlabTax(Math.min(th, th), slabsToUse).tax;
-    const taxAtThSpecial = Math.min(specialTax, specialTax * (th / totalIncome));
-    const taxAtTh = taxAtThNormal + taxAtThSpecial;
+    const excess       = totalIncome - th;
+    const lowerRate    = lowerRates[th] || 0;
 
-    // Simplified standard formula: taxAtTh + excess income
-    // (i.e., person at threshold + all income above threshold is treated as income)
-    const maxAllowed = taxAtTh + excess;
+    // Normal income if total GTI were exactly at threshold (keep special income same)
+    const normalAtTh   = Math.max(0, th - specialIncomeGross);
+
+    // Tax at threshold
+    const taxAtThNormal  = calcSlabTax(normalAtTh, slabs).tax;
+    const taxAtTh        = taxAtThNormal + specialTax;          // special rate tax stays same
+
+    // Surcharge at the LOWER rate (rate applicable just below this threshold)
+    const surchargeAtTh  = taxAtTh * lowerRate;
+
+    // Maximum tax+surcharge the taxpayer should pay
+    const maxAllowed     = taxAtTh + surchargeAtTh + excess;
 
     if (totalWithSurcharge > maxAllowed) {
       const r = totalWithSurcharge - maxAllowed;
       if (r > relief) {
-        relief = r;
-        reliefDetail = { applies: true, threshold: th, taxAtTh, excess, maxAllowed, actualWithSurcharge: totalWithSurcharge };
+        relief       = r;
+        reliefDetail = { applies: true, threshold: th, taxAtTh, surchargeAtTh, excess, maxAllowed, actualWithSurcharge: totalWithSurcharge };
       }
     }
   }
@@ -2953,7 +2971,7 @@ function computeForRegime(isNew) {
 
   // Marginal relief: proper formula — if tax+surcharge exceeds tax-at-threshold + excess income
   // Note: 'slabs' is already declared above via const slabs = isNew ? c.newSlabs : getOldSlabs()
-  const mrResult = calcMarginalRelief(normalTax, totalSpecialTax, totalIncome, totalSurcharge, slabs, isNew);
+  const mrResult = calcMarginalRelief(normalTax, totalSpecialTax, totalIncome, totalSurcharge, slabs, isNew, normalTaxable);
   const marginalRelief = mrResult.relief;
   const marginalReliefDetail = mrResult.detail;
   totalSurcharge = Math.max(0, totalSurcharge - marginalRelief);
@@ -3060,34 +3078,35 @@ function renderResult(r) {
   h += row('Total Tax Liability', fmt(r.totalTax), 'total');
 
   // Detailed explanation section
+  const _baseTax = (r.normalTaxAfterRebate||0) + (r.totalSpecialTax||0);
+  const _surchargeGross = (r.surchargeNormal||0) + (r.surchargeSpecial||0);
+  const _mrAmt = r.marginalRelief||0;
+  const _mrd = r.marginalReliefDetail||{};
   h += `<div style="margin-top:12px">
-    <button onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';this.textContent=this.textContent.includes('▶')?'▼ Hide Detailed Explanation':'▶ Show Detailed Explanation'"
+    <button onclick="var d=this.nextElementSibling;d.style.display=d.style.display==='none'?'block':'none';this.textContent=d.style.display==='block'?'▼ Hide Details':'▶ Show Detailed Explanation'"
       style="background:none;border:1px solid var(--brand);color:var(--brand);border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer;width:100%">▶ Show Detailed Explanation</button>
-    <div style="display:none;background:#F0F9FF;border-radius:8px;padding:12px;margin-top:6px;font-size:12px;line-height:1.7">
-      <b>📊 Step-by-step Tax Computation</b><br>
-      <br><b>1. Income Heads</b><br>
-      &nbsp;• Normal Income (Salary + Business + Other): ₹${fmt(r.normalTaxable)}<br>
-      ${r.taxSTCG111A ? `&nbsp;• STCG u/s 111A @ ${(r.c.stcg111aRate*100).toFixed(0)}%: ₹${fmt(r.stcg111a)}<br>` : ''}
-      ${r.taxLTCG112A ? `&nbsp;• LTCG u/s 112A (taxable after ₹${(r.c.ltcg112aExempt/100000).toFixed(2)}L exemption): ₹${fmt(r.ltcg112a - r.ltcg112aExemptAmt)}<br>` : ''}
-      ${r.taxLTCGOther ? `&nbsp;• LTCG — Other: ₹${fmt(r.ltcgOther)}<br>` : ''}
-      &nbsp;• <b>Gross Total Income: ₹${fmt(r.totalIncome)}</b><br>
-      <br><b>2. Base Tax</b><br>
-      &nbsp;• Normal slab tax: ₹${fmt(r.normalTaxAfterRebate)}<br>
-      ${r.rebate87a ? `&nbsp;• Less: Rebate u/s 87A: −₹${fmt(r.rebate87a)}<br>` : ''}
-      ${r.taxSTCG111A ? `&nbsp;• Tax on STCG @ ${(r.c.stcg111aRate*100).toFixed(0)}%: ₹${fmt(r.taxSTCG111A)}<br>` : ''}
-      ${r.taxLTCG112A ? `&nbsp;• Tax on LTCG 112A @ ${(r.c.ltcg112aRate*100).toFixed(1)}%: ₹${fmt(r.taxLTCG112A)}<br>` : ''}
-      ${r.taxLTCGOther ? `&nbsp;• Tax on LTCG Other @ ${(r.c.ltcgOtherRate*100).toFixed(1)}%: ₹${fmt(r.taxLTCGOther)}<br>` : ''}
-      &nbsp;• <b>Total base tax: ₹${fmt((r.normalTaxAfterRebate||0)+(r.totalSpecialTax||0))}</b><br>
-      <br><b>3. Surcharge</b><br>
-      &nbsp;• GTI = ₹${fmt(r.totalIncome)} → ${r.totalIncome>50000000?'> ₹5Cr (25%/37%)':r.totalIncome>20000000?'> ₹2Cr (25%)':r.totalIncome>10000000?'> ₹1Cr (15%)':r.totalIncome>5000000?'> ₹50L (10%)':'≤ ₹50L (Nil)'}<br>
-      &nbsp;• Surcharge on normal tax: ₹${fmt(r.surchargeNormal)}<br>
-      ${r.surchargeSpecial ? `&nbsp;• Surcharge on capital gains (capped @ 15%): ₹${fmt(r.surchargeSpecial)}<br>` : ''}
-      &nbsp;• <b>Total surcharge: ₹${fmt((r.surchargeNormal||0)+(r.surchargeSpecial||0))}</b><br>
-      ${r.marginalRelief > 0 ? `&nbsp;• Less: Marginal Relief = ₹${fmt(r.marginalRelief)}<br>&nbsp;&nbsp;&nbsp;(Tax+Surcharge ₹${fmt(r.marginalReliefDetail.actualWithSurcharge)} > Max allowed ₹${fmt(r.marginalReliefDetail.maxAllowed)})` : `&nbsp;• Marginal Relief: <b>₹0 (not applicable)</b><br>&nbsp;&nbsp;&nbsp;Tax+Surcharge ≪ Tax at threshold + excess — no relief needed`}<br>
-      &nbsp;• <b>Net surcharge after relief: ₹${fmt(r.totalSurcharge)}</b><br>
-      <br><b>4. Health & Education Cess</b><br>
-      &nbsp;• 4% of (base tax + surcharge) = 4% × ₹${fmt((r.normalTaxAfterRebate||0)+(r.totalSpecialTax||0)+(r.totalSurcharge||0))} = ₹${fmt(r.cess)}<br>
-      <br><b>5. Total Tax Liability = ₹${fmt(r.totalTax)}</b>
+    <div style="display:none;background:#F0F9FF;border-radius:8px;padding:12px;margin-top:6px;font-size:12px;line-height:1.8">
+      <b>📊 Step-by-step Tax Computation</b><br><br>
+      <b>1. Income &amp; Base Tax</b><br>
+      &nbsp;• Normal Taxable Income: ₹${fmt(r.normalTaxable||0)}<br>
+      &nbsp;• Gross Total Income (GTI): ₹${fmt(r.totalIncome||0)}<br>
+      &nbsp;• Normal slab tax: ₹${fmt(r.normalTaxAfterRebate||0)}${r.rebate87a ? ' (after 87A rebate)' : ''}<br>
+      ${(r.totalSpecialTax||0) > 0 ? `&nbsp;• Capital gains tax (special rate): ₹${fmt(r.totalSpecialTax)}<br>` : ''}
+      &nbsp;• <b>Total base tax: ₹${fmt(_baseTax)}</b><br><br>
+      <b>2. Surcharge</b><br>
+      &nbsp;• GTI ₹${fmt(r.totalIncome||0)} → surcharge bracket: ${(r.totalIncome||0)>50000000?'> ₹5Cr':(r.totalIncome||0)>20000000?'> ₹2Cr':(r.totalIncome||0)>10000000?'> ₹1Cr':(r.totalIncome||0)>5000000?'> ₹50L':'≤ ₹50L (Nil)'}<br>
+      &nbsp;• Gross surcharge: ₹${fmt(_surchargeGross)}<br>
+      ${_mrAmt > 0 ?
+        `&nbsp;• <span style="color:#059669"><b>Marginal Relief applies! ₹${fmt(_mrAmt)}</b></span><br>
+      &nbsp;&nbsp;&nbsp;Actual tax+surcharge (₹${fmt(_mrd.actualWithSurcharge||0)}) &gt; Max allowed (₹${fmt(_mrd.maxAllowed||0)}) by ₹${fmt(_mrAmt)}<br>
+      &nbsp;&nbsp;&nbsp;Max allowed = Tax at ₹${fmt(_mrd.threshold||0)} threshold (₹${fmt((_mrd.taxAtTh||0)+(_mrd.surchargeAtTh||0))}) + Excess ₹${fmt(_mrd.excess||0)}`
+        :
+        `&nbsp;• Marginal Relief: <b>₹0 — not applicable</b><br>
+      &nbsp;&nbsp;&nbsp;(Excess income above threshold >> surcharge amount)`}<br>
+      &nbsp;• <b>Net surcharge: ₹${fmt(r.totalSurcharge||0)}</b><br><br>
+      <b>3. Health &amp; Education Cess @ 4%</b><br>
+      &nbsp;• 4% × ₹${fmt(_baseTax + (r.totalSurcharge||0))} = <b>₹${fmt(r.cess||0)}</b><br><br>
+      <b>4. Total Tax Liability = ₹${fmt(r.totalTax||0)}</b>
     </div>
   </div>`;
 
