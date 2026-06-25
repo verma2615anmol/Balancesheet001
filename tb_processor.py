@@ -1899,7 +1899,14 @@ def _fuzzy_match_name(tb_name, template_name):
                     # each other.
                     'products', 'store', 'stores', 'traders', 'corporation',
                     'international', 'company', 'industry', 'general',
-                    'national', 'private', 'limited', 'agency', 'agencies'}
+                    'national', 'private', 'limited', 'agency', 'agencies',
+                    # Textile/garment industry generics — every second account
+                    # name ends with one of these, so they are NOT distinctive.
+                    'knitwears', 'knitwear', 'knit', 'garments', 'garment',
+                    'readymade', 'hosiery', 'collection', 'collections',
+                    'wool', 'woollen', 'fab', 'fabs', 'impex', 'trendz',
+                    'house', 'super', 'bazar', 'bazaar', 'shop', 'centre',
+                    'center', 'emporium', 'imporium'}
     if len(a) >= 6 and len(b) >= 6:
         shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
         if shorter in longer:
@@ -2753,11 +2760,23 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 if row not in written_rows and _fuzzy_match_name(acct["name"], tmpl_name):
                     best_row = row; break
             if best_row:
-                if _safe_write(ws_det, best_row, 4, abs(acct["net"])):
+                # FIX: use direct write (not _safe_write) for name-matched
+                # creditor rows. The template may have old-year values at
+                # these rows (contaminated template). _safe_write would block
+                # because the cell is non-zero, leaving the wrong value.
+                # Since we explicitly matched this account to this row by
+                # name, we should always overwrite with the new TB value.
+                cell = ws_det.cell(best_row, 4)
+                from openpyxl.cell.cell import MergedCell
+                if isinstance(cell, MergedCell):
+                    skipped.append(f"Details!D{best_row} ({acct['name']}): cell is merged")
+                else:
+                    cell.value = abs(acct["net"])
+                    # Ensure numeric format (prevent date-formatted cells)
+                    if cell.number_format and 'y' in cell.number_format.lower():
+                        cell.number_format = '#,##0.00'
                     injected.append(f"Details!D{best_row} ({acct['name']}) = {abs(acct['net']):,.2f}")
                     written_rows.add(best_row)
-                else:
-                    skipped.append(f"Details!D{best_row} ({acct['name']}): cell is merged/formula")
             else:
                 unmatched_creditors.append(acct)
 
@@ -2770,6 +2789,14 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             if i < len(blank_rows):
                 r = blank_rows[i]
                 wrote_name = _safe_write(ws_det, r, 2, acct["name"])
+                cell_d = ws_det.cell(r, 4)
+                # FIX: reset date format on cells that have date formatting
+                # (e.g. row 36 which was created by a previous insert_rows
+                # and inherited date format) — 100002 would display as 2173
+                if hasattr(cell_d, 'number_format') and cell_d.number_format:
+                    fmt = cell_d.number_format.lower()
+                    if 'y' in fmt or 'd' in fmt or 'm' in fmt:
+                        cell_d.number_format = '#,##0.00'
                 wrote_amt  = _safe_write(ws_det, r, 4, abs(acct["net"]))
                 if wrote_amt:
                     injected.append(f"Details!D{r} (new: {acct['name']}) = {abs(acct['net']):,.2f}")
@@ -2904,11 +2931,24 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         # Either way, stop scanning — name was matched here
                     break
             if not placed:
-                # Try first empty row
+                # Try first empty row — treat whitespace-only cells as empty
+                # (templates often have B94=' ' as a visual spacer before TOTAL)
                 for r in range(_recv_section_start, recv_end_row + 1):
-                    if det_cache.get((r, 4)) is None and det_cache.get((r, 2)) is None and r not in recv_written:
+                    b_raw = det_cache.get((r, 2))
+                    b_empty = (b_raw is None or str(b_raw).strip() == "")
+                    if b_empty and det_cache.get((r, 4)) is None and r not in recv_written:
+                        if b_empty and b_raw is not None:
+                            ws_det.cell(r, 2).value = None  # clear the space
                         _safe_write(ws_det, r, 2, acct["name"])
                         if _safe_write(ws_det, r, 4, abs(acct["net"])):
+                            # FIX: if the TOTAL formula (at recv_end_row+1 or
+                            # _recv_total_row) used a hardcoded upper bound
+                            # like =SUM(D63:D93), it won't include this newly
+                            # written spacer row. Extend it to include r.
+                            _total_r = (_recv_total_row or recv_end_row + 1)
+                            _total_f = ws_det.cell(_total_r, 4).value
+                            if isinstance(_total_f, str) and _total_f.startswith("=SUM(") and f":D{r - 1})" in _total_f:
+                                ws_det.cell(_total_r, 4).value = _total_f.replace(f":D{r - 1})", f":D{r})")
                             injected.append(f"Details!D{r} (recv: {acct['name']}) = {abs(acct['net']):,.2f}")
                             recv_written.add(r); placed = True
                         break
@@ -2924,6 +2964,15 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     # Update det_cache for new row
                     det_cache[(recv_end_row, 2)] = acct["name"]
                     det_cache[(recv_end_row, 4)] = abs(acct["net"])
+
+                    # FIX (openpyxl shared-formula bug): insert_rows shifts
+                    # cell positions but the =SUM formula in the TOTAL row
+                    # uses a shared-formula reference which openpyxl drops on
+                    # save/reload. Explicitly re-write the total formula AFTER
+                    # the repair loop (see below) so it includes the newly
+                    # inserted row without the repair loop making it circular.
+                    _pending_total_row   = recv_end_row + 1
+                    _pending_total_start = _recv_section_start
 
                     # FIX: insert_rows() above only shifted cell positions
                     # WITHIN the Details sheet — it does not rewrite formula
@@ -3011,6 +3060,13 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 except Exception as e:
                     skipped.append(f"recv '{acct['name']}': insert failed: {e}")
 
+        # Apply deferred TOTAL formula (set after formula repair so the
+        # repair loop doesn't touch it and make it circular)
+        if '_pending_total_row' in dir():
+            _new_sum = f"=SUM(D{_pending_total_start}:D{recv_end_row})"
+            ws_det.cell(_pending_total_row, 4).value = _new_sum
+            injected.append(f"Details!D{_pending_total_row} TOTAL formula set: {_new_sum}")
+
         # ── FIX: repair notes to bs Trade Receivables formula ───────────
         # The template's "notes to bs" Trade Receivables section often
         # hardcodes single-cell references like ='Details'!D186 instead
@@ -3067,25 +3123,48 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         # Do NOT also write to Details D7-D12 — that would double-count because
         # notes to bs!D16 = =Details!D9 (formula), creating a second entry.
 
-        # ── Advance to Suppliers (debit-balance creditors) → Details D74:D90 ──
-        # These creditors had a debit balance in TB → reclassified to stla
-        # They appear in the same row range as trade receivables (advances section)
+        # ── Advance to Suppliers (debit-balance creditors) ───────────────────
+        # Detect the ADVANCE TO SUPPLIERS section in Details dynamically
+        # (it sits BELOW the trade receivables total, not inside it)
+        _adv_supp_start = None
+        _adv_supp_end   = None
+        for _sr2 in range(_recv_total_row or 95, 200):
+            _lbl2 = str(ws_det.cell(_sr2, 1).value or "").lower()
+            if "advance to s" in _lbl2 or "adv.*supp" in _lbl2 or "advance.*supplier" in _lbl2:
+                _adv_supp_start = _sr2 + 1
+            if _adv_supp_start and _sr2 > _adv_supp_start and ("total" in _lbl2 or ws_det.cell(_sr2, 4).value and str(ws_det.cell(_sr2, 4).value).startswith("=")):
+                _adv_supp_end = _sr2 - 1
+                break
+        if _adv_supp_start is None:
+            _adv_supp_start = recv_end_row + 3  # fallback: just after debtor section
+        if _adv_supp_end is None:
+            _adv_supp_end = _adv_supp_start + 10
+
         for acct in adv_to_supplier:
             placed = False
-            for r in range(_recv_section_start, recv_end_row + 1):
-                b = det_cache.get((r, 2))
+            # Name match in the advance to suppliers section
+            for r in range(_adv_supp_start, _adv_supp_end + 1):
+                b = ws_det.cell(r, 2).value
                 if b and _fuzzy_match_name(acct["name"], str(b)) and r not in recv_written:
-                    if _safe_write(ws_det, r, 4, abs(acct["net"])):
+                    # Direct write (same as creditor fix — templates have old values)
+                    cell = ws_det.cell(r, 4)
+                    from openpyxl.cell.cell import MergedCell
+                    if not isinstance(cell, MergedCell):
+                        cell.value = abs(acct["net"])
+                        if cell.number_format and 'y' in cell.number_format.lower():
+                            cell.number_format = '#,##0.00'
                         injected.append(f"Details!D{r} (adv-to-supplier: {acct['name']}) = {abs(acct['net']):,.2f}")
                         recv_written.add(r); placed = True
                     break
             if not placed:
-                for r in range(_recv_section_start, recv_end_row + 1):
-                    if det_cache.get((r, 4)) is None and det_cache.get((r, 2)) is None and r not in recv_written:
-                        _safe_write(ws_det, r, 2, acct["name"])
-                        if _safe_write(ws_det, r, 4, abs(acct["net"])):
-                            injected.append(f"Details!D{r} (adv-to-supplier new: {acct['name']}) = {abs(acct['net']):,.2f}")
-                            recv_written.add(r)
+                # Find empty row in advance to suppliers section
+                for r in range(_adv_supp_start, _adv_supp_end + 1):
+                    if ws_det.cell(r, 4).value is None and (ws_det.cell(r, 2).value is None or str(ws_det.cell(r, 2).value).strip() == "") and r not in recv_written:
+                        ws_det.cell(r, 2).value = acct["name"]
+                        ws_det.cell(r, 4).value = abs(acct["net"])
+                        injected.append(f"Details!D{r} (adv-to-supplier new: {acct['name']}) = {abs(acct['net']):,.2f}")
+                        recv_written.add(r)
+                        placed = True
                         break
 
         # ── Advance from Customers (credit-balance debtors) → OCL in notes to bs ──
@@ -3095,12 +3174,29 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                              if a.get("reclassified_from") == "trade_rec"]
         if adv_from_customer and "Details" in wb.sheetnames:
             ws_det_afc = wb["Details"]
+
+            # FIX: detect the ADVANCE FROM CUSTOMERS section boundaries
+            # dynamically instead of scanning the entire range 20-90.
+            # The old range included the SUNDRY CREDITORS rows (26-35),
+            # causing fuzzy-match hits there for accounts like Boon Knitwears
+            # vs R.K. Vikas Knitwears (both contain "knitwears"), which
+            # overwrote correctly-placed creditor values.
+            _afc_start, _afc_end = None, None
+            for _sr3 in range(1, 200):
+                _lbl3 = str(ws_det_afc.cell(_sr3, 1).value or "").lower()
+                if "advance from customer" in _lbl3:
+                    _afc_start = _sr3 + 1
+                if _afc_start and _sr3 > _afc_start:
+                    _lbl3b = str(ws_det_afc.cell(_sr3, 1).value or "").strip()
+                    if _lbl3b and _lbl3b.isupper() and len(_lbl3b) > 3 and "m/s" not in _lbl3b.lower():
+                        _afc_end = _sr3 - 1
+                        break
+            if _afc_start is None: _afc_start, _afc_end = 37, 57
+            if _afc_end is None:   _afc_end = _afc_start + 20
+
             for acct in adv_from_customer:
-                # Write to Details sheet "Advance from Customers" section
-                # by matching party name to existing template rows
-                name_l = acct["name"].lower()
                 placed = False
-                for r in range(20, 90):
+                for r in range(_afc_start, _afc_end + 1):
                     b = ws_det_afc.cell(r, 2).value
                     if b and _fuzzy_match_name(acct["name"], str(b)):
                         _safe_set(ws_det_afc, r, 4, abs(acct["net"]))
@@ -3108,18 +3204,15 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         placed = True
                         break
                 if not placed:
-                    # Find "Advance from Customers" section and write there
-                    for r in range(20, 90):
-                        b = ws_det_afc.cell(r, 2).value
-                        if b and "advance from customer" in str(b).lower():
-                            for rr in range(r+1, r+8):
-                                b2 = ws_det_afc.cell(rr, 2).value
-                                d2 = ws_det_afc.cell(rr, 4).value
-                                if (b2 is None or not str(b2).strip()) and (d2 is None or d2 == 0):
-                                    _safe_set(ws_det_afc, rr, 4, abs(acct["net"]))
-                                    injected.append(f"Details!D{rr} (adv-from-cust new: {acct['name']}) = {abs(acct['net']):,.2f}")
-                                    placed = True
-                                    break
+                    # Find first empty row in the advance from customers section
+                    for r in range(_afc_start, _afc_end + 1):
+                        b2 = ws_det_afc.cell(r, 2).value
+                        d2 = ws_det_afc.cell(r, 4).value
+                        if (b2 is None or not str(b2).strip()) and (d2 is None or d2 == 0):
+                            _safe_set(ws_det_afc, r, 2, acct["name"])
+                            _safe_set(ws_det_afc, r, 4, abs(acct["net"]))
+                            injected.append(f"Details!D{r} (adv-from-cust new: {acct['name']}) = {abs(acct['net']):,.2f}")
+                            placed = True
                             break
 
     # ────────────────────────────────────────────────────────────────
