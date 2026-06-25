@@ -1137,6 +1137,23 @@ def _detect_columns(rows, sheet_name):
             cr_val = row[cr_col] if cr_col < len(row) else None
             dr_amt = _to_float(dr_val)
             cr_amt = _to_float(cr_val)
+
+            # FIX: Some Tally exports (e.g. Chadha Sons Format 1) have the
+            # credit column header in col E but individual account credits
+            # are placed in col D (the column immediately after the debit
+            # column col C). The header-based auto-detection gives cr_col=E,
+            # but D is empty in the header so it's missed. As a result, all
+            # accounts whose credits sit in col D (creditors, unsecured loans,
+            # capital etc.) get net=0 and are silently dropped.
+            # Fix: if cr_col != dr_col+1 AND the row has a non-zero value in
+            # dr_col+1, use that as an additional credit amount.
+            alt_cr_col = dr_col + 1
+            if cr_col != alt_cr_col and alt_cr_col < len(row):
+                alt_cr_val = row[alt_cr_col]
+                alt_cr_amt = _to_float(alt_cr_val)
+                if alt_cr_amt != 0 and cr_amt == 0:
+                    cr_amt = alt_cr_amt   # use adjacent column as credit
+
             net_amt = dr_amt - cr_amt
         elif format_type == 4 and net_col is not None:
             # For hierarchical format: check BOTH debit and credit columns
@@ -2521,8 +2538,16 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     if r in written_bank_rows:
                         continue
                     lbl = (ws_n.cell(r, 2).value or "").strip().lower()
-                    if any(k in lbl for k in ["bank", "a/c"]) and "total" not in lbl \
-                            and "cash in hand" not in lbl and "cash on hand" not in lbl:
+                    col_a_val = str(ws_n.cell(r, 1).value or "").strip()
+                    # Skip: section headers (A/B/C letters in col A), totals,
+                    # "other bank balances" header rows, cash-in-hand rows
+                    if col_a_val in ("A", "B", "C", "D"):
+                        continue
+                    if not lbl or "total" in lbl or "cash in hand" in lbl \
+                            or "cash on hand" in lbl or lbl.startswith("other ") \
+                            or "other bank" in lbl or "bank balance" in lbl:
+                        continue
+                    if any(k in lbl for k in ["bank", "a/c"]):
                         d = ws_n.cell(r, 4).value
                         if d is None or d == 0:
                             ws_n.cell(r, 4).value = abs(acct["net"])
