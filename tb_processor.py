@@ -399,12 +399,10 @@ def parse_tb_pdf(pdf_path):
         group/section headers ("SUNDRY DEBTORS", "SECURED LOANS", …) which
         appear BETWEEN tables and are NOT inside the extracted tables.
 
-    The previous text-only parser inferred Dr/Cr from `current_group` alone,
-    which silently mis-classified accounts whose balance was on the OPPOSITE
-    side of their group's normal side (e.g. a debtor with a credit balance
-    was reported as Dr, breaking the "advance from customer" reclassification
-    downstream). The hybrid path keeps the natural sign and lets the existing
-    sign-aware reclassification logic move it to the right BS head.
+    Also handles Tally "Group-Wise" PDFs where pdfplumber merges multiple
+    account names into a single cell with \\n separators (common when the TB
+    has no ruling lines between rows on a page). In that case we split the
+    merged cell and zip names with amounts.
 
     Returns the same shape as detect_tb_structure for seamless integration.
     """
@@ -422,8 +420,8 @@ def parse_tb_pdf(pdf_path):
         "direct expenses", "indirect expenses",
         "indirect incomes", "indirect income",
         "direct incomes", "direct income",
-        "purchase account", "purchase accounts", "purchases",
-        "sales account", "sales accounts", "sales",
+        "purchase account", "purchase accounts", "purchases", "purchase",
+        "sales account", "sales accounts", "sales", "sale",
         "sundry creditors", "sundry debtors",
         "sundry payables", "sundry payable",
         "sundry receivables", "sundry receivable",
@@ -434,12 +432,19 @@ def parse_tb_pdf(pdf_path):
         "duties & taxes", "duties and taxes",
         "secured loans", "unsecured loans", "unsecure loans",
         "stock-in-hand", "stock in hand",
-        "investments",
+        "investments", "investment",
         "profit & loss account", "profit and loss account",
         "profit & loss a/c",
         "provisions", "reserves & surplus", "reserves and surplus",
         "misc. expenses (asset)", "miscellaneous expenses",
         "branch/divisions", "suspense a/c",
+        "expenses (indirect/admn.)", "expenses (indirect/admn)",
+        "expenses (direct/mfg.)", "expenses (direct/mfg)",
+        "income (indirect)", "income (direct/opr.)",
+        "revenue accounts", "profit & loss",
+        "provisions/expenses payable",
+        "securities & deposits (asset)",
+        "loans (liability)",
     }
 
     def _norm_header(line):
@@ -464,10 +469,188 @@ def parse_tb_pdf(pdf_path):
                   "debit amount", "credit amount",
                   "total", "grand total", "opening balance",
                   "closing balance", "balance c/d", "balance b/d",
-                  "sub total", "net total"}
+                  "sub total", "net total",
+                  "totals c/o", "totals b/d",
+                  "account/group name", "debit bal.", "credit bal."}
 
     accounts = []
     running_group = ""
+
+    # ── Detect Tally "merged-cell" Group-Wise PDF format ──────────────────
+    # This format (Penguin Packages style) has pdfplumber merging many accounts
+    # into single cells because the PDF has no ruling lines between rows.
+    # Cell [0] = names joined by \n, Cell [1] = debit amounts joined by \n,
+    # Cell [2] = credit amounts joined by \n (some cells are empty strings)
+    # Each PAGE has rows: [header, "Totals b/d", [merged data], ..., "Totals c/o"]
+    # We detect it by checking if any table cell in col 0 contains multiple \n-separated names
+    _is_merged_cell_format = False
+    try:
+        with pdfplumber.open(pdf_path) as _pdf_mc:
+            for _page_mc in _pdf_mc.pages[:2]:
+                _tables_mc = _page_mc.extract_tables() or []
+                for _tbl_mc in _tables_mc:
+                    for _row_mc in _tbl_mc:
+                        if _row_mc and _row_mc[0]:
+                            _cell0 = str(_row_mc[0] or "")
+                            if _cell0.count('\n') > 2:  # multiple accounts merged in one cell
+                                _is_merged_cell_format = True
+                                break
+                    if _is_merged_cell_format:
+                        break
+                if _is_merged_cell_format:
+                    break
+    except Exception:
+        pass
+
+    if _is_merged_cell_format:
+        # ── Merged-cell Tally PDF: combined text+table parser ──────────────
+        # Tally Group-Wise PDFs have no ruling lines between rows, so pdfplumber
+        # merges all account names on a page into one cell with \n separators.
+        # Strategy:
+        #   1. Walk TEXT LINES per page to track current_group (groups appear as
+        #      plain text lines with their name followed by a group subtotal amount)
+        #   2. Use the same text lines to assign each account to its group
+        #   3. Use TABLE CELLS to get the authoritative Dr/Cr split per account:
+        #      check whether the account's amount appears in col B (Dr) or col C (Cr)
+        import re as _re_mc
+
+        _NUM_RE_MC = _re_mc.compile(r'([\d,]+\.\d{2})')
+        _KNOWN_GROUPS_MC = {
+            "capital account", "reserves & surplus",
+            "current assets", "bank accounts", "cash-in-hand",
+            "loans & advances (asset)", "securities & deposits (asset)",
+            "stock-in-hand", "sundry debtors",
+            "current liabilities", "duties & taxes", "provisions/expenses payable",
+            "sundry creditors",
+            "fixed assets", "investments", "loans (liability)",
+            "bank o/d account", "secured loans", "unsecured loans",
+            "pre-operative expenses", "profit & loss", "revenue accounts",
+            "expenses (direct/mfg.)", "expenses (indirect/admn.)",
+            "income (direct/opr.)", "income (indirect)",
+            "purchase", "sale", "suspense account",
+        }
+        _SKIP_MC = {"totals c/o", "totals b/d", "grand total", "total",
+                    "account/group name", "debit bal.", "credit bal."}
+        _TITLE_RE_MC = _re_mc.compile(
+            r"^(page \d|penguin|ludhiana|gstin|e-1|trial balance|as on|all accounts)",
+            _re_mc.I
+        )
+
+        def _parse_merged_pdf(pdf_path_mc):
+            mc_accounts = []
+            seen_mc = set()
+            cur_grp = ""
+
+            try:
+                with pdfplumber.open(pdf_path_mc) as _pdf_m:
+                    for _page in _pdf_m.pages:
+                        _text = _page.extract_text() or ""
+                        _lines = [l.strip() for l in _text.split('\n') if l.strip()]
+                        _tables = _page.extract_tables() or []
+
+                        # Build name → group mapping by walking text lines in order
+                        _page_grp = cur_grp
+                        _line_grp = {}  # {name_lower: group}
+                        for _ln in _lines:
+                            if _TITLE_RE_MC.match(_ln.lower()): continue
+                            if any(_ln.lower().startswith(s) for s in ("totals", "grand total", "contd.")): continue
+                            _nm = _NUM_RE_MC.sub('', _ln).strip()
+                            if not _nm: continue
+                            _nml = _re_mc.sub(r"[\s\-:]+$", "", _nm.lower())
+                            if _nml in _KNOWN_GROUPS_MC:
+                                _page_grp = _nm.strip()
+                                continue
+                            _line_grp[_nm.lower().strip()] = _page_grp
+                        cur_grp = _page_grp  # carry across pages
+
+                        # Build flat set of Dr cell strings and Cr cell strings for quick lookup
+                        _all_dr_strs = set()
+                        _all_cr_strs = set()
+                        for _tbl in _tables:
+                            for _row in _tbl:
+                                if not _row or len(_row) < 3: continue
+                                _dr_raw = str(_row[1] or "")
+                                _cr_raw = str(_row[2] or "")
+                                for _v in _NUM_RE_MC.findall(_dr_raw):
+                                    _all_dr_strs.add(_v.replace(',',''))
+                                for _v in _NUM_RE_MC.findall(_cr_raw):
+                                    _all_cr_strs.add(_v.replace(',',''))
+
+                        # Walk text lines again to emit accounts with correct Dr/Cr
+                        _page_grp2 = list(_line_grp.values())[0] if _line_grp else cur_grp
+                        _cur_g2 = list(_line_grp.values())[0] if _line_grp else ""
+                        for _ln in _lines:
+                            if _TITLE_RE_MC.match(_ln.lower()): continue
+                            if any(_ln.lower().startswith(s) for s in ("totals", "grand total", "contd.")): continue
+                            _nm = _NUM_RE_MC.sub('', _ln).strip()
+                            if not _nm: continue
+                            _nml = _re_mc.sub(r"[\s\-:]+$", "", _nm.lower())
+                            if _nml in _KNOWN_GROUPS_MC:
+                                _cur_g2 = _nm.strip()
+                                continue
+                            _nums = _NUM_RE_MC.findall(_ln)
+                            if not _nums: continue
+                            _amt_str = _nums[0].replace(',', '')
+                            try:
+                                _amt = float(_amt_str)
+                            except ValueError:
+                                continue
+                            # Determine Dr or Cr by checking which table column this amount appears in
+                            if _amt_str in _all_dr_strs and _amt_str not in _all_cr_strs:
+                                _dr_v, _cr_v = _amt, 0.0
+                            elif _amt_str in _all_cr_strs and _amt_str not in _all_dr_strs:
+                                _dr_v, _cr_v = 0.0, _amt
+                            elif _amt_str in _all_dr_strs and _amt_str in _all_cr_strs:
+                                # Ambiguous: use group heuristic
+                                _cgl = _cur_g2.lower()
+                                _is_cr = any(kw in _cgl for kw in (
+                                    "capital","loan","liability","creditor","income","sale",
+                                    "payable","provision","surplus","unsecured","secured",
+                                ))
+                                _dr_v, _cr_v = (0.0, _amt) if _is_cr else (_amt, 0.0)
+                            else:
+                                # Amount not in any table cell directly — use group heuristic
+                                _cgl = _cur_g2.lower()
+                                _is_cr = any(kw in _cgl for kw in (
+                                    "capital","loan","liability","creditor","income","sale",
+                                    "payable","provision","surplus","unsecured","secured",
+                                ))
+                                _dr_v, _cr_v = (0.0, _amt) if _is_cr else (_amt, 0.0)
+
+                            _grp = _line_grp.get(_nm.lower().strip(), _cur_g2)
+                            _key = f"{_nm}_{_dr_v:.2f}_{_cr_v:.2f}"
+                            if _key not in seen_mc:
+                                seen_mc.add(_key)
+                                mc_accounts.append({
+                                    "row": len(mc_accounts),
+                                    "key": f"{_nm}_{len(mc_accounts)}",
+                                    "name": _nm,
+                                    "group": _grp,
+                                    "debit": _dr_v,
+                                    "credit": _cr_v,
+                                    "net": _dr_v - _cr_v,
+                                })
+            except Exception:
+                pass
+            return mc_accounts
+
+        try:
+            _mc_accts = _parse_merged_pdf(pdf_path)
+            if len(_mc_accts) > 10:
+                return {
+                    "format_type": "PDF",
+                    "sheet_name": "PDF",
+                    "header_row": 0,
+                    "data_start_row": 0,
+                    "account_col": 0,
+                    "debit_col": 1,
+                    "credit_col": 2,
+                    "net_col": None,
+                    "accounts": _mc_accts,
+                }
+        except Exception:
+            pass
+        # Fall through to standard parsers if merged-cell parse failed
 
     # ── Detect Group-Wise Trial Balance format (plain text, no tables) ──
     _is_group_wise = False
@@ -929,6 +1112,169 @@ def convert_pdf_tb_to_xlsx(pdf_path, xlsx_path):
 # TB AUTO-DETECTION ENGINE
 # ═══════════════════════════════════════════════════════════════════════
 
+def _detect_hierarchical_indented_tb(rows, sheet_name):
+    """
+    Parse a Tally-style Group-Wise Trial Balance that uses LEADING SPACES to denote
+    hierarchy (e.g. Penguin Packages format):
+      indent=0  → Top-level group header (Capital Account, Current Assets, Fixed Assets…)
+      indent=4  → Sub-group or direct account under top-level group
+      indent=6  → Individual account under sub-group
+
+    Key insight: Group headers at every indent level have amounts equal to the SUM of their
+    children. We must emit ONLY leaf accounts (accounts with no children) to avoid
+    double-counting. A row is a leaf if the NEXT non-empty row has indent <= current.
+
+    This format is identified by:
+    1. Col A contains "Account/Group Name" (or similar) as the header
+    2. Leading whitespace is used for hierarchy (not a separate code column)
+    3. Col B = Debit, Col C = Credit
+    """
+    import re as _re
+    SKIP_NAMES = {
+        "total", "grand total", "totals c/o", "totals b/d",
+        "account/group name", "particulars",
+        "debit bal.", "credit bal.",
+    }
+    SKIP_STARTS = ("totals c/o", "totals b/d", "total")
+
+    # Detect if this is the hierarchical format:
+    # Must have "Account/Group Name" in col 0 header AND some rows with leading spaces
+    header_row_idx = None
+    has_indented = False
+    for ri, row in enumerate(rows[:10]):
+        if not row: continue
+        nm = str(row[0] or "").strip()
+        if "account/group name" in nm.lower() or \
+           ("account" in nm.lower() and "name" in nm.lower()):
+            # Check that col 1 and 2 have debit/credit markers
+            col1 = str(row[1] or "").strip().lower()
+            col2 = str(row[2] or "").strip().lower()
+            if ("debit" in col1 or "dr" in col1) and ("credit" in col2 or "cr" in col2):
+                header_row_idx = ri
+                break
+
+    if header_row_idx is None:
+        return None  # Not this format
+
+    # Check for indented rows after header
+    for row in rows[header_row_idx + 1: header_row_idx + 20]:
+        if not row: continue
+        nm = str(row[0] or "")
+        if nm and nm != nm.lstrip():  # has leading spaces
+            has_indented = True
+            break
+
+    if not has_indented:
+        return None  # Not indented — different format, let standard parser handle it
+
+    # Now parse the hierarchical data
+    # Strategy: collect all data rows, then identify leaf nodes.
+    # A leaf node = a row where the next row at same or LOWER indent has NO child rows
+    # between them (i.e., the very next non-empty row is at indent <= current row's indent).
+    # BUT: some accounts ARE direct children of top-level groups (indent=4 with no indent=6 below)
+    # and those are also leaves.
+
+    data_rows = []  # [(row_idx, indent, name, dr, cr)]
+    for ri in range(header_row_idx + 1, len(rows)):
+        row = rows[ri]
+        if not row: continue
+        nm = str(row[0] or "")
+        if not nm.strip(): continue
+        indent = len(nm) - len(nm.lstrip())
+        name = nm.strip()
+        if not name: continue
+        # Skip totals
+        if name.lower() in SKIP_NAMES: continue
+        if any(name.lower().startswith(s) for s in SKIP_STARTS): continue
+        # Skip "Grand Total" or pure number rows
+        if name.lower() in ("grand total", "sub total"): break
+        # Get Dr/Cr
+        dr = row[1] if len(row) > 1 else None
+        cr = row[2] if len(row) > 2 else None
+        if not isinstance(dr, (int, float)): dr = 0.0
+        if not isinstance(cr, (int, float)): cr = 0.0
+        dr, cr = float(dr), float(cr)
+        data_rows.append((ri, indent, name, dr, cr))
+
+    if not data_rows:
+        return None
+
+    # Identify leaf nodes: row i is a leaf if the next row has indent <= row i's indent,
+    # meaning row i has no children below it.
+    # Exception: if a row has indent=0 AND has amounts AND no children → it IS a leaf
+    # (e.g. a standalone group with only one item that IS the total itself).
+    accounts = []
+    _KNOWN_GROUP_HEADERS = {
+        "capital account", "current assets", "current liabilities",
+        "fixed assets", "investments", "loans (liability)", "loans (asset)",
+        "revenue accounts", "suspense account", "pre-operative expenses",
+        "profit & loss", "bank accounts", "cash-in-hand",
+    }
+
+    # Track current group at each indent level for classification hints
+    group_stack = {}  # {indent: name}
+
+    for i, (ri, indent, name, dr, cr) in enumerate(data_rows):
+        # Update group stack
+        group_stack[indent] = name
+        # Clear deeper levels
+        for k in list(group_stack.keys()):
+            if k > indent:
+                del group_stack[k]
+
+        # Check if this is a leaf node
+        # Look at next row's indent
+        if i + 1 < len(data_rows):
+            next_indent = data_rows[i + 1][1]
+            has_children = next_indent > indent
+        else:
+            has_children = False
+
+        # Skip if this is a group header (has children below it)
+        if has_children:
+            continue
+
+        # Skip rows with ZERO amounts — they're empty group headers or placeholders
+        if dr == 0 and cr == 0:
+            continue
+
+        # Skip known top-level group names even if they appear as leaves
+        if name.lower().strip() in _KNOWN_GROUP_HEADERS:
+            continue
+
+        # Determine group from stack (parent group = closest ancestor group)
+        parent_group = ""
+        for lvl in sorted(group_stack.keys(), reverse=True):
+            if lvl < indent:
+                parent_group = group_stack[lvl]
+                break
+
+        accounts.append({
+            "row": ri,
+            "key": f"{name}_{ri}",
+            "name": name,
+            "group": parent_group,
+            "debit": dr,
+            "credit": cr,
+            "net": dr - cr,
+        })
+
+    if len(accounts) < 5:
+        return None  # Too few accounts — probably wrong format
+
+    return {
+        "format_type": 1,  # Dr/Cr separate columns
+        "sheet_name": sheet_name,
+        "header_row": header_row_idx,
+        "data_start_row": header_row_idx + 1,
+        "account_col": 0,
+        "debit_col": 1,
+        "credit_col": 2,
+        "net_col": None,
+        "accounts": accounts,
+    }
+
+
 def detect_tb_structure(file_path):
     """
     Auto-detect the structure of a trial balance file.
@@ -947,6 +1293,14 @@ def detect_tb_structure(file_path):
                 break
 
         if len(rows_data) < 2:
+            continue
+
+        # FIX: Try hierarchical indented format FIRST (Tally Group-Wise TB with spaces)
+        # This format fails with standard _detect_columns because "All Accounts" triggers
+        # a false acct_col before the real header row.
+        hier = _detect_hierarchical_indented_tb(rows_data, sname)
+        if hier and len(hier.get("accounts", [])) > 5:
+            results.append(hier)
             continue
 
         det = _detect_columns(rows_data, sname)
@@ -992,6 +1346,27 @@ def _detect_columns(rows, sheet_name):
                 "from ", "as on ", "as at ",
             ]):
                 continue
+
+        # FIX: Skip rows that have "account"/"name" keyword but NO debit/credit keyword
+        # in ANY cell of the same row — these are title rows like "As On: 31-3-2026  All Accounts"
+        # where "all accounts" triggers acct_col but the row has no Dr/Cr header.
+        # A real column-header row always has the debit/credit column labels in the same row.
+        _row_has_dr_cr = any(
+            ("debit" in v or "credit" in v or v in ("dr", "cr", "dr.", "cr.", "dr bal", "cr bal",
+             "debit bal.", "credit bal.", "debit balance", "credit balance"))
+            for v in row_lower if v
+        )
+        _row_has_acct = any(
+            any(k in v for k in ["particular", "account", "ledger", "name", "head", "description"])
+            for v in row_lower if v
+        )
+        # If this row has "account" keyword but NO dr/cr keyword, it might be a title row
+        # unless it's a single-column name-only format (which we handle after)
+        if _row_has_acct and not _row_has_dr_cr and len(_non_empty) <= 2:
+            # Very likely a title/date row — skip (e.g. "As On : 31-3-2026  All Accounts")
+            # But don't skip if we haven't set acct_col yet and this could be a name-only TB
+            # We'll let it fall through if the row has only 1-2 cells; real headers have ≥3
+            continue
 
         # Look for account name column
         for ci, val in enumerate(row_lower):
@@ -1358,6 +1733,17 @@ GROUP_HEAD_MAP = {
     # low-confidence classification and land in wrong buckets (purchases or direct_expenses).
     "indirect expenses":         "other_expenses",
     "indirect expense":          "other_expenses",
+    # FIX: Tally uses "Expenses (Indirect/Admn.)" and "Expenses (Direct/Mfg.)"
+    # as group names — these weren't in GROUP_HEAD_MAP so AMC CHARGES, GENERATOR EXP
+    # etc. fell through to low-confidence other_current_assets instead of other_expenses.
+    "expenses (indirect/admn.)": "other_expenses",
+    "expenses (indirect/admn)":  "other_expenses",
+    "expenses (indirect":        "other_expenses",   # catches any variation
+    "profit & loss expenses":    "other_expenses",   # also catches this format
+    # Tally "Expenses (Direct/Mfg.)" = wages, electricity, freight (direct expenses)
+    "expenses (direct/mfg.)":    "direct_expenses",
+    "expenses (direct/mfg)":     "direct_expenses",
+    "expenses (direct":          "direct_expenses",
     # FIX (Issue 2/4): Direct expenses (Electricity, Wages, Power & Fuel)
     # need their OWN injection target on the Trading A/c. They were
     # previously collapsed into `purchases`, which made them overwrite the
@@ -1366,6 +1752,11 @@ GROUP_HEAD_MAP = {
     "direct expense":            "direct_expenses",
     "indirect income":           "other_income",
     "indirect incomes":          "other_income",
+    # FIX: Tally "Income (Indirect)" group name
+    "income (indirect)":         "other_income",
+    "income (direct/opr.)":      "revenue",
+    "income (direct/opr)":       "revenue",
+    "income (direct)":           "revenue",
     "direct income":             "revenue",
     "direct incomes":            "revenue",
     # NOTE: "trading/direct expenses" is intentionally NOT in GROUP_HEAD_MAP.
@@ -1386,6 +1777,9 @@ GROUP_HEAD_MAP = {
     "sundry payables":           "other_cl",
     "sundry payable":            "other_cl",
     "current liabilities":       "other_cl",
+    # FIX: Tally "Provisions/Expenses Payable" group
+    "provisions/expenses payable": "other_cl",
+    "provisions & expenses payable": "other_cl",
     "current assets":            "other_current_assets",
     "provisions":                "st_provisions",
     "unsecure loans":            "lt_borrowings",
@@ -1403,6 +1797,18 @@ GROUP_HEAD_MAP = {
     "loans and advances":        "stla",
     "deposits (asset)":          "stla",
     "deposits":                  "stla",
+    # FIX: Tally "Securities & Deposits (Asset)" = FDR, Security Deposits, TDS Receivable
+    "securities & deposits (asset)": "stla",
+    "securities and deposits (asset)": "stla",
+    "securities & deposits":     "stla",
+    # FIX: Tally "Purchase" group contains individual purchase accounts + wages + electricity
+    # Map to purchases (direct expenses like Wages/Electricity handled by name rules below)
+    "purchase":                  "purchases",
+    "purchases":                 "purchases",
+    # FIX: Tally "Sale" group
+    "sale":                      "revenue",
+    "sales accounts":            "revenue",
+    "sales account":             "revenue",
     "duties & taxes":            "other_cl",   # GST payable = current liability
     "duties and taxes":          "other_cl",
     "duties & taxes (gst)":      "other_cl",
@@ -1489,6 +1895,31 @@ def _classify_single(name, net_amount, group=None):
             return "purchases", "high"
         return "direct_expenses", "high"
 
+    # FIX: Tally "Purchase" group contains BOTH pure purchase accounts AND
+    # factory direct expenses (WAGES, ELECTRICITY EXPENSES, Freight).
+    # Since GROUP_HEAD_MAP maps "purchase" → "purchases" (Step 1), these
+    # direct expenses would be mislabelled as purchases without this guard.
+    # Check name keywords BEFORE the GROUP_HEAD_MAP lookup for this group.
+    if group_lower in ("purchase", "purchases"):
+        # Opening/closing stock → inventories
+        if "opening stock" in name_lower or "closing stock" in name_lower:
+            return "inventories", "high"
+        # Direct expense name keywords → direct_expenses
+        _de_kws = BS_HEADS["direct_expenses"]["keywords"]
+        if any(kw in name_lower for kw in _de_kws):
+            return "direct_expenses", "high"
+        # Plain "WAGES" / "ELECTRICITY" in Purchase group = direct factory cost
+        # (not a purchase account). These are Tally accounts mis-grouped under
+        # "Purchase" but are really manufacturing costs.
+        _direct_in_purchase = [
+            "wages", "electricity exp", "electricity charges",
+            "power & fuel", "power and fuel",
+            "labour", "labor", "freight",
+        ]
+        if any(kw in name_lower for kw in _direct_in_purchase):
+            return "direct_expenses", "high"
+        # Otherwise → purchases (actual purchase account)
+
     # ── Smart rules based on name + balance sign ──────────────────────
     # Rule: "loan" in name + CREDIT balance = borrowing (not fixed asset)
     if "loan" in name_lower and net_amount < 0:
@@ -1547,6 +1978,26 @@ def _classify_single(name, net_amount, group=None):
         if kw in name_lower:
             return "depreciation", "high"
 
+    # FIX Bug 2/3/4/5: PAYABLES group accounts are LIABILITIES (other_cl),
+    # even when their name contains salary/ESI/wage keywords.
+    # E.g. "SALARY ARTI DEVI" under group "PAYABLES" is salary PAYABLE
+    # (a current liability), NOT salary expense in P&L.
+    # Without this guard the employee_expenses keyword "salary"/"wage" below
+    # fires first — landing SALARY PAYABLE amounts in notes to p&l Employee
+    # Benefits rows instead of notes to bs OCL, producing wrong figures in
+    # BOTH the P&L (ESI shows 12,331 = SALARY JASBIR instead of 41,454) AND
+    # the balance sheet (salary payable not shown as liability).
+    _is_payables_group = bool(group_lower) and any(
+        kw in group_lower for kw in (
+            "payable", "payables", "outstanding", "accrued",
+        )
+    )
+    if _is_payables_group:
+        # Any credit-balance account in a "payables"-named group is a
+        # current liability.  Debit-balance would be an advance/receivable
+        # but TB payables groups virtually never carry debit balances.
+        return "other_cl", "high"
+
     # Employee expenses: salary, wages etc. (but not "salary payable")
     # Use word-boundary matching for short/ambiguous keywords to avoid
     # false matches (e.g. "esi" matching "designer", "esi " is safer)
@@ -1597,6 +2048,19 @@ def _classify_single(name, net_amount, group=None):
         # SUNDRY DEBTORS → trade_rec
         if "sundry debtor" in group_lower:
             return "trade_rec", "high"
+        # FIX: Tally "Duties & Taxes" group contains BOTH:
+        #   - GST Input (CGST Input, SGST Input) → DEBIT balance → asset (stla)
+        #   - GST Payable → CREDIT balance → liability (other_cl)
+        # The GROUP_HEAD_MAP maps "duties & taxes" → other_cl, which is WRONG for
+        # debit-balance rows. Override here based on sign before hitting GROUP_HEAD_MAP.
+        if ("duties" in group_lower and "tax" in group_lower) or \
+           ("duties & taxes" in group_lower) or ("duties and taxes" in group_lower):
+            if net_amount > 0:
+                # Debit balance = GST Input Credit = asset
+                return "stla", "high"
+            else:
+                # Credit balance = GST Payable = liability
+                return "other_cl", "high"
 
     # Step 1: Check if group header directly maps to a head.
     # FIX: only apply this for SPECIFIC group labels (e.g. "current assets
