@@ -978,6 +978,21 @@ def _detect_columns(rows, sheet_name):
             continue
         row_lower = [str(c).strip().lower() if c else "" for c in row]
 
+        # FIX: Skip document title rows that contain the word "name" (or "account")
+        # in a narrative context — e.g. "TRIAL BALANCE NAME WISE" or "ACCOUNT STATEMENT".
+        # A genuine column-header row always has MULTIPLE non-empty cells (one per column);
+        # a title row usually has text only in col 0 and None elsewhere. Skip single-cell
+        # rows whose text spans common title patterns so they don't steal acct_col.
+        _non_empty = [v for v in row_lower if v]
+        if len(_non_empty) == 1:
+            _title = _non_empty[0]
+            if any(kw in _title for kw in [
+                "trial balance", "balance sheet", "profit & loss",
+                "profit and loss", "account statement", "ledger report",
+                "from ", "as on ", "as at ",
+            ]):
+                continue
+
         # Look for account name column
         for ci, val in enumerate(row_lower):
             if not val:
@@ -1102,11 +1117,50 @@ def _detect_columns(rows, sheet_name):
     # Data starts after header
     data_start = header_row + 1
 
+    # ── Accode/Acname TB format detection ────────────────────────────────────
+    # Some TB exports (e.g. Tally name-wise format) use:
+    #   Col A = Accode (numeric account code like "00009") OR group-header text
+    #   Col B = Acname (the actual account name) OR None (for group-header rows)
+    #   Col C = Debit, Col D = Credit
+    #
+    # Group-header rows look like: [' CAPITAL ', None, None, None, ...]
+    # Data rows look like:         ['00009', 'CAPITAL A/C PROP...', 0, 6736804.66, ...]
+    #
+    # In this format acct_col is detected as 1 (col B, "Acname" contains "name"),
+    # but group headers only have text in col A — so row[acct_col]=None for them,
+    # making them invisible to the group-tracking logic. We detect this format
+    # by checking if col 0 (A) regularly contains short numeric-code-like strings
+    # when col 1 (B) has the real account name.
+    _is_accode_format = False
+    if acct_col == 1:
+        # Check a sample of data rows: if col 0 looks like a numeric account code
+        # (4-6 digit string) while col 1 has the name, it's accode format.
+        _accode_like = 0
+        _checked = 0
+        for _ri2 in range(data_start, min(data_start + 30, len(rows))):
+            _r2 = rows[_ri2]
+            if not _r2 or len(_r2) < 2:
+                continue
+            _a, _b = _r2[0], _r2[1]
+            if _b is not None and isinstance(_b, str) and len(_b.strip()) > 2:
+                _checked += 1
+                if isinstance(_a, str) and re.match(r'^[A-Z0-9]{2,8}$', _a.strip()):
+                    _accode_like += 1
+        if _checked > 0 and _accode_like / _checked > 0.5:
+            _is_accode_format = True
+
     # Extract accounts — handles both flat and hierarchical TB formats
     accounts = []
     total_keywords = {"total", "grand total", "difference", "net total",
                       "closing balance", "opening balance total",
-                      "balance c/d", "balance b/d"}
+                      "balance c/d", "balance b/d", "group total"}
+
+    # Extra skip patterns for reconciliation/difference entries that aren't real accounts
+    _skip_name_patterns = re.compile(
+        r'^(difference in opening|opening balance difference|'
+        r'balance difference|rounding|round off difference)\b',
+        re.I
+    )
 
     current_group = None  # Track current group header for hierarchical TBs
 
@@ -1114,6 +1168,22 @@ def _detect_columns(rows, sheet_name):
         row = rows[ri]
         if not row or ri >= len(rows):
             continue
+
+        # ── Accode/Acname format: group headers are in col A, names in col B ──
+        if _is_accode_format:
+            col_a = row[0] if len(row) > 0 else None
+            col_b = row[1] if len(row) > 1 else None
+            # Group header: col A has text, col B is None/empty
+            if isinstance(col_a, str) and col_a.strip() and (col_b is None or str(col_b).strip() == ''):
+                g = col_a.strip()
+                # Skip rows that are actually totals/headers (Grand Total, etc.)
+                if not re.match(r'^(grand total|total)\b', g, re.I):
+                    current_group = g
+                continue
+            # Skip accode-only rows (col A = accode, col B = None, no amounts)
+            if col_b is None or str(col_b).strip() == '':
+                continue
+
         acct_name = row[acct_col] if acct_col < len(row) else None
         if not acct_name or not isinstance(acct_name, str):
             continue
@@ -1124,7 +1194,11 @@ def _detect_columns(rows, sheet_name):
         # Skip totals/subtotals
         if acct_name.lower().strip() in total_keywords:
             continue
-        if re.match(r'^(total|grand total|sub total|net total)\b', acct_name, re.I):
+        if re.match(r'^(total|grand total|group total|sub total|net total)\b', acct_name, re.I):
+            continue
+
+        # Skip reconciliation/difference entries
+        if _skip_name_patterns.match(acct_name):
             continue
 
         # Get amounts
@@ -1252,19 +1326,24 @@ def _to_float(val):
 GROUP_HEAD_MAP = {
     "capital account":           "capital",
     "capital accounts":          "capital",
+    "capital":                   "capital",
     "reserves & surplus":        "capital",
     "reserves and surplus":      "capital",
     "bank accounts":             "cash_bank",
     "bank account":              "cash_bank",
+    "bank":                      "cash_bank",
     "cash-in-hand":              "cash_bank",
     "cash in hand":              "cash_bank",
+    "cash":                      "cash_bank",
     "fixed assets":              "fixed_assets",
     "investments":               "non_current_investments",
     "sundry creditors":          "trade_payables",
+    "suppliers":                 "trade_payables",   # Tally name-wise format
     "sundry debtors":            "trade_rec",
     "sundry debtor":             "trade_rec",
     "sundry receivables":        "trade_rec",
     "sundry receivable":         "trade_rec",
+    "customers":                 "trade_rec",        # Tally name-wise format
     "purchase account":          "purchases",
     "purchase accounts":         "purchases",
     "purchases":                 "purchases",
@@ -1289,6 +1368,21 @@ GROUP_HEAD_MAP = {
     "indirect incomes":          "other_income",
     "direct income":             "revenue",
     "direct incomes":            "revenue",
+    # NOTE: "trading/direct expenses" is intentionally NOT in GROUP_HEAD_MAP.
+    # It contains a mix of purchases, opening stock, and direct expenses —
+    # each of which is correctly routed via name-level rules in _classify_single
+    # (the direct_expenses group rule with opening-stock/purchase exemptions).
+    # Putting it in GROUP_HEAD_MAP would cause the group-override in Step 1
+    # to fire before those name-level rules, silently misclassifying all
+    # opening stock and purchase accounts as purchases (or direct_expenses).
+    "trading/direct incomes":    "revenue",          # sales
+    "profit & loss expenses":    "other_expenses",   # indirect expenses
+    "profit & loss incomes":     "other_income",     # indirect incomes
+    "profit & loss expense":     "other_expenses",
+    "profit & loss income":      "other_income",
+    "others assets":             "stla",             # misc assets (advance tax, GST rcvbl)
+    "other assets":              "stla",
+    "payables":                  "other_cl",         # salary/ESI/rent payable
     "sundry payables":           "other_cl",
     "sundry payable":            "other_cl",
     "current liabilities":       "other_cl",
@@ -1351,6 +1445,10 @@ def _classify_single(name, net_amount, group=None):
     """Classify a single account name. Returns (head_key, confidence)."""
     name_lower = name.lower().strip()
     group_lower = (group or "").lower().strip()
+    # FIX: Tally name-wise TB format wraps group names in spaces: ' CAPITAL ',
+    # ' CUSTOMERS ', etc. Strip them before lookup so GROUP_HEAD_MAP entries
+    # (which have no surrounding spaces) match correctly.
+    group_lower = group_lower.strip()
     # FIX: Tally/Busy TBs very commonly name groups like "PURCHASE A/C",
     # "SALE A/C", "CURRENT LIABILITIES A/C" etc. — using the "A/C"
     # abbreviation instead of the full word "ACCOUNT". GROUP_HEAD_MAP only
@@ -1382,6 +1480,13 @@ def _classify_single(name, net_amount, group=None):
     if group_lower and re.search(r"\bdirect\b", group_lower) and (
             "expense" in group_lower or "mfg" in group_lower
             or "manufactur" in group_lower):
+        # EXCEPTION: opening/closing stock always goes to inventories
+        if "opening stock" in name_lower or "closing stock" in name_lower:
+            return "inventories", "high"
+        # EXCEPTION: purchase accounts always go to purchases
+        # (Tally name-wise TBs put purchases inside "TRADING/DIRECT EXPENSES")
+        if "purchase" in name_lower:
+            return "purchases", "high"
         return "direct_expenses", "high"
 
     # ── Smart rules based on name + balance sign ──────────────────────
@@ -1427,6 +1532,15 @@ def _classify_single(name, net_amount, group=None):
     # These specific P&L sub-categories must override a broad group like
     # "indirect expenses" → other_expenses which fires too early.
     # Order matters: check most specific first.
+
+    # Opening stock: always inventories regardless of group.
+    # Tally name-wise format places OPENING STOCK inside the
+    # "TRADING/DIRECT EXPENSES" group alongside purchases — without this
+    # guard it would be classified as `purchases` via the group mapping,
+    # making it inflate the purchases total and never reach the opening
+    # stock row in notes to p&l.
+    if "opening stock" in name_lower:
+        return "inventories", "high"
 
     # Depreciation: must always go to depreciation head
     for kw in BS_HEADS["depreciation"]["keywords"]:
@@ -1500,6 +1614,9 @@ def _classify_single(name, net_amount, group=None):
     # them and has dedicated injection logic.
     _GENERIC_BARE_GROUPS = {
         "current assets", "current liabilities", "current liability",
+        # NOTE: "customers", "suppliers", "bank", "cash" are NOT generic bare
+        # groups — they have specific GROUP_HEAD_MAP entries that should fire
+        # directly, not defer to name-keyword matching.
     }
     if (group_lower and group_lower in GROUP_HEAD_MAP
             and group_lower not in _GENERIC_BARE_GROUPS):
@@ -3351,10 +3468,19 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         npl_cache_rev = _cache.get("notes to p&l", {})
 
         rev_row_labels = {}   # {row: normalised label}
-        for r in range(5, 8):
+        # FIX: previously hardcoded range(5, 8) — only 3 rows — missing row 8
+        # (Sale SGST/CGST 5%) and any template with more than 2 sale sub-rows.
+        # Now dynamically scan from row 5 until the "Total revenue" row.
+        _rev_total_row_found = None
+        for r in range(5, 25):
             b_val = npl_cache_rev.get((r, 2))
             if b_val:
-                rev_row_labels[r] = str(b_val).strip().lower()
+                _bl = str(b_val).strip().lower()
+                if "total" in _bl and ("revenue" in _bl or "operation" in _bl or "sale" in _bl):
+                    _rev_total_row_found = r
+                    break
+                if _bl and "total" not in _bl and "revenue from" not in _bl:
+                    rev_row_labels[r] = _bl
 
         def _rev_row_for(acct_name):
             nl = acct_name.lower()
@@ -4194,17 +4320,31 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                 f"Direct expense '{acct['name']}' = {amt:,.2f}: no free row in Trading A/c"
                             )
 
-        # ── C. Opening Stock → GROSS PROFIT!B9 ──────────────────────
-        # B9 = "='notes to p&l'!D17" which = "=E24" (prev yr closing)
-        # Opening stock should come from TB opening stock account
+        # ── C. Opening Stock → notes to p&l Opening Stock row ────────────
+        # Dynamically find the "Inventories at the beginning of the year" /
+        # "Opening stock" row in notes to p&l (not hardcoded row 17,
+        # which breaks for templates with 2+ revenue sub-rows that push
+        # all subsequent rows down — e.g. after a deferred section expansion).
         opening_stock_accounts = [a for a in individual_accounts
                                    if "opening stock" in a.get("name","").lower()
                                    and abs(a.get("net", 0)) > 0]
-        if opening_stock_accounts and "GROSS PROFIT" in wb.sheetnames:
+        if opening_stock_accounts:
             total_opening = sum(abs(a["net"]) for a in opening_stock_accounts)
-            # notes to p&l!D17 is "=E24" — override it directly
-            if _safe_write(ws_npl, 17, 4, total_opening):
-                injected.append(f"notes to p&l!D17 (Opening stock) = {total_opening:,.2f}")
+            # Scan notes to p&l for the opening stock row (col B contains
+            # "beginning" or "opening stock" or "inventories at the beginning")
+            _os_row = None
+            for _r in range(1, 60):
+                _b = ws_npl.cell(_r, 2).value
+                if _b:
+                    _bl = str(_b).strip().lower()
+                    if ("beginning" in _bl or "opening stock" in _bl or
+                            ("inventori" in _bl and "beginning" in _bl)):
+                        _os_row = _r
+                        break
+            if _os_row is None:
+                _os_row = 20  # fallback: template default
+            if _safe_write(ws_npl, _os_row, 4, total_opening):
+                injected.append(f"notes to p&l!D{_os_row} (Opening stock) = {total_opening:,.2f}")
 
         # ── C2. OTHER INCOME (Rebate & Discount, Interest Received, etc.) ──
         # FIX (Issue 3): "REBATE & DISCOUNT" / other indirect-income accounts
