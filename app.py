@@ -8230,7 +8230,125 @@ def _inject_cap_fa(output_path, cap_entries, fa_entries, log):
                 break
         if fa_sheet:
             ws = wb[fa_sheet]
-            for entry in fa_entries:
+
+            # ── FIX Bug 1: Handle row=0 entries (new assets added by user) ──
+            # When the user adds a completely new asset (e.g. Generator, Mobile)
+            # via "Add Row", row=0 because it has no existing row in the template.
+            # We INSERT a new row in the correct FA section (determined by rate:
+            # 15%→Plant & Machinery, 40%→Computers, 10%→Furniture/Building, etc.).
+            new_asset_entries = [e for e in fa_entries if not e.get('row')]
+            existing_entries  = [e for e in fa_entries if e.get('row')]
+
+            if new_asset_entries:
+                # Rate → section keyword mapping (standard IT Act rates)
+                RATE_TO_SECTION_KW = {
+                    0:  ['land'],
+                    5:  ['building'],
+                    10: ['furniture', 'building'],
+                    15: ['plant', 'machiner'],
+                    20: ['vehicle'],
+                    30: ['vehicle'],
+                    40: ['computer'],
+                }
+
+                # Scan the sheet for section header rows (ALL-CAPS, no number in col B)
+                section_info = []
+                prev_header_row = None
+                prev_header_name = None
+                for r_idx in range(1, 60):
+                    a_val = ws.cell(r_idx, 1).value
+                    b_val = ws.cell(r_idx, 2).value
+                    if a_val and isinstance(a_val, str):
+                        nm = a_val.strip()
+                        # Section header: ALL-CAPS, no numeric value in col B
+                        if nm.isupper() and len(nm) > 3 and not isinstance(b_val, (int, float)):
+                            if prev_header_name is not None:
+                                section_info.append({
+                                    'header_row': prev_header_row,
+                                    'name': prev_header_name,
+                                    'end_row': r_idx - 1,
+                                })
+                            prev_header_row = r_idx
+                            prev_header_name = nm
+                        # Total row marks end of all sections
+                        elif nm.lower() in ('total', 'grand total') and prev_header_name:
+                            section_info.append({
+                                'header_row': prev_header_row,
+                                'name': prev_header_name,
+                                'end_row': r_idx - 1,
+                            })
+                            prev_header_name = None
+                            break
+
+                def _section_for_rate(rate, section_label=""):
+                    """Find the FA sheet section that matches by label first, then by rate."""
+                    rate_int = int(rate) if rate else 15
+                    kws = RATE_TO_SECTION_KW.get(rate_int, ['plant', 'machiner'])
+                    # If a section label was provided by the user (from the dropdown), try that first
+                    if section_label:
+                        sec_low = section_label.lower()
+                        for sec in section_info:
+                            if any(kw in sec['name'].lower() for kw in sec_low.split()):
+                                return sec
+                    # Fall back to rate-based matching
+                    for sec in section_info:
+                        sec_low = sec['name'].lower()
+                        if any(kw in sec_low for kw in kws):
+                            return sec
+                    # Default: first Plant & Machinery section
+                    for sec in section_info:
+                        if 'plant' in sec['name'].lower() or 'machin' in sec['name'].lower():
+                            return sec
+                    return section_info[0] if section_info else None
+
+                for entry in new_asset_entries:
+                    name  = (entry.get('name') or '').strip()
+                    rate  = float(entry.get('rate') or 15)
+                    gt    = float(entry.get('additions_gt180') or 0)
+                    lt    = float(entry.get('additions_lt180') or 0)
+                    sale  = float(entry.get('sale') or 0)
+                    if not name or (gt == 0 and lt == 0 and sale == 0):
+                        continue
+
+                    sec = _section_for_rate(rate, entry.get('section', ''))
+                    if not sec:
+                        log.append(f"⚠ {fa_sheet}: no section found for new asset '{name}' (rate {rate}%) — skipped")
+                        continue
+
+                    # Find the last data row in this section (last non-empty named asset row)
+                    insert_at = sec['header_row'] + 1  # default: right after header
+                    for scan_r in range(sec['header_row'] + 1, sec['end_row'] + 1):
+                        a = ws.cell(scan_r, 1).value
+                        if a and isinstance(a, str) and a.strip() and not a.strip().isupper():
+                            insert_at = scan_r + 1  # insert after this row
+
+                    # Insert a blank row, then fill it
+                    ws.insert_rows(insert_at)
+
+                    ws.cell(insert_at, 1).value = name
+                    ws.cell(insert_at, 2).value = 0  # opening WDV (new asset)
+                    if gt:
+                        ws.cell(insert_at, 3).value = round(gt, 2)
+                    if lt:
+                        ws.cell(insert_at, 4).value = round(lt, 2)
+                    if sale:
+                        ws.cell(insert_at, 5).value = round(sale, 2)
+                    total_cost = round(gt + lt - sale, 2)
+                    ws.cell(insert_at, 6).value = total_cost
+                    ws.cell(insert_at, 7).value = rate
+                    # Depreciation: >180 days = full rate; <180 days = half rate
+                    dep = round((gt * rate / 100) + (lt * rate / 100 * 0.5), 2)
+                    ws.cell(insert_at, 8).value = dep
+                    ws.cell(insert_at, 9).value = round(total_cost - dep, 2)
+
+                    log.append(
+                        f"✓ {fa_sheet}: inserted new asset '{name}' at row {insert_at} "
+                        f"(section: {sec['name']}, rate: {rate}%) — "
+                        f">180d={gt:,.2f}, <180d={lt:,.2f}"
+                    )
+
+            # ── Existing rows: write additions/sale as before ──────────────
+            for entry in existing_entries:
                 row = entry.get("row")
                 if not row:
                     continue
@@ -8602,10 +8720,44 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
         <div style="margin-bottom:20px">
           <h3 style="font-size:14px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px">
             🏭 Fixed Assets Chart
-            <button onclick="addFARow()" style="margin-left:auto;background:none;border:1px dashed var(--border);border-radius:6px;padding:4px 12px;font-size:11px;cursor:pointer;color:var(--brand)">+ Add Asset</button>
+            <button onclick="openAddAssetModal()" style="margin-left:auto;background:var(--brand);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;cursor:pointer;font-weight:600">+ Add Asset</button>
           </h3>
           <div id="faTableWrap" style="overflow-x:auto">
             <p style="color:var(--muted);font-size:12px">Loading from BS template...</p>
+          </div>
+        </div>
+
+        <!-- Add Asset Modal -->
+        <div id="addAssetModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;align-items:center;justify-content:center;padding:16px">
+          <div style="background:#fff;border-radius:12px;max-width:420px;width:100%;box-shadow:0 24px 60px rgba(0,0,0,.2);padding:24px">
+            <h3 style="font-size:15px;font-weight:800;margin-bottom:16px">➕ Add New Asset</h3>
+            <div style="margin-bottom:12px">
+              <label style="display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:4px">Asset Name</label>
+              <input type="text" id="newAssetName" placeholder="e.g. Generator, Laptop, Shed" style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px 12px;font-family:inherit;font-size:13px;outline:none"/>
+            </div>
+            <div style="margin-bottom:12px">
+              <label style="display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:4px">Asset Section</label>
+              <select id="newAssetSection" onchange="onAssetSectionChange()" style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px 12px;font-family:inherit;font-size:13px;outline:none;background:#fff">
+                <option value="plant_15">Plant &amp; Machinery (15%)</option>
+                <option value="vehicle_15">Vehicle (15%)</option>
+                <option value="computer_40">Computers &amp; Peripherals (40%)</option>
+                <option value="furniture_10">Furniture &amp; Fixtures (10%)</option>
+                <option value="building_10">Building (10%)</option>
+                <option value="land_0">Land (0% — No depreciation)</option>
+                <option value="other_custom">Other (specify rate)</option>
+              </select>
+            </div>
+            <div id="customRateWrap" style="display:none;margin-bottom:12px">
+              <label style="display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:4px">Depreciation Rate %</label>
+              <input type="number" id="newAssetRate" placeholder="e.g. 15" min="0" max="100" style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px 12px;font-family:inherit;font-size:13px;outline:none"/>
+            </div>
+            <div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:10px 12px;font-size:11px;color:#1E40AF;margin-bottom:16px">
+              ℹ️ <strong>Section determines where in the Fixed Assets chart this asset goes.</strong> Rate is pre-filled based on IT Act. You can customize for special cases.
+            </div>
+            <div style="display:flex;gap:10px">
+              <button onclick="closeAddAssetModal()" style="flex:1;background:#F3F4F6;color:var(--ink);border:none;border-radius:8px;padding:10px;font-family:inherit;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>
+              <button onclick="confirmAddAsset()" style="flex:2;background:var(--brand);color:#fff;border:none;border-radius:8px;padding:10px;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer">Add to Chart →</button>
+            </div>
           </div>
         </div>
 
@@ -9266,24 +9418,91 @@ function buildFARow(a, i) {
   </tr>`;
 }
 
-function addFARow() {
-  const tbl = document.getElementById('faTable');
-  if (!tbl) return;
-  const name = prompt('Asset name:');
-  if (!name) return;
+// ── Add Asset modal functions (Bug 1 fix: proper section dropdown) ──
+const FA_SECTION_RATES = {
+  'plant_15':     { label: 'PLANT & MACHINERY', rate: 15 },
+  'vehicle_15':   { label: 'VEHICLE',            rate: 15 },
+  'computer_40':  { label: 'COMPUTERS',          rate: 40 },
+  'furniture_10': { label: 'FURNITURE AND FIXTURES', rate: 10 },
+  'building_10':  { label: 'BUILDING',           rate: 10 },
+  'land_0':       { label: 'LAND',               rate: 0 },
+  'other_custom': { label: null,                 rate: 15 },
+};
+
+function openAddAssetModal() {
+  document.getElementById('newAssetName').value = '';
+  document.getElementById('newAssetSection').value = 'plant_15';
+  document.getElementById('newAssetRate').value = '15';
+  document.getElementById('customRateWrap').style.display = 'none';
+  const modal = document.getElementById('addAssetModal');
+  modal.style.display = 'flex';
+  setTimeout(() => document.getElementById('newAssetName').focus(), 100);
+}
+
+function closeAddAssetModal() {
+  document.getElementById('addAssetModal').style.display = 'none';
+}
+
+function onAssetSectionChange() {
+  const sec = document.getElementById('newAssetSection').value;
+  const info = FA_SECTION_RATES[sec] || { rate: 15 };
+  const customWrap = document.getElementById('customRateWrap');
+  if (sec === 'other_custom') {
+    customWrap.style.display = 'block';
+    document.getElementById('newAssetRate').value = '15';
+  } else {
+    customWrap.style.display = 'none';
+    document.getElementById('newAssetRate').value = info.rate;
+  }
+}
+
+function confirmAddAsset() {
+  const name = document.getElementById('newAssetName').value.trim();
+  if (!name) { alert('Please enter an asset name.'); return; }
+  const sec = document.getElementById('newAssetSection').value;
+  const info = FA_SECTION_RATES[sec] || { rate: 15 };
+  const rate = sec === 'other_custom'
+    ? (parseFloat(document.getElementById('newAssetRate').value) || 15)
+    : info.rate;
+  const sectionLabel = info.label || 'PLANT & MACHINERY';
+
+  addFARow(name, rate, sectionLabel);
+  closeAddAssetModal();
+}
+
+function addFARow(name, rate, sectionLabel) {
+  let tbl = document.getElementById('faTable');
+  if (!tbl) {
+    // Create table if it doesn't exist yet
+    const wrap = document.getElementById('faTableWrap');
+    wrap.innerHTML = '<table id="faTable" style="width:100%;border-collapse:collapse;font-size:12px"><tr style="background:#F1F5F9"><th style="padding:8px;text-align:left;border:1px solid var(--border)">Asset</th><th style="padding:8px;text-align:right;border:1px solid var(--border)">Opening WDV</th><th style="padding:8px;text-align:center;border:1px solid var(--border)">Additions &gt;180d</th><th style="padding:8px;text-align:center;border:1px solid var(--border)">Additions &lt;180d</th><th style="padding:8px;text-align:center;border:1px solid var(--border)">Sale</th><th style="padding:8px;text-align:right;border:1px solid var(--border)">Rate %</th></tr></table>';
+    tbl = document.getElementById('faTable');
+  }
   const idx = tbl.querySelectorAll('.fa-row').length;
   const tr = document.createElement('tr');
   tr.className = 'fa-row';
   tr.dataset.idx = idx;
   tr.innerHTML = `
-    <td style="padding:8px;border:1px solid var(--border);font-weight:600">${escHtml(name)}<input type="hidden" class="fa-rownum" value="0"></td>
+    <td style="padding:8px;border:1px solid var(--border);font-weight:600">${escHtml(name)}
+      <input type="hidden" class="fa-rownum" value="0">
+      <input type="hidden" class="fa-rate-val" value="${rate}">
+      <input type="hidden" class="fa-name-val" value="${escHtml(name)}">
+      <input type="hidden" class="fa-section-val" value="${escHtml(sectionLabel||'PLANT & MACHINERY')}">
+      <span style="display:block;font-size:10px;color:var(--muted);font-weight:400">${escHtml(sectionLabel||'')}</span>
+    </td>
     <td style="padding:8px;border:1px solid var(--border);text-align:right;color:var(--muted)">₹0</td>
     <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="fa-add-gt" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
     <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="fa-add-lt" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
     <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="fa-sale" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
-    <td style="padding:8px;border:1px solid var(--border);text-align:right;color:var(--muted)">—</td>`;
+    <td style="padding:8px;border:1px solid var(--border);text-align:right;color:var(--muted)">${rate}%</td>`;
   tbl.appendChild(tr);
 }
+
+// Close modal on backdrop click
+document.addEventListener('click', function(e) {
+  const modal = document.getElementById('addAssetModal');
+  if (modal && e.target === modal) closeAddAssetModal();
+});
 
 function collectCapEntries() {
   const entries = [];
@@ -9315,7 +9534,21 @@ function collectFAEntries() {
     const gt = parseFloat(tr.querySelector('.fa-add-gt')?.value) || 0;
     const lt = parseFloat(tr.querySelector('.fa-add-lt')?.value) || 0;
     const sale = parseFloat(tr.querySelector('.fa-sale')?.value) || 0;
-    if (row && (gt || lt || sale)) entries.push({row, additions_gt180: gt, additions_lt180: lt, sale});
+    // FIX Bug 1: also collect name, rate, and section for row=0 (new) assets
+    const nameEl = tr.querySelector('td:first-child');
+    const nameNode = nameEl ? Array.from(nameEl.childNodes).find(n => n.nodeType === 3) : null;
+    const name = nameNode ? nameNode.textContent.trim() : (nameEl ? nameEl.textContent.trim() : '');
+    const rateEl = tr.querySelector('.fa-rate-val');
+    const rate = rateEl ? (parseFloat(rateEl.value) || 0) : 0;
+    const sectionEl = tr.querySelector('.fa-section-val');
+    const section = sectionEl ? (sectionEl.value || '') : '';
+    // For existing rows (row>0): only send if there's actual data
+    if (row && (gt || lt || sale)) {
+      entries.push({row, name, rate, section, additions_gt180: gt, additions_lt180: lt, sale});
+    } else if (!row && name && (gt || lt || sale)) {
+      // New asset: row=0, must send name, rate, section for server-side insertion
+      entries.push({row: 0, name, rate, section, additions_gt180: gt, additions_lt180: lt, sale});
+    }
   });
   return entries;
 }
