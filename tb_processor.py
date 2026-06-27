@@ -266,16 +266,29 @@ BS_HEADS = {
         "label": "Employee / Salary Expenses",
         "side": "pl",
         "keywords": [
-            "salary", "wage", "bonus", "gratuity", "leave",
-            "staff welfare", "epf", "esi", "pf contribution",
-            "employee benefit", "director remuneration",
-            "partner salary", "partner remuneration", "salary to partner",
-            "stipend", "incentive", "overtime",
+            # Salary / remuneration (very high priority — matched first)
+            "salary", "salaries", "salary to partner", "partner salary",
+            "partner remuneration", "director remuneration",
+            "director salary", "stipend",
+            # Wages
+            "wage", "labour charge", "labor charge",
+            # Bonus, gratuity, leave
+            "bonus", "gratuity", "leave with wages", "leave salary",
+            # Welfare & statutory
+            "staff welfare", "labour welfare fund", "labor welfare fund",
+            "epf", "esi ", "e.s.i", "pf contribution",
+            "employee benefit", "employee provident",
+            # Other
+            "incentive", "overtime",
             "labour refreshment", "labor refreshment",
-            "e.s.i", "leave with wages",
         ],
-        "negative_keywords": ["salary payable", "wages payable", "bonus payable", "leave with wages payable",
-                              "e.s.i payable", "esi payable"],
+        "negative_keywords": [
+            "salary payable", "wages payable", "bonus payable",
+            "leave with wages payable", "e.s.i payable", "esi payable",
+            "salary & bonus payable", "wages & salary payable",
+            "labour welfare fund payable", "labor welfare fund payable",
+            "lwf payable",
+        ],
     },
     "finance_cost": {
         "label": "Finance Cost",
@@ -292,10 +305,20 @@ BS_HEADS = {
             "intt on tempu", "interest on tempu", "interest on hdfc",
             "interest on term loan", "term loan interest",
             "interest on term loan", "interest on secured",
+            "interest on lap", "bank interest on lap", "lap interest",
+            "interest on lap loan",
             "processing fee", "cersai charge",
             "life insurance machinery loan",
+            # FIX (Bug 4): Additional patterns that appear in Tally TBs
+            "bank interest on term", "bank interest on", "interest charges",
+            "machine loan", "machinery loan",
+            "interest on car loan", "interest on vehicle",
+            "interest on mortgage", "mortgage interest",
+            "interest on cc", "interest on od",
         ],
-        "negative_keywords": ["interest received", "interest income", "intt paid on late payment", "bank charges and interest", "bank charges", "processing fee"],
+        "negative_keywords": ["interest received", "interest income",
+                              "intt paid on late payment", "bank charges and interest",
+                              "bank charges", "processing fee"],
     },
     "other_expenses": {
         "label": "Other Expenses / Indirect Expenses",
@@ -2431,11 +2454,24 @@ def _fuzzy_match_name(tb_name, template_name):
         if s in FINANCE_ALIASES:
             s = FINANCE_ALIASES[s]
         s = re.sub(r'\bm/s\.?\s*', '', s)
-        s = re.sub(r'[^a-z0-9\s]', ' ', s)
-        s = re.sub(r'\s+', ' ', s).strip()
+        # FIX (Bug 5): strip city/location suffixes that appear in TB names
+        # (e.g. "A.G. ENTERPRISES, LUDHIANA" → "A.G. ENTERPRISES") BEFORE
+        # removing punctuation, so the city removal regex works on the word
+        # boundary correctly.
         for city in ['ludhiana', 'delhi', 'jalandhar', 'surat', 'ahmedabad',
-                     'ahemadabad', 'varanasi', 'mumbai', 'ambala', 'citi']:
-            s = re.sub(r'\b' + city + r'\b', '', s).strip()
+                     'ahemadabad', 'varanasi', 'mumbai', 'ambala', 'citi',
+                     'chandigarh', 'patiala', 'amritsar', 'bathinda', 'moga',
+                     'gurugram', 'gurgaon', 'noida', 'faridabad', 'kolkata',
+                     'chennai', 'hyderabad', 'pune', 'bangalore', 'bengaluru']:
+            s = re.sub(r',?\s*\b' + city + r'\b', '', s).strip()
+        # FIX (Bug 5): Remove dots from initials before stripping punctuation,
+        # so "A.G." → "AG", "A.K." → "AK", "Pvt." → "Pvt" etc.
+        # This prevents "a g" ≠ "ag" mismatches that broke creditor/debtor
+        # matching when the TB used dot-separated initials but the template
+        # had them run together.
+        s = re.sub(r'(?<=[a-z])\.(?=[a-z])', '', s)  # e.g. "a.g." → "ag"
+        s = re.sub(r'(?<=\w)\.(?=\s)', ' ', s)        # trailing dot on words
+        s = re.sub(r'[^a-z0-9\s]', ' ', s)
         s = re.sub(r'\s+', ' ', s).strip()
         return s
 
@@ -2487,7 +2523,33 @@ def _fuzzy_match_name(tb_name, template_name):
                     'readymade', 'hosiery', 'collection', 'collections',
                     'wool', 'woollen', 'fab', 'fabs', 'impex', 'trendz',
                     'house', 'super', 'bazar', 'bazaar', 'shop', 'centre',
-                    'center', 'emporium', 'imporium'}
+                    'center', 'emporium', 'imporium',
+                    # FIX (Bug 3 — Details debtor/creditor false positives):
+                    # Generic business-type suffixes that appear in almost
+                    # every company name in printing/packaging/pharma sectors.
+                    # Previously "ABHINANDAN PRINTERS" matched "Sahil Printers."
+                    # because "printers" (8 chars ≥ 7) passed the single-long-
+                    # word test — the only shared word between two completely
+                    # different companies. Adding these prevents such matches.
+                    'printers', 'printer', 'printing', 'press', 'presses',
+                    'packaging', 'packers', 'packing', 'packwell',
+                    'forgings', 'forging', 'forge', 'stamping',
+                    'pharmaceuticals', 'pharma', 'meditech', 'biotech',
+                    'herbal', 'healthcare', 'remedies',
+                    'engineering', 'engineers', 'electrical', 'electronics',
+                    'mechanical', 'automation',
+                    'associates', 'partnership', 'syndicate', 'syndication',
+                    'brothers', 'distributors', 'supplier', 'suppliers',
+                    'solutions', 'services', 'service',
+                    'paper', 'papers', 'board', 'boards', 'stationery',
+                    'label', 'labels', 'offset', 'graphics', 'graphic',
+                    'creations', 'creators', 'designs', 'designers',
+                    'exporters', 'importers', 'exports', 'imports',
+                    'hospital', 'hospitals', 'clinic', 'clinics',
+                    'foods', 'food', 'agro', 'organic', 'organics',
+                    'steel', 'steels', 'alloys', 'metals', 'metal',
+                    'tubes', 'tube', 'pipes', 'pipe', 'wires', 'wire',
+                    }
     if len(a) >= 6 and len(b) >= 6:
         shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
         if shorter in longer:
@@ -3308,15 +3370,39 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             lbl = det_cache.get((r, 1)) or det_cache.get((r, 2))
             if lbl and "sundry creditor" in str(lbl).strip().lower():
                 cred_start_row = r + 2  # skip header row + "PARTICULARS" sub-header row
-                # Find the end: next all-caps section header or blank gap
+                # Find the end: next section-level header (TOTAL row or blank gap)
+                # FIX (off-by-one): the previous code set cred_end_row = r2 when it
+                # found an ALL-CAPS boundary, then scanned range(cred_start_row, cred_end_row).
+                # But if the boundary row IS a data row (e.g. "K.D. ENTERPRISES" at row 32
+                # is the last creditor AND gets picked up as the boundary), range(22, 32)
+                # excludes row 32 itself, so K.D. ENTERPRISES is never written.
+                # Fix: scan for a TOTAL / SUM row explicitly first; if not found, use the
+                # ALL-CAPS boundary row as the last data row (cred_end_row = r2 + 1).
+                cred_end_row = cred_start_row + 60  # fallback
                 for r2 in range(cred_start_row, cred_start_row + 200):
                     lbl2 = det_cache.get((r2, 1)) or det_cache.get((r2, 2))
-                    if lbl2 and str(lbl2).strip().isupper() and len(str(lbl2).strip()) > 3 \
-                       and "m/s" not in str(lbl2).strip().lower():
-                        cred_end_row = r2
+                    lbl2_s = str(lbl2).strip() if lbl2 else ""
+                    d2 = det_cache.get((r2, 4))
+                    # Explicit TOTAL row — stop before it
+                    if lbl2_s.lower() == "total" or (isinstance(d2, str) and "sum" in d2.lower()):
+                        cred_end_row = r2  # range(..., r2) excludes total row itself
                         break
-                else:
-                    cred_end_row = cred_start_row + 60
+                    # ALL-CAPS non-data boundary (section header like "Advance from Customers")
+                    # These are section sub-headers, not data rows — stop before them.
+                    # But only if it's NOT a simple creditor name in ALL-CAPS (heuristic:
+                    # if the row has no M/s prefix AND it starts a new named sub-section).
+                    if lbl2 and lbl2_s.isupper() and len(lbl2_s) > 3 \
+                       and "m/s" not in lbl2_s.lower():
+                        # Check: is this a sub-section header (no amount in D/E) or a data row?
+                        has_amount = (det_cache.get((r2, 4)) is not None
+                                      or det_cache.get((r2, 5)) is not None)
+                        if not has_amount:
+                            # It's a section header — stop before it
+                            cred_end_row = r2
+                            break
+                        # It's an ALL-CAPS data row (like K.D. ENTERPRISES with D=98897)
+                        # Include it: continue scanning, cred_end_row extends past it
+                        cred_end_row = r2 + 1
                 break
 
         # Build name→row map from cache (instant, no cell access)
@@ -3469,31 +3555,52 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                and abs(a.get("net", 0)) > 0]
         recv_written = set()
 
-        # FIX: the section start was hardcoded to row 74, but different
-        # templates place the debtor data rows at different row numbers
-        # (e.g. Chadha Sons starts at row 63). Hardcoding caused rows
-        # 63-73 to be skipped entirely, so debtors Aazim/Aijaj etc.
-        # never matched their template rows and fell to the overflow
-        # insert path — duplicating them at rows 91-92 in addition to
-        # their correctly-named rows at 63-64.
-        # Now: scan the Details sheet to find the "TRADE RECEIVABLE"
-        # section header, then use the first data row below it as the
-        # scan start, and the TOTAL row as the scan end.
-        _recv_section_start = 74  # safe fallback
+        # FIX (Bug 2 — recv section detection):
+        # The previous code used range(50, 200) for the scan, but in this template
+        # the TRADE RECEIVABLE header sits at row 49 — ONE ROW BEFORE the scan starts.
+        # So _recv_section_start never got updated from its initial fallback value of 74,
+        # causing rows 51-73 to be skipped entirely (ABHINANDAN PRINTERS, ACE designers,
+        # Bene Hygeine, AMP Pharmaceuticals, Bing Hospitality, etc. never matched).
+        #
+        # Fix: start scan from row 1 (or at least row 40) to guarantee we catch headers
+        # at any position. Also separate the "find first <6months header" pass from the
+        # "find total row" pass so the two-header template (row 49 = <6months,
+        # row 141 = >6months) doesn't cause the start to jump to 143 before total is found.
+        _recv_section_start = None   # will be set when first trade-receivable header found
         _recv_total_row = None
-        for _sr in range(50, 200):
-            _lbl = str(ws_det.cell(_sr, 1).value or ws_det.cell(_sr, 2).value or "").lower()
+        _recv_gt6_start = None       # >6months section start (ignored for injection)
+        for _sr in range(1, 250):
+            _a = ws_det.cell(_sr, 1).value
+            _b = ws_det.cell(_sr, 2).value
+            _lbl = str(_a or _b or "").lower()
+            _d_val = ws_det.cell(_sr, 4).value
+
             if "trade receivable" in _lbl or "trade rec" in _lbl:
-                _recv_section_start = _sr + 2  # skip header + PARTICULARS row
-            if _recv_total_row is None and _sr > _recv_section_start and (
-                    "total" in _lbl or "sum" in str(ws_det.cell(_sr, 4).value or "").lower()):
-                _recv_total_row = _sr
-                break
-        recv_end_row = (_recv_total_row - 1) if _recv_total_row else 90
+                if _recv_section_start is None:
+                    # First (< 6 months) header — this is where our debtors go
+                    _recv_section_start = _sr + 2  # skip header + PARTICULARS row
+                else:
+                    # Second (> 6 months) header — record but don't use for injection
+                    _recv_gt6_start = _sr + 2
+
+            # TOTAL / SUM row ends the <6months debtor section
+            if _recv_section_start and _recv_total_row is None:
+                _is_total = ("total" in _lbl and _sr > _recv_section_start)
+                _is_sum   = (isinstance(_d_val, str) and "sum" in _d_val.lower()
+                             and _sr > _recv_section_start)
+                if _is_total or _is_sum:
+                    # Make sure we haven't accidentally crossed into the >6months section
+                    if _recv_gt6_start is None or _sr < _recv_gt6_start:
+                        _recv_total_row = _sr
+                        break   # found both start and end — done
+
+        if _recv_section_start is None:
+            _recv_section_start = 74   # hard fallback for unexpected templates
+        recv_end_row = (_recv_total_row - 1) if _recv_total_row else (_recv_section_start + 80)
 
         for acct in receivable_accounts:
             placed = False
-            # First try to match by name
+            # First try to match by name within the FULL recv section
             for r in range(_recv_section_start, recv_end_row + 1):
                 b = det_cache.get((r, 2))
                 if b and _fuzzy_match_name(acct["name"], str(b)) and r not in recv_written:
@@ -3501,70 +3608,53 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         injected.append(f"Details!D{r} ({acct['name']}) = {abs(acct['net']):,.2f}")
                         recv_written.add(r); placed = True
                     else:
-                        # Cell already non-zero (template pre-populated).
-                        # If the existing value matches the TB amount (same
-                        # person, same year), treat as already placed so we
-                        # don't duplicate via overflow insert.
                         existing = ws_det.cell(r, 4).value
                         if existing is not None and abs(float(existing or 0) - abs(acct["net"])) < 1:
                             recv_written.add(r); placed = True
                             injected.append(f"Details!D{r} ({acct['name']}) already = {existing} ✓")
-                        # Either way, stop scanning — name was matched here
                     break
             if not placed:
-                # Try first empty row — treat whitespace-only cells as empty
-                # (templates often have B94=' ' as a visual spacer before TOTAL)
+                # Try first empty row in section
                 for r in range(_recv_section_start, recv_end_row + 1):
                     b_raw = det_cache.get((r, 2))
                     b_empty = (b_raw is None or str(b_raw).strip() == "")
                     if b_empty and det_cache.get((r, 4)) is None and r not in recv_written:
-                        if b_empty and b_raw is not None:
-                            ws_det.cell(r, 2).value = None  # clear the space
+                        if b_raw is not None:
+                            ws_det.cell(r, 2).value = None
                         _safe_write(ws_det, r, 2, acct["name"])
                         if _safe_write(ws_det, r, 4, abs(acct["net"])):
-                            # FIX: if the TOTAL formula (at recv_end_row+1 or
-                            # _recv_total_row) used a hardcoded upper bound
-                            # like =SUM(D63:D93), it won't include this newly
-                            # written spacer row. Extend it to include r.
-                            _total_r = (_recv_total_row or recv_end_row + 1)
-                            _total_f = ws_det.cell(_total_r, 4).value
-                            if isinstance(_total_f, str) and _total_f.startswith("=SUM(") and f":D{r - 1})" in _total_f:
-                                ws_det.cell(_total_r, 4).value = _total_f.replace(f":D{r - 1})", f":D{r})")
-                            injected.append(f"Details!D{r} (recv: {acct['name']}) = {abs(acct['net']):,.2f}")
+                            injected.append(f"Details!D{r} (recv new slot: {acct['name']}) = {abs(acct['net']):,.2f}")
                             recv_written.add(r); placed = True
                         break
             if not placed:
-                # Section full — insert new row before total
+                # Section full — insert new row before total and update formula
                 try:
-                    recv_end_row += 1
-                    ws_det.insert_rows(recv_end_row)
-                    ws_det.cell(recv_end_row, 2).value = acct["name"]
-                    ws_det.cell(recv_end_row, 4).value = abs(acct["net"])
-                    recv_written.add(recv_end_row)
-                    injected.append(f"Details!D{recv_end_row} (recv NEW ROW: {acct['name']}) = {abs(acct['net']):,.2f}")
-                    # Update det_cache for new row
-                    det_cache[(recv_end_row, 2)] = acct["name"]
-                    det_cache[(recv_end_row, 4)] = abs(acct["net"])
+                    insert_at = recv_end_row + 1  # insert at position of total row
+                    ws_det.insert_rows(insert_at)
+                    ws_det.cell(insert_at, 2).value = acct["name"]
+                    ws_det.cell(insert_at, 4).value = abs(acct["net"])
+                    recv_written.add(insert_at)
+                    recv_end_row = insert_at  # expand section end
+                    injected.append(f"Details!D{insert_at} (recv NEW ROW: {acct['name']}) = {abs(acct['net']):,.2f}")
+                    det_cache[(insert_at, 2)] = acct["name"]
+                    det_cache[(insert_at, 4)] = abs(acct["net"])
 
-                    # FIX (openpyxl shared-formula bug): insert_rows shifts
-                    # cell positions but the =SUM formula in the TOTAL row
-                    # uses a shared-formula reference which openpyxl drops on
-                    # save/reload. Explicitly re-write the total formula AFTER
-                    # the repair loop (see below) so it includes the newly
-                    # inserted row without the repair loop making it circular.
+                    # Update total formula to cover full section including new row
                     _pending_total_row   = recv_end_row + 1
                     _pending_total_start = _recv_section_start
+                    # Re-write the total formula to cover start→new end
+                    _total_r = (_recv_total_row + 1) if _recv_total_row else (recv_end_row + 1)
+                    _total_f = ws_det.cell(_total_r, 4).value
+                    if isinstance(_total_f, str) and "SUM" in _total_f.upper():
+                        ws_det.cell(_total_r, 4).value = (
+                            f"=SUM(D{_pending_total_start}:D{recv_end_row})"
+                        )
+                        injected.append(f"Details!D{_total_r} TOTAL formula updated to cover D{_pending_total_start}:D{recv_end_row}")
+                    elif _total_f is None or _total_f == 0:
+                        ws_det.cell(_total_r, 4).value = (
+                            f"=SUM(D{_pending_total_start}:D{recv_end_row})"
+                        )
 
-                    # FIX: insert_rows() above only shifted cell positions
-                    # WITHIN the Details sheet — it does not rewrite formula
-                    # text on other sheets. Any cross-sheet formula (e.g. on
-                    # "bs" or "notes to bs") that hardcodes a reference like
-                    # =Details!D101 to read the Trade Receivables Total row
-                    # keeps pointing at the OLD row number even though the
-                    # real Total physically moved down to row 102+ after
-                    # this insert. This mirrors the cross-sheet-shift fix
-                    # already applied to the P&L expense-section expansion
-                    # above — same root cause, just unapplied here.
                     _recv_cross_pattern = re.compile(
                         r"'?Details'?!(\$?)([A-Z]+)(\$?)(\d+)"
                         r"(:(\$?)([A-Z]+)(\$?)(\d+))?"
@@ -4106,13 +4196,49 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 # case the literal date string '31.03.2022' (a 3rd "previous
                 # year" column header), which then got treated as if it were
                 # a genuine sale sub-row label.
+                # FIX (Bug 2): Also detect E/F layout by checking whether col E
+                # contains sale-related labels (Sale, Job Work, etc.) even when
+                # those labels don't contain "GST" — some templates (Penguin
+                # Packages style) have plain "Sale" and "Job Work" sub-rows on
+                # the sales side without GST-rate differentiation.
                 _sale_lbl_col, _sale_val_col = (4, 5)
+                # First: check for "sales gst" in col E (existing detection)
+                _col_e_has_sales_gst = False
                 for r in range(1, 40):
                     _probe = gp_cache.get((r, 5))
                     if _probe and "sales" in str(_probe).strip().lower() \
                             and "gst" in str(_probe).strip().lower():
-                        _sale_lbl_col, _sale_val_col = (5, 6)
+                        _col_e_has_sales_gst = True
                         break
+                if _col_e_has_sales_gst:
+                    _sale_lbl_col, _sale_val_col = (5, 6)
+                else:
+                    # FIX (Bug 2): check whether the TOTAL row in col E/F layout
+                    # sums a column F range. If TOTAL is in col E and value in F,
+                    # it's E/F layout. Also check if col E has "SALES" header.
+                    # Additionally check col 5 (E) for any non-date, non-empty
+                    # non-formula text that looks like a sale sub-row label
+                    # (e.g. "Sale", "Job Work", "Sale GST 12%").
+                    _col_e_sale_labels = 0
+                    for r in range(1, 40):
+                        _probe_e = gp_cache.get((r, 5))
+                        if not _probe_e:
+                            continue
+                        _pe_s = str(_probe_e).strip().lower()
+                        # Skip formulas, dates, headers
+                        if _pe_s.startswith("=") or re.match(r'^\d', _pe_s):
+                            continue
+                        if _pe_s in ("sales", "closing stock", "total", "particulars",
+                                     "current year", "previous year", "rs.", "p"):
+                            continue
+                        if any(w in _pe_s for w in ("sale", "job work", "service", "export",
+                                                      "domestic", "local sale", "interstate")):
+                            # Check col F has a value (numeric or formula) → confirms E/F layout
+                            _probe_f = gp_cache.get((r, 6))
+                            if _probe_f is not None:
+                                _col_e_sale_labels += 1
+                    if _col_e_sale_labels >= 1:
+                        _sale_lbl_col, _sale_val_col = (5, 6)
 
                 _date_like = re.compile(r'^\d{1,2}[./]\d{1,2}[./]\d{2,4}$')
 
@@ -4573,7 +4699,17 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 # Find the Purchases sub-section bounds in notes to p&l:
                 # starts after a row labelled "Purchases" (col B), ends at
                 # the next section label (col A non-empty, e.g. "(c)").
+                # FIX (Bug 3): also detect the sub-section by finding the first
+                # row INSIDE the Purchases section that the GROSS PROFIT Purchase
+                # formula references via ='notes to p&l'!D{row}. That target row
+                # is the TRUE destination for the purchase total. Some templates
+                # have a first sub-row labelled '-Purchase GST (Net of Discounts)'
+                # (which B14 in GROSS PROFIT references as D24) while the second
+                # sub-row 'Purchase' (D25) has the generic purchase label —
+                # rate/name matching always landed in D25, leaving D24 empty
+                # and causing GROSS PROFIT!B14 to show nothing.
                 purch_start, purch_end = None, None
+                _npl_purch_formula_row = None   # row that GP formula references
                 for r in range(1, 60):
                     lbl_b = ws_npl.cell(r, 2).value
                     if lbl_b and str(lbl_b).strip().lower() == "purchases":
@@ -4587,6 +4723,20 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                             break
                     if purch_end is None:
                         purch_end = purch_start + 12
+
+                # Detect which notes to p&l row the GROSS PROFIT Purchase row
+                # references (if any), so we write to that exact row.
+                if ws_gp:
+                    import re as _re_gp_ref
+                    for _gpr in range(1, 40):
+                        _gp_a = ws_gp.cell(_gpr, 1).value
+                        _gp_b = ws_gp.cell(_gpr, 2).value
+                        if _gp_a and "purchase" in str(_gp_a).lower():
+                            if isinstance(_gp_b, str) and "notes to p&l" in _gp_b:
+                                _m_ref = _re_gp_ref.search(r"!D(\d+)", _gp_b)
+                                if _m_ref:
+                                    _npl_purch_formula_row = int(_m_ref.group(1))
+                            break
 
                 still_unmatched_purch = []
                 if purch_start and purch_end:
@@ -4602,24 +4752,50 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         acct_l = acct["name"].lower()
                         acct_rate = _extract_rate3(acct["name"])
                         wrote = False
-                        for r in range(purch_start, purch_end):
-                            cell_name = ws_npl.cell(r, 2).value
-                            if not cell_name:
-                                continue
-                            tmpl_l = str(cell_name).lower()
-                            tmpl_rate = _extract_rate3(str(cell_name))
-                            rate_match = acct_rate and tmpl_rate and acct_rate == tmpl_rate
-                            region_match = (
-                                ("central" in acct_l) == ("central" in tmpl_l)
-                                and ("local" in acct_l) == ("local" in tmpl_l)
-                            )
-                            if rate_match and region_match:
-                                if _safe_write(ws_npl, r, 4, amt):
+
+                        # FIX (Bug 3): If the GROSS PROFIT formula references a
+                        # specific notes to p&l row and that row is empty,
+                        # write to it directly (regardless of label matching)
+                        # when the account has no GST rate (generic purchase).
+                        if (not acct_rate and _npl_purch_formula_row and
+                                purch_start <= _npl_purch_formula_row < purch_end):
+                            _target_cell = ws_npl.cell(_npl_purch_formula_row, 4)
+                            if _target_cell.value is None or _target_cell.value == 0:
+                                if _safe_write(ws_npl, _npl_purch_formula_row, 4, amt):
                                     injected.append(
-                                        f"notes to p&l!D{r} (Purchase: {acct['name']}) = {amt:,.2f}"
+                                        f"notes to p&l!D{_npl_purch_formula_row} "
+                                        f"(Purchase GP-formula target: {acct['name']}) = {amt:,.2f}"
                                     )
                                     wrote = True
-                                break
+                            elif not _is_formula(_target_cell.value):
+                                # Already has a value — accumulate
+                                existing_v = float(_target_cell.value or 0)
+                                if _safe_write(ws_npl, _npl_purch_formula_row, 4, existing_v + amt):
+                                    injected.append(
+                                        f"notes to p&l!D{_npl_purch_formula_row} "
+                                        f"(Purchase GP-formula target accum: {acct['name']}) = {existing_v+amt:,.2f}"
+                                    )
+                                    wrote = True
+
+                        if not wrote:
+                            for r in range(purch_start, purch_end):
+                                cell_name = ws_npl.cell(r, 2).value
+                                if not cell_name:
+                                    continue
+                                tmpl_l = str(cell_name).lower()
+                                tmpl_rate = _extract_rate3(str(cell_name))
+                                rate_match = acct_rate and tmpl_rate and acct_rate == tmpl_rate
+                                region_match = (
+                                    ("central" in acct_l) == ("central" in tmpl_l)
+                                    and ("local" in acct_l) == ("local" in tmpl_l)
+                                )
+                                if rate_match and region_match:
+                                    if _safe_write(ws_npl, r, 4, amt):
+                                        injected.append(
+                                            f"notes to p&l!D{r} (Purchase: {acct['name']}) = {amt:,.2f}"
+                                        )
+                                        wrote = True
+                                    break
                         # FIX: the rate/region match above requires BOTH
                         # the TB account name AND the template label to
                         # contain a GST percentage (e.g. "5%", "18%") —
@@ -4942,12 +5118,55 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             name_l = a.get("name","").lower()
             if a.get("bs_head") == "other_expenses":
                 if any(kw in name_l for kw in ["salary", "wage", "e.s.i", "esi ",
-                       "bonus", "leave with", "labour refreshment", "labor"]):
+                       "bonus", "leave with", "labour refreshment", "labor",
+                       "labour welfare", "labor welfare", "lwf"]):
                     if "payable" not in name_l and abs(a.get("net", 0)) > 0:
                         if a not in emp_accounts:
                             emp_accounts.append(a)
 
         if emp_accounts:
+            # FIX (Bug 1): Sort employee accounts so Salary comes before Bonus
+            # in the injection order.  Previously the list was in TB row order,
+            # which could put BONUS (row 153) BEFORE Salary (row 178) and cause
+            # BONUS to claim the "Salaries" template row while Salary landed
+            # in the wrong slot (e.g. "Staff welfare expenses").
+            # Priority: salary/salaries first, then wages, then bonus, then rest.
+            def _emp_sort_key(acct):
+                n = acct.get("name","").lower()
+                if "salary" in n or "salari" in n or "salaries" in n:
+                    return 0
+                if "wage" in n:
+                    return 1
+                if "bonus" in n:
+                    return 3
+                if "esi" in n or "e.s.i" in n:
+                    return 4
+                return 2
+            emp_accounts = sorted(emp_accounts, key=_emp_sort_key)
+
+            # FIX (Bug 1): Expand template label synonyms for salary matching.
+            # "Salaries" in the template should match TB accounts named
+            # "Salary", "SALARY", "BONUS" should match "Bonus", etc.
+            # The existing _fuzzy_match_name handles substring/edit distance,
+            # but we add explicit canonical mappings to guarantee matches even
+            # when template uses plural ("Salaries") vs TB singular ("Salary").
+            _EMP_CANONICAL = {
+                "salary": ["salary", "salaries", "salari", "remuneration"],
+                "salaries": ["salary", "salaries", "salari"],
+                "wage": ["wages", "wage", "wages a/c", "wages account"],
+                "wages": ["wages", "wage", "wages a/c"],
+                "bonus": ["bonus"],
+                "gratuity": ["gratuity"],
+                "esi": ["esi", "e.s.i", "e.s.i.", "esi charges", "esic"],
+                "e.s.i": ["esi", "e.s.i", "esic", "e.s.i charges", "e.s.i. charges"],
+                "leave": ["leave", "leave with wages", "leave salary", "lwf",
+                          "labour welfare", "labor welfare", "leave with"],
+                "labour welfare": ["labour welfare fund", "labor welfare fund", "lwf"],
+                "staff welfare": ["staff welfare", "staff welfare expenses"],
+                "epf": ["epf", "pf contribution", "provident fund"],
+                "pf": ["epf", "pf contribution", "provident fund"],
+            }
+
             emp_template = {}
             for r in range(emp_start, emp_end):
                 b = ws_npl.cell(r, 2).value
@@ -4957,9 +5176,21 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             written_emp = set()
             for acct in emp_accounts:
                 matched = False
+                acct_name_l = acct["name"].lower()
                 for r, lbl in emp_template.items():
                     if r in written_emp: continue
-                    if _fuzzy_match_name(acct["name"], lbl):
+                    # FIX (Bug 1): Use canonical synonym matching BEFORE
+                    # generic fuzzy match.  This ensures "Salary" account
+                    # always matches a template row labelled "Salaries"
+                    # (or vice-versa), "Bonus" matches "Bonus", etc.,
+                    # regardless of plural/case variations.
+                    canonical_hit = False
+                    for canon_tmpl, acct_synonyms in _EMP_CANONICAL.items():
+                        if canon_tmpl in lbl:
+                            if any(syn in acct_name_l for syn in acct_synonyms):
+                                canonical_hit = True
+                                break
+                    if canonical_hit or _fuzzy_match_name(acct["name"], lbl):
                         if _safe_set(ws_npl, r, 4, abs(acct["net"])):
                             written_emp.add(r)
                             injected.append(f"notes to p&l!D{r} (Employee: {acct['name']}) = {abs(acct['net']):,.2f}")
@@ -5053,12 +5284,42 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 if b and isinstance(b, str) and len(b.strip()) > 2:
                     fin_template[r] = b.strip().lower()
             
+            # FIX (Bug 4): Finance synonym map so "Bank Interest on LAP"
+            # matches "Bank Interest on Term Loan", "Interest Charges" matches
+            # "Interest Charges", "Interest on Car Loan" matches
+            # "Interest on Car loan", etc.
+            _FIN_SYNONYMS = {
+                "bank interest": ["bank interest", "bank interest on",
+                                  "interest on bank", "cc interest", "overdraft"],
+                "bank interest on term loan": ["bank interest on term",
+                                               "bank interest on lap",
+                                               "interest on term loan",
+                                               "term loan interest"],
+                "bank interest on lap": ["bank interest on lap",
+                                         "bank interest on term",
+                                         "lap interest", "interest on lap"],
+                "interest charges": ["interest charges", "interest on loan",
+                                     "bank interest", "bank cc"],
+                "interest on car loan": ["interest on car", "car loan interest",
+                                         "car loan", "vehicle loan interest"],
+                "interest to partner": ["interest to partner", "partner interest",
+                                        "interest on capital"],
+            }
+
             written_fin = set()
             for acct in finance_accounts:
                 matched = False
+                acct_name_l = acct["name"].lower()
                 for r, lbl in fin_template.items():
                     if r in written_fin: continue
-                    if _fuzzy_match_name(acct["name"], lbl):
+                    # Try canonical synonym match first
+                    _fin_syn_hit = False
+                    for canon, syns in _FIN_SYNONYMS.items():
+                        if canon in lbl:
+                            if any(s in acct_name_l for s in syns):
+                                _fin_syn_hit = True
+                                break
+                    if _fin_syn_hit or _fuzzy_match_name(acct["name"], lbl):
                         if _safe_set(ws_npl, r, 4, abs(acct["net"])):
                             written_fin.add(r)
                             injected.append(f"notes to p&l!D{r} (Finance: {acct['name']}) = {abs(acct['net']):,.2f}")
@@ -5076,6 +5337,17 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                 written_fin.add(r)
                                 injected.append(f"notes to p&l!D{r} (Finance new: {acct['name']}) = {abs(acct['net']):,.2f}")
                                 break
+                    else:
+                        # FIX (Bug 4): no empty row found — accumulate into
+                        # last writable finance row rather than silently drop.
+                        last_r = fin_end - 1
+                        existing_v = ws_npl.cell(last_r, 4).value
+                        if existing_v is not None and not _is_formula(existing_v):
+                            new_v = float(existing_v or 0) + abs(acct["net"])
+                            _safe_set(ws_npl, last_r, 4, new_v)
+                            injected.append(
+                                f"notes to p&l!D{last_r} (Finance overflow: {acct['name']}) = {new_v:,.2f}"
+                            )
 
         # Combined finance+employee accounts for exclusion from Other Expenses
         finance_acct_names = {a["name"].lower() for a in finance_accounts}
