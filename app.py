@@ -8347,7 +8347,74 @@ def _inject_cap_fa(output_path, cap_entries, fa_entries, log):
                         f">180d={gt:,.2f}, <180d={lt:,.2f}"
                     )
 
-            # ── Existing rows: write additions/sale as before ──────────────
+            # ── Existing rows: write additions/sale ────────────────────────
+            # FIX (FA Formula Shift Bug):
+            # openpyxl reads shared formulas (Excel's 'si' attribute) and
+            # stores them as expanded per-cell formulas.  But when a PREVIOUS
+            # tb-process run wrote plain numeric values into F/H/I of a row
+            # (e.g. Machine row 12: F12=5200000, H12=780000, I12=4420000),
+            # those cells lost their formula text.  Because Excel stored the
+            # NEXT row's formulas as shared-formula references to the base cell
+            # (row 12), openpyxl now reads them as =B12+C12+D12-E12 instead of
+            # the correct =B13+C13+D13-E13 — one row off for every row below.
+            #
+            # Fix strategy (two passes):
+            #   Pass 1: For each entry row, ALWAYS re-write F, H, I with
+            #           correct per-row formulas (even if they look like plain
+            #           values — the plain value IS the corruption).
+            #   Pass 2: After all entries are written, scan all FA data rows
+            #           and repair any F/H/I formula that still references a
+            #           row number other than its own (the shifted-formula
+            #           symptom: row 13 having =B12+... instead of =B13+...).
+            #
+            # This is safe because:
+            #   - The formulas are always =B{r}+C{r}+D{r}-E{r} etc. — we know
+            #     the canonical form.
+            #   - We only touch F, H, I — never B, C, D, E, G (user data cols).
+            #   - If a cell already has the correct formula we leave it alone.
+
+            def _fa_formula_for_row(r):
+                """Return the canonical (F, H, I) formulas for FA row r."""
+                f_col = f"=B{r}+C{r}+D{r}-E{r}"
+                # Rate column is G (7); depreciation formula uses G{r}
+                h_col = f"=(B{r}+C{r}-E{r})*G{r}/100+(D{r}*G{r}/200)"
+                i_col = f"=F{r}-H{r}"
+                return f_col, h_col, i_col
+
+            def _repair_fa_formula(ws_fa, r):
+                """
+                Repair F, H, I for row r if they are:
+                  (a) a plain numeric value (formula was previously over-written), OR
+                  (b) a formula referencing a row number other than r (shared-formula shift).
+                Returns True if a repair was made.
+                """
+                import re as _re
+                repaired = False
+                for col_idx, get_formula in (
+                    (6,  lambda r: f"=B{r}+C{r}+D{r}-E{r}"),
+                    (8,  lambda r: f"=(B{r}+C{r}-E{r})*G{r}/100+(D{r}*G{r}/200)"),
+                    (9,  lambda r: f"=F{r}-H{r}"),
+                ):
+                    cell = ws_fa.cell(r, col_idx)
+                    v = cell.value
+                    correct = get_formula(r)
+                    needs_repair = False
+                    if v is None:
+                        pass  # blank — leave it (Land has no H/I formula)
+                    elif isinstance(v, (int, float)):
+                        # Plain value where a formula should be → repair
+                        needs_repair = True
+                    elif isinstance(v, str) and v.startswith("="):
+                        # Formula that references wrong row → repair
+                        # Extract first row number referenced in the formula
+                        nums = _re.findall(r'\d+', v)
+                        if nums and int(nums[0]) != r:
+                            needs_repair = True
+                    if needs_repair:
+                        cell.value = correct
+                        repaired = True
+                return repaired
+
             for entry in existing_entries:
                 row = entry.get("row")
                 if not row:
@@ -8357,12 +8424,55 @@ def _inject_cap_fa(output_path, cap_entries, fa_entries, log):
                     ("additions_lt180", 4, "Addition <180d"),
                     ("sale", 5, "Sale"),
                 ]
+                wrote_any = False
                 for field_key, default_col, label in fields:
                     val = entry.get(field_key, 0)
                     col_idx = entry.get(f"{field_key}_col", default_col)
                     if val:
                         if _safe_write(ws, row, col_idx, val):
                             log.append(f"✓ {fa_sheet}!{chr(64+col_idx)}{row} ({label}) = {float(val):,.2f}")
+                            wrote_any = True
+
+                # Pass 1: Always repair F/H/I for the row we just wrote into
+                if wrote_any:
+                    if _repair_fa_formula(ws, row):
+                        log.append(f"✓ {fa_sheet} row {row}: repaired F/H/I formulas (shared-formula fix)")
+
+            # Pass 2: Scan ALL data rows in the FA sheet and repair any
+            # shifted shared-formula references — catches rows BELOW the
+            # injection target that reference the wrong row number.
+            # FIX: previously used a_s.isupper() to skip section headers, but
+            # asset names like "E.P.B.X", "COMPUTER", "LAND" are also all-caps
+            # and their isupper() returns True — causing them to be skipped.
+            # Better heuristic: a SECTION HEADER row has no formula or numeric
+            # value in col B (opening WDV), while an asset data row always has
+            # either a number or a cross-sheet formula there.
+            max_fa_row = 60
+            for r_scan in range(8, max_fa_row + 1):
+                a_val = ws.cell(r_scan, 1).value
+                b_val = ws.cell(r_scan, 2).value
+                # Skip completely blank rows
+                if not a_val:
+                    continue
+                if not isinstance(a_val, str):
+                    continue
+                a_s = a_val.strip()
+                if not a_s:
+                    continue
+                # Skip total/subtotal rows
+                if a_s.lower() in ("total", "grand total"):
+                    continue
+                # FIX: distinguish section headers from asset rows using col B:
+                # - Section header: B is None/empty and row has no F formula
+                # - Asset row: B has a number, a formula, or 0
+                b_is_empty = (b_val is None or str(b_val).strip() == "")
+                f_val = ws.cell(r_scan, 6).value
+                f_is_empty = (f_val is None)
+                if b_is_empty and f_is_empty:
+                    # This is a section header (PLANT & MACHINERY, VEHICLE etc.) — skip
+                    continue
+                if _repair_fa_formula(ws, r_scan):
+                    log.append(f"✓ {fa_sheet} row {r_scan} ('{a_s}'): repaired shifted FA formulas")
 
     wb.save(output_path)
     wb.close()
