@@ -13,7 +13,8 @@ from datetime import datetime, timedelta
 from functools import wraps
 from flask import (Flask, request, send_file, jsonify,
                    render_template_string, session, redirect, url_for, g)
-from processor import process, detect_fixed_asset_sheet_names
+from processor import detect_fixed_asset_sheet_names
+from lumid_compat import process
 
 # ── Database driver selection ────────────────────────────────────────────────
 # If DATABASE_URL is set (Supabase/PostgreSQL), use psycopg2.
