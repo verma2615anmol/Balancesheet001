@@ -63,13 +63,41 @@ TEXT_ONLY_SHEETS = {s.strip().lower() for s in [
 CAPITAL_SHEET_NAMES = {"capital"}
 
 def detect_fixed_asset_sheet_names(sheetnames):
-    """Return (cy_sheet_name, py_sheet_name) for fixed-asset sheets."""
+    """Return (cy_sheet_name, py_sheet_name) for fixed-asset sheets.
+
+    Pass 1 (authoritative): only consider sheets whose name explicitly
+    contains "fixed asset" — this is the detailed asset-by-asset schedule
+    used for the year-shift rollover. Generic notes sheets like "PPE"
+    (a Property/Plant/Equipment SUMMARY note, not the rollover schedule)
+    must never be picked here, even though they're related in name.
+
+    Pass 2 (fallback): only runs if NO "fixed asset"-named sheet exists at
+    all in the workbook, for older client templates that use bare "PPE" /
+    "FA20xx" naming instead. This preserves old behavior for those files
+    without letting "PPE" steal the match away from a properly-named
+    "Fixed Assets C. Yr." / "Fixed Assets P. Yr." pair (bug fixed 2026-06-30:
+    "PPE" was matching before "Fixed Assets C. Yr." due to sheet order,
+    causing the rollover to overwrite Fixed Assets P. Yr. with the wrong
+    sheet's contents).
+    """
     cy_sn = py_sn = None
+    for sn in sheetnames or []:
+        sl = (sn or "").strip().lower()
+        if "fixed asset" not in sl:
+            continue
+        if "p. yr" in sl or "p.yr" in sl:
+            py_sn = sn
+        elif "c. yr" in sl or "c.yr" in sl:
+            if cy_sn is None:
+                cy_sn = sn
+    if cy_sn or py_sn:
+        return cy_sn, py_sn
+
     for sn in sheetnames or []:
         sl = (sn or "").strip().lower()
         if "p. yr" in sl or "p.yr" in sl or ("fixed" in sl and (" p." in sl or "p. " in sl)):
             py_sn = sn
-        elif "fixed asset" in sl or (sl.startswith("fa") and "2022" not in sl) or "ppe" in sl:
+        elif (sl.startswith("fa") and "2022" not in sl) or "ppe" in sl:
             if cy_sn is None:
                 cy_sn = sn
     return cy_sn, py_sn
