@@ -608,6 +608,24 @@ def _run_with_patched_maps(
                         )
                         data = text_wb.encode("utf-8")
 
+                # [Content_Types].xml — remove external link content-type
+                # overrides (bug fixed 2026-06-30: this step existed in
+                # processor.py but was missing from this duplicated loop,
+                # leaving Content_Types claiming externalLinkN.xml parts
+                # existed after they'd already been stripped from the zip
+                # above. That package inconsistency is what triggered
+                # Excel's "repaired/removed unreadable content" dialog on
+                # Lumid-format files specifically, since only this code
+                # path — not processor.py's — handles them.)
+                if fn == "[Content_Types].xml":
+                    text_ct = data.decode("utf-8", errors="replace")
+                    if "externalLink" in text_ct:
+                        text_ct = re.sub(
+                            r'<Override[^>]*externalLink[^>]*/>\s*',
+                            '', text_ct
+                        )
+                        data = text_ct.encode("utf-8")
+
                 zo.writestr(item, data)
 
     if ext_count:
