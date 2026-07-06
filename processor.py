@@ -1160,21 +1160,36 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                     # (has no <v> tag at all). Skip if CY has a string value
                     # (shared string ref like date headers) — those get updated
                     # by _update_inline_strings separately.
-                    cy_ref = f"{cy_l}{rn}"
-                    cy_cell_el = None
-                    for _row_el in sd:
-                        for _cell_el in _row_el:
-                            if _cell_el.get("r") == cy_ref:
-                                cy_cell_el = _cell_el
-                                break
-                        if cy_cell_el is not None: break
-                    # Only clear PY if CY cell has NO value at all
-                    cy_has_any_value = (
-                        cy_cell_el is not None and
-                        cy_cell_el.find(f"{{{_NS}}}v") is not None
-                    )
-                    if not cy_has_any_value:
-                        changes[ref] = ("clear_v", None)
+                    #
+                    # BUG 6b FIX (2026-07-06): Also skip clearing if the PY cell
+                    # is a shared-string (t="s") or formula-string-result (t="str")
+                    # cell. Both types are date/label/formula cells whose content is
+                    # managed outside this numeric-shift loop:
+                    #   t="s"  → shared string index, updated by _update_shared_strings
+                    #   t="str"→ formula whose result is a string (e.g. H11 =D11 that
+                    #            displays "31st March, 2025"). The formula stays; Excel
+                    #            recalculates the correct new-year text on open.
+                    # Clearing <v> from either type would leave a blank cell in the
+                    # output, causing the PY date headers to disappear (POOJA bug).
+                    py_cell_type = cell_el.get("t", "")
+                    if py_cell_type in ("s", "str"):
+                        pass  # leave date/label/formula-string PY cells untouched
+                    else:
+                        cy_ref = f"{cy_l}{rn}"
+                        cy_cell_el = None
+                        for _row_el in sd:
+                            for _cell_el in _row_el:
+                                if _cell_el.get("r") == cy_ref:
+                                    cy_cell_el = _cell_el
+                                    break
+                            if cy_cell_el is not None: break
+                        # Only clear PY if CY cell has NO value at all
+                        cy_has_any_value = (
+                            cy_cell_el is not None and
+                            cy_cell_el.find(f"{{{_NS}}}v") is not None
+                        )
+                        if not cy_has_any_value:
+                            changes[ref] = ("clear_v", None)
 
             if cl in cy_letters:
                 _, vals, frows = col_info[cl]
