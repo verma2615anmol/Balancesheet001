@@ -6024,8 +6024,6 @@ def _convert_xls_to_xlsx(xls_path, xlsx_path):
 
     wb_out.save(xlsx_path)
 
-@app.route("/process", methods=["POST"])
-@login_required
 def _convert_xlsb_to_xlsx(xlsb_path: str, xlsx_path: str) -> None:
     """
     Convert a .xlsb (Excel Binary Workbook) file to .xlsx using LibreOffice.
@@ -6094,6 +6092,8 @@ def _convert_xlsb_to_xlsx(xlsb_path: str, xlsx_path: str) -> None:
                 zo.writestr(all_infos[name], all_data[name])
 
 
+@app.route("/process", methods=["POST"])
+@login_required
 def process_file():
     try:
         user = get_user_by_id(session["uid"])
