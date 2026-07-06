@@ -6026,70 +6026,63 @@ def _convert_xls_to_xlsx(xls_path, xlsx_path):
 
 def _convert_xlsb_to_xlsx(xlsb_path: str, xlsx_path: str) -> None:
     """
-    Convert a .xlsb (Excel Binary Workbook) file to .xlsx using LibreOffice.
+    Convert a .xlsb (Excel Binary Workbook) to .xlsx using pyxlsb + openpyxl.
 
-    LibreOffice is available on Render (Ubuntu) and handles the full BIFF12
-    binary format including formatting, formulas, and merged cells — far
-    better than any pure-Python alternative.
+    pyxlsb reads the BIFF12 binary format reliably without requiring any
+    external system tools (LibreOffice is not available on Render).
 
-    Post-conversion cleanup:
-      • Strip empty/null <definedName> entries from workbook.xml.
-        LibreOffice writes these for print areas that are blank in the source,
-        and openpyxl 3.x raises a TypeError when it encounters them.
-      • Remove null print-title defined names for the same reason.
+    What is preserved: all cell values (numbers, text, dates, booleans).
+    What is NOT preserved: cell formatting, colors, borders, merged cells,
+    print settings, formulas. For the year-shift tool this is acceptable
+    because only cell values are shifted; formatting is irrelevant to the
+    algorithm. The output .xlsx will have plain formatting.
+
+    After conversion the year-shift runs on the clean .xlsx exactly like any
+    natively-uploaded .xlsx file.
     """
-    import subprocess, shutil, tempfile, zipfile as _zip, re as _re
+    import pyxlsb
+    from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
+    from datetime import datetime, date
 
-    # Work in a temp dir so LibreOffice can write alongside the source
-    with tempfile.TemporaryDirectory() as tmpdir:
-        src = os.path.join(tmpdir, os.path.basename(xlsb_path))
-        shutil.copy(xlsb_path, src)
+    # pyxlsb serial-date epoch: days since 1899-12-30
+    _EPOCH = datetime(1899, 12, 30)
 
-        result = subprocess.run(
-            ["libreoffice", "--headless", "--convert-to", "xlsx",
-             "--outdir", tmpdir, src],
-            capture_output=True, text=True, timeout=120
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"LibreOffice conversion failed (rc={result.returncode}): "
-                f"{result.stderr[:300]}"
-            )
+    def _xlsb_val(cell_val):
+        """Convert pyxlsb cell value to a Python type openpyxl can write."""
+        if cell_val is None:
+            return None
+        if isinstance(cell_val, (int, float)):
+            # Dates in xlsb are stored as floats. We cannot reliably distinguish
+            # date-formatted numbers without the style table (pyxlsb does not
+            # expose it). Return as float — the year-shift only reads numeric
+            # values and date strings, so this is safe.
+            return cell_val
+        if isinstance(cell_val, str):
+            return cell_val
+        if isinstance(cell_val, bool):
+            return cell_val
+        # Fallback: coerce to string
+        return str(cell_val)
 
-        # Find the output file
-        converted = None
-        for fname in os.listdir(tmpdir):
-            if fname.endswith(".xlsx"):
-                converted = os.path.join(tmpdir, fname)
-                break
-        if not converted or not os.path.exists(converted):
-            raise RuntimeError("LibreOffice did not produce an .xlsx output file.")
+    wb_out = Workbook()
+    wb_out.remove(wb_out.active)  # remove default empty sheet
 
-        # ── Patch workbook.xml: remove empty/null definedNames ──────────────
-        # openpyxl crashes on <definedName ...></definedName> (empty content)
-        # and on <definedName .../>  (self-closing) for print areas/titles.
-        with _zip.ZipFile(converted, "r") as zi:
-            all_names = zi.namelist()
-            all_data  = {n: zi.read(n) for n in all_names}
-            all_infos = {item.filename: item for item in zi.infolist()}
+    with pyxlsb.open_workbook(xlsb_path) as wb_in:
+        for sheet_name in wb_in.sheets:
+            ws_out = wb_out.create_sheet(title=sheet_name)
+            with wb_in.get_sheet(sheet_name) as ws_in:
+                for row in ws_in.rows():
+                    for cell in row:
+                        val = _xlsb_val(cell.v)
+                        if val is not None:
+                            ws_out.cell(
+                                row=cell.r + 1,
+                                column=cell.c + 1,
+                                value=val,
+                            )
 
-        wb_xml = all_data.get("xl/workbook.xml", b"").decode("utf-8", "replace")
-        if "definedName" in wb_xml:
-            # Remove completely empty definedName elements
-            wb_xml = _re.sub(
-                r'<definedName\b[^>]*>\s*</definedName>\s*',
-                '', wb_xml
-            )
-            wb_xml = _re.sub(
-                r'<definedName\b[^>]*/>\s*',
-                '', wb_xml
-            )
-            all_data["xl/workbook.xml"] = wb_xml.encode("utf-8")
-
-        # Write patched file to final destination
-        with _zip.ZipFile(xlsx_path, "w", _zip.ZIP_DEFLATED) as zo:
-            for name in all_names:
-                zo.writestr(all_infos[name], all_data[name])
+    wb_out.save(xlsx_path)
 
 
 @app.route("/process", methods=["POST"])
@@ -6128,7 +6121,7 @@ def process_file():
                 f.save(raw_tmp)
                 _convert_xls_to_xlsx(raw_tmp, ip)
             elif is_xlsb:
-                # Save .xlsb first, then convert to .xlsx via LibreOffice
+                # Save .xlsb first, then convert to .xlsx via pyxlsb + openpyxl
                 raw_tmp = os.path.join(UPLOAD_DIR, f"{h}_in.xlsb")
                 f.save(raw_tmp)
                 _convert_xlsb_to_xlsx(raw_tmp, ip)
