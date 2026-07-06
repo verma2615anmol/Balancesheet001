@@ -756,17 +756,42 @@ def _repair_worksheet_xml(output_path: str) -> None:
                 if fn.startswith("xl/worksheets/") and fn.endswith(".xml"):
                     text = data.decode("utf-8", errors="replace")
 
-                    # (a) t="str" cells with no <f>: strip t="str"
-                    def _fix_str_no_f(cm):
+                    # (a) Cells with text <v> values but no type attribute cause
+                    #     openpyxl to try casting the text as a number → crash.
+                    #     These arise when the year-shift tool copies a string value
+                    #     from a t="str" formula cell into the PY column as a plain
+                    #     value but loses the t="str" attribute in the process.
+                    #
+                    #     Fix: for any paired <c> cell that has NO t= attribute,
+                    #     no <f> tag, and a <v> whose content is NOT numeric,
+                    #     add t="str" so openpyxl reads it as a string.
+                    #
+                    #     We do NOT remove t="str" from cells — that was wrong and
+                    #     caused exactly this crash.
+                    def _add_missing_t_str(cm):
                         full = cm.group(0)
+                        # Skip if already has a type attribute
+                        if re.search(r'\bt="', full):
+                            return full
+                        # Skip if has a formula (type inferred from formula result)
                         if '<f' in full:
-                            return full  # has formula — fine
-                        # Remove t="str" attribute
-                        return re.sub(r'\s*t="str"', '', full, count=1)
+                            return full
+                        v_m = re.search(r'<v>([^<]*)</v>', full)
+                        if not v_m:
+                            return full
+                        val = v_m.group(1).strip()
+                        # If value is numeric — no fix needed
+                        try:
+                            float(val)
+                            return full
+                        except (ValueError, OverflowError):
+                            pass
+                        # Text value with no type — add t="str"
+                        return re.sub(r'(<c\b)', r'\1 t="str"', full, count=1)
 
                     text = re.sub(
-                        r'<c\b[^>]*\bt="str"[^>]*>(?:(?!</c>).)*?</c>',
-                        _fix_str_no_f, text, flags=re.DOTALL
+                        r'<c\b(?![^>]*\bt=)[^>]*>(?:(?!</c>).)*?</c>',
+                        _add_missing_t_str, text, flags=re.DOTALL
                     )
 
                     # (b) t="s" cells with no <v>: strip t="s"
