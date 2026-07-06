@@ -126,6 +126,153 @@ def _is_lumid_format(filepath: str) -> bool:
         return False
 
 
+# ── Pooja/GD-Singla horizontal-format fingerprint ───────────────────────────
+# This template family (e.g. POOJA_INDUSTRIES, similar GD Singla CA templates)
+# packs ALL schedules horizontally into a SINGLE sheet called "POOJA-I" or
+# similar.  Each schedule occupies a 4-column block:
+#   col N   = labels, col N+1 = note ref, col N+2 = CY figures, col N+3 = PY figures
+#
+# The auto-detector finds wrong column pairs because the year-header strings
+# (e.g. "31st March, 2025") appear in the PY column (N+3) of each block, not
+# the CY column.  The detector pairs them with the wrong adjacent column.
+#
+# Detection: the sheet name starts with the company name (no standard pattern),
+# but the layout is identified by finding "Figures as at the end of the" and
+# "current reporting period" / "of the prev reporting period" split over two
+# rows in the same column area — this is the Revised Schedule VI BS header.
+
+_POOJA_HEADER_MARKER = "figures as at the end of the"  # lower-cased
+
+
+def _is_pooja_format(filepath: str) -> bool:
+    """
+    Return True if the workbook uses the Pooja/GD-Singla horizontal layout:
+    all BS, P&L and schedule blocks packed side-by-side in one sheet, with
+    the 'Figures as at the end of the / current reporting period' split header.
+    """
+    try:
+        wb = load_workbook(filepath, read_only=True, data_only=True)
+        try:
+            for sname in wb.sheetnames:
+                ws = wb[sname]
+                for row in ws.iter_rows(min_row=1, max_row=20, values_only=True):
+                    for cell in row:
+                        if (isinstance(cell, str) and
+                                _POOJA_HEADER_MARKER in cell.lower()):
+                            return True
+        finally:
+            wb.close()
+    except Exception:
+        pass
+    return False
+
+
+def _pooja_sheet_col_map(filepath: str) -> dict[str, list[tuple[str, str]]]:
+    """
+    Build the corrected shift_map for a Pooja/GD-Singla format workbook.
+
+    Returns: { sheet_name: [(cy_letter, py_letter), ...] }
+
+    Two header patterns are detected within the first 20 rows of each sheet:
+
+    Pattern 1 — Revised Schedule VI "Figures" split header (BS / P&L sections):
+      Col X  = "Figures as at the end of the" (CY label)
+      Col X+1 = "Figures as at the end" (PY label, split across same row)
+      → pair: (X, X+1)
+      Example: BS at cols C/D → pair C→D; P&L at cols G/H → pair G→H.
+
+    Pattern 2 — Notes with count + amount sub-columns (Share Capital etc.):
+      Col X   = "As at 31 March YYYY_CY"  (CY header, e.g. 2025)
+      Col X+2 = "As at 31 March YYYY_PY"  (PY header, e.g. 2024)
+      Data layout: X=CY_count, X+1=CY_amount, X+2=PY_count, X+3=PY_amount
+      → pairs: (X, X+2) for count column AND (X+1, X+3) for amount column
+      Example: cols 11/13 → pairs K→M and L→N.
+
+    Pattern 1 and Pattern 2 are distinguished by whether two year-labelled
+    headers appear 1 apart (Pattern 1) or 2 apart (Pattern 2).
+    """
+    from openpyxl.utils import get_column_letter
+    import re as _re
+
+    cy_year_re = _re.compile(r'as at\s+\d+\s+\w+\s*,?\s*(\d{4})', _re.IGNORECASE)
+    result: dict = {}
+
+    try:
+        wb = load_workbook(filepath, read_only=True, data_only=True)
+        try:
+            for sname in wb.sheetnames:
+                ws = wb[sname]
+                pairs: list[tuple[str, str]] = []
+                seen_cy_cols: set[int] = set()
+
+                # Pass 1 — "Figures as at the end of the" / "Figures as at the end"
+                # split header (always gap=1, CY then PY on same row)
+                for row in ws.iter_rows(min_row=1, max_row=20, values_only=True):
+                    for c_idx, cell in enumerate(row, 1):
+                        if not isinstance(cell, str):
+                            continue
+                        if _POOJA_HEADER_MARKER in cell.lower():
+                            if c_idx not in seen_cy_cols:
+                                seen_cy_cols.add(c_idx)
+                                pairs.append((
+                                    get_column_letter(c_idx),
+                                    get_column_letter(c_idx + 1),
+                                ))
+
+                # Pass 2 — "As at 31 March YYYY" date headers.
+                # Collect all (col, year) tuples from header rows, then resolve pairs.
+                date_headers: dict[int, int] = {}  # col_idx → year
+                for row in ws.iter_rows(min_row=1, max_row=20, values_only=True):
+                    for c_idx, cell in enumerate(row, 1):
+                        if not isinstance(cell, str):
+                            continue
+                        m = cy_year_re.search(cell)
+                        if m:
+                            yr = int(m.group(1))
+                            if c_idx not in date_headers:
+                                date_headers[c_idx] = yr
+
+                # Determine CY year (most recent) from the found headers
+                if date_headers:
+                    max_yr = max(date_headers.values())
+                    for c_idx, yr in sorted(date_headers.items()):
+                        if yr != max_yr:
+                            continue   # this is a PY header — skip
+                        if c_idx in seen_cy_cols:
+                            continue   # already handled by Pass 1
+                        # Check if PY header is at gap=1 or gap=2
+                        py_gap1 = date_headers.get(c_idx + 1)
+                        py_gap2 = date_headers.get(c_idx + 2)
+                        if py_gap1 is not None and py_gap1 < max_yr:
+                            # Gap=1: simple CY→PY pair
+                            seen_cy_cols.add(c_idx)
+                            pairs.append((
+                                get_column_letter(c_idx),
+                                get_column_letter(c_idx + 1),
+                            ))
+                        elif py_gap2 is not None and py_gap2 < max_yr:
+                            # Gap=2: count+amount sub-columns
+                            # Add (X→X+2) for count AND (X+1→X+3) for amount
+                            seen_cy_cols.update([c_idx, c_idx + 1])
+                            pairs.append((
+                                get_column_letter(c_idx),
+                                get_column_letter(c_idx + 2),
+                            ))
+                            pairs.append((
+                                get_column_letter(c_idx + 1),
+                                get_column_letter(c_idx + 3),
+                            ))
+
+                if pairs:
+                    result[sname] = pairs
+        finally:
+            wb.close()
+    except Exception:
+        pass
+
+    return result
+
+
 # ── Lumid-specific column-pair overrides ─────────────────────────────────────
 # Keys are the exact sheet names as they appear in the workbook (case-sensitive
 # because _scan_workbook uses them as-is).  The values are the corrected
@@ -245,19 +392,62 @@ _LUMID_TEXT_ONLY_EXTRA = {
 def process(input_path: str, output_path: str,
             closing_year: int, new_year: int) -> dict:
     """
-    Year-shift a balance sheet, with Lumid-format compatibility.
+    Year-shift a balance sheet, with compatibility shims for known template families.
 
-    For Lumid-format files (detected by sheet-name fingerprint):
-      • Column-pair overrides are injected into _scan_workbook's result.
-      • DEP / deferred-tax sheets are added to TEXT_ONLY so they only get
-        date-string updates, not destructive column shifting.
-      • Everything else is handled by the standard processor.
+    Template families handled:
+      • Lumid-format (NOA 1-2 … NOA 23-27 multi-sheet layout):
+          Column-pair overrides, DEP/deferred-tax TEXT_ONLY, CASH FLOW remap,
+          PY-column formula freeze, XML repair.
+      • Pooja/GD-Singla horizontal format (all schedules in one wide sheet):
+          Auto-detects correct CY→PY column pairs from the Revised Schedule VI
+          "Figures as at the end of the / current reporting period" header.
+          Overrides the wrong pairs that the standard auto-detector finds.
 
     For all other files:
       • Falls through directly to processor.process() unchanged.
     """
+    # ── Pooja/GD-Singla horizontal format ───────────────────────────────────
+    if _is_pooja_format(input_path):
+        col_overrides = _pooja_sheet_col_map(input_path)
+        if col_overrides:
+            # Run standard scan first
+            sizes, shift_map, cy_values, cy_formulas, cap_data = \
+                _proc._scan_workbook(input_path, closing_year)
+
+            # Replace auto-detected pairs with correct pairs for every
+            # sheet that has a Pooja-style header
+            for sn, corrected_pairs in col_overrides.items():
+                shift_map[sn] = corrected_pairs
+
+            # Re-scan CY values using the corrected column pairs.
+            # _rescan_changed_sheets expects all workbook sheet names as arg 3.
+            _wb_tmp2 = load_workbook(input_path, read_only=True, data_only=True)
+            _all_sn_pooja = _wb_tmp2.sheetnames
+            _wb_tmp2.close()
+            _rescan_changed_sheets(
+                input_path, closing_year,
+                _all_sn_pooja,
+                col_overrides,
+                shift_map, cy_values, cy_formulas,
+            )
+
+            pairs = _proc._date_replacements(str(closing_year), str(new_year))
+            log: list[str] = []
+            log.append("ℹ Pooja/GD-Singla horizontal format detected — correcting column pairs")
+            for sn, cp in col_overrides.items():
+                desc = ", ".join(f"{c}→{p}" for c, p in cp)
+                log.append(f"  {sn}: {desc}")
+
+            return _run_with_patched_maps(
+                input_path, output_path,
+                closing_year, new_year,
+                sizes, shift_map, cy_values, cy_formulas, cap_data,
+                pairs, log,
+                set(),  # no Lumid-specific TEXT_ONLY extras
+            )
+
     if not _is_lumid_format(input_path):
-        # Not Lumid-format → standard processor, no changes
+        # Not Lumid-format, not Pooja-format → standard processor, no changes
         return _proc.process(input_path, output_path, closing_year, new_year)
 
     # ── Lumid-format path ────────────────────────────────────────────────────
