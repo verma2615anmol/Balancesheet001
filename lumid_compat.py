@@ -167,14 +167,54 @@ def _lumid_sheet_col_map(wb_sheetnames: list[str]) -> dict:
         # No override needed — let the standard detector handle it.
 
         # ── NOA 13-17 ────────────────────────────────────────────────────────
-        # Auto-detection gets G→I and N→P — both correct (verified).
-        # No override needed.
+        # Auto-detection finds G→I (correct) AND N→P (WRONG — must be dropped).
+        #
+        # The N→P problem:
+        #   Col N row 9 = "As At 31st March 2025" (CY header) → auto-detect
+        #   picks N as a CY column with P as the paired PY column.
+        #   BUT col N rows 11-35 are EMPTY (no CY data there — the debtor aging
+        #   sub-table is a current-year-only schedule with no comparative column
+        #   filled in).  Col P rows 11-35 contain the PY aging detail values
+        #   (individual debtor amounts) and P36 = PY total (127.31 Lakhs).
+        #
+        #   The tool's BUG-6 logic correctly avoids clearing PY cells whose
+        #   corresponding CY cell has NO value — but the tool still calls
+        #   _process_sheet_xml with both pairs active.  The problem is that
+        #   N36=0 (an explicit zero) DOES get treated as a CY value, so P36
+        #   gets overwritten with 0, destroying the PY aging total (127.31→0).
+        #   Additionally the date header in N9 triggers a string-type clear
+        #   on P9, wiping the PY period label.
+        #
+        # Fix: hard-override NOA 13-17 → [(G,I)] only. Drop N→P entirely.
+        # The aging sub-table has no comparative data to shift; its PY figures
+        # in col P must be preserved as-is for the new year's PY reference.
+        elif sl == "noa 13-17":
+            overrides[sn] = [("G", "I")]
 
         # ── NOA 18-22 ────────────────────────────────────────────────────────
         # Auto-detection gets E→G — correct.  No override needed.
 
         # ── NOA 23-27 ────────────────────────────────────────────────────────
-        # Auto-detection gets G→I — correct.  No override needed.
+        # Auto-detection finds G→I — correct for Annexures 23-26 (rows 10-77),
+        # BUT WRONG for Annexure 27 EPS table (rows 80-95).
+        #
+        # The Ann27 EPS problem:
+        #   Ann27 "Earning Per Share" (rows 80-95) has a 4-column layout:
+        #     F83="31st March 2025" (CY), G83="31st March 2024" (PY),
+        #     H83="31st March 2024" (PY), I83="31st March 2024" (PY).
+        #   Col G in rows 83-95 holds PY data (EPS figures, share count etc.),
+        #   NOT CY data.  The G→I shift incorrectly:
+        #     1. Moves G83-G95 values (PY data) into I column cells.
+        #     2. Clears G83-G95, destroying the PY EPS column entirely.
+        #   Result: G86, G87, G88, G91, G92, G93, G95 all wiped to blank.
+        #
+        # Fix: hard-override NOA 23-27 → [(G,I)] with a row-range restriction
+        # so only rows 1-79 (Ann23-26 data) are read as CY for col G.
+        # Rows 80+ (Ann27 EPS) are excluded from the CY scan → G values there
+        # are never treated as CY data → they won't be shifted or cleared.
+        # This is implemented via row_restrictions in _rescan_changed_sheets.
+        elif sl == "noa 23-27":
+            overrides[sn] = [("G", "I")]
 
         # ── CASH FLOW ────────────────────────────────────────────────────────
         # Standard SHEET_COL_MAP fallback uses D→F (wrong for this template).
@@ -413,6 +453,15 @@ def _rescan_changed_sheets(
                 row_restrictions["E"] = (1, boundary - 1)
                 # H column: only Ann4-6 rows (rows >= boundary) are CY
                 row_restrictions["H"] = (boundary, 10_000)
+            elif sl == "noa 13-17":
+                # N→P pair has been dropped (override = [(G,I)] only).
+                # No row restriction needed for G — all rows are correct CY.
+                pass
+            elif sl == "noa 23-27":
+                # G→I is correct for Ann23-26 (rows 10-77).
+                # Ann27 EPS (rows 80-95) has G=PY data, NOT CY — exclude it.
+                # Row restriction: only scan G for CY values up to row 79.
+                row_restrictions["G"] = (1, 79)
 
             cy_vals_sheet: dict = {}
             cy_frows_sheet: dict = {}
@@ -633,10 +682,268 @@ def _run_with_patched_maps(
             f"🔗 External references converted to values in {ext_count} sheet(s)"
         )
 
+    # ── Repair XML malformations introduced by the cell-edit regex passes ────
+    # The surgical XML regex editing in processor._process_sheet_xml can leave
+    # three classes of malformed cell XML when it clears CY cells or rewrites
+    # formula cells in this complex multi-column template:
+    #
+    #   (a) t="str" with no <f>: a cell typed as "string formula result" must
+    #       always have a <f> child.  If the formula was removed (CY cell clear),
+    #       the t="str" attribute must be removed too — otherwise Excel sees a
+    #       string-type cell with no formula and reports "XML error".
+    #
+    #   (b) t="s" with no <v>: a shared-string cell must have a <v> child that
+    #       contains the shared-string index.  If the <v> was removed (CY clear),
+    #       the t="s" attribute must be removed — or the cell will be reported
+    #       as unreadable.
+    #
+    #   (c) <v>…</v> appearing BEFORE <f>…</f> in the same cell: the OOXML spec
+    #       requires the order <f> then <v>.  Some regex insertions produce the
+    #       reverse order, which triggers Excel's "repairs required" dialog.
+    #
+    # We also drop calcChain.xml from the package entirely.  After a year-shift
+    # many formula cells are cleared, re-typed, or moved, leaving the calcChain
+    # stale.  Excel always rebuilds it on open; keeping a stale one causes the
+    # "Removed Records: Formula from /xl/calcChain.xml" line in the repair log.
+    _repair_worksheet_xml(output_path)
+
+    # ── Freeze PY columns in summary sheets ──────────────────────────────────
+    # BAL SHEET and P L have cross-sheet formulas in their PY (E) column.
+    # After the year-shift, the cached values are correct but Excel's live
+    # recalculation would change them (NOA sheets now have shifted/cleared cols).
+    # Convert those PY formula cells to plain hardcoded values so the PY column
+    # is stable regardless of Excel's recalculation order.
+    _freeze_py_columns(output_path, {"BAL SHEET": ["E"], "P L": ["E"]})
+    log.append("🔒 BAL SHEET & P L: PY column formulas frozen to preserve correct values")
+
     return {"status": "success", "log": log}
 
 
-# ── Convenience: expose same API as processor.py ─────────────────────────────
+def _repair_worksheet_xml(output_path: str) -> None:
+    """
+    Fix three classes of XML malformations left by the cell-edit regex passes,
+    and remove the stale calcChain.xml that causes "Removed Records" repair noise.
+
+    (a) t="str" cells with no <f>: remove the t="str" attribute.
+    (b) t="s" cells with no <v>: remove the t="s" attribute.
+    (c) <v>…</v> before <f>…</f>: swap them to <f>…</f><v>…</v>.
+    (d) Drop calcChain.xml and its Content_Types entry entirely.
+    """
+    import zipfile as _zipfile, os as _os
+
+    tmp = output_path + ".repair_tmp"
+
+    with _zipfile.ZipFile(output_path, "r") as zi:
+        with _zipfile.ZipFile(tmp, "w", _zipfile.ZIP_DEFLATED) as zo:
+            for item in zi.infolist():
+                fn = item.filename
+
+                # Drop calcChain.xml — always stale after a year-shift
+                if fn == "xl/calcChain.xml":
+                    continue
+
+                data = zi.read(fn)
+
+                # Remove calcChain reference from Content_Types
+                if fn == "[Content_Types].xml":
+                    text = data.decode("utf-8", errors="replace")
+                    text = re.sub(
+                        r'<Override[^>]*calcChain[^>]*/>\s*', '', text
+                    )
+                    data = text.encode("utf-8")
+
+                # Repair worksheet XMLs only
+                if fn.startswith("xl/worksheets/") and fn.endswith(".xml"):
+                    text = data.decode("utf-8", errors="replace")
+
+                    # (a) t="str" cells with no <f>: strip t="str"
+                    def _fix_str_no_f(cm):
+                        full = cm.group(0)
+                        if '<f' in full:
+                            return full  # has formula — fine
+                        # Remove t="str" attribute
+                        return re.sub(r'\s*t="str"', '', full, count=1)
+
+                    text = re.sub(
+                        r'<c\b[^>]*\bt="str"[^>]*>(?:(?!</c>).)*?</c>',
+                        _fix_str_no_f, text, flags=re.DOTALL
+                    )
+
+                    # (b) t="s" cells with no <v>: strip t="s"
+                    def _fix_s_no_v(cm):
+                        full = cm.group(0)
+                        if '<v>' in full or '<v ' in full:
+                            return full  # has shared-string ref — fine
+                        return re.sub(r'\s*t="s"', '', full, count=1)
+
+                    text = re.sub(
+                        r'<c\b[^>]*\bt="s"[^>]*>(?:(?!</c>).)*?</c>',
+                        _fix_s_no_v, text, flags=re.DOTALL
+                    )
+
+                    # (c) <v> before <f>: swap order to <f>…<v>
+                    def _fix_v_before_f(cm):
+                        full = cm.group(0)
+                        # Extract <v>…</v> and <f>…</f> parts
+                        v_m = re.search(r'<v>([^<]*)</v>', full)
+                        f_m = re.search(r'<f[^>]*>.*?</f>', full, re.DOTALL)
+                        if not (v_m and f_m):
+                            return full
+                        v_pos = full.index('<v>')
+                        f_pos = full.index('<f')
+                        if v_pos < f_pos:
+                            # <v> comes before <f> — swap them
+                            v_tag = v_m.group(0)
+                            f_tag = f_m.group(0)
+                            # Remove both tags then re-insert in correct order
+                            inner = re.sub(r'<v>[^<]*</v>', '', full, flags=re.DOTALL)
+                            inner = re.sub(r'<f[^>]*>.*?</f>', '', inner, flags=re.DOTALL)
+                            inner = inner.replace('</c>', f'{f_tag}<v>{v_m.group(1)}</v></c>', 1)
+                            return inner
+                        return full
+
+                    text = re.sub(
+                        r'<c\b(?=[^>]*>(?!/))[^>]*>.*?</c>',
+                        _fix_v_before_f, text, flags=re.DOTALL
+                    )
+
+                    data = text.encode("utf-8")
+
+                zo.writestr(item, data)
+
+    _os.replace(tmp, output_path)
+
+
+def _freeze_py_columns(
+    output_path: str,
+    sheets_to_freeze: dict,
+) -> None:
+    """
+    Convert formula cells in designated PY columns to plain hardcoded values.
+
+    WHY THIS IS NEEDED FOR THE LUMID TEMPLATE:
+    ─────────────────────────────────────────────────────────────────────────
+    The Lumid BAL SHEET and P L sheets have their PY (E) column built entirely
+    from cross-sheet formulas (e.g. E19 = 'NOA 3-6'!H22). After the year-shift:
+
+    1. The tool correctly moves old CY constants/formula-cached values → E column.
+    2. The CACHED <v> values in E-column cells are correct (verified: both BAL SHEET
+       and P L totals balance to the correct PY figures in data_only mode).
+    3. BUT when Excel opens the file and recalculates live, the cross-sheet formulas
+       now point to NOA sheet columns that themselves contain a mix of old-shifted
+       data and newly-cleared CY blanks. The recalculated values differ from the
+       correct cached values, making the PY column show wrong figures.
+
+    THE FIX:
+    ─────────────────────────────────────────────────────────────────────────
+    For each designated sheet and its PY column letter(s):
+      - Remove <f>…</f> from every PY cell that has a formula AND a cached <v>.
+      - Keep the <v> tag as a plain constant (the correct shifted value).
+      - For formula cells with NO <v> (e.g. E22 = SUM(D19:D23) with blank CY ref):
+        set the cell value to 0 and remove the formula.
+
+    This is Lumid-specific because other templates do NOT have formula-driven
+    PY columns in their summary sheets; they use plain value PY columns that
+    are safe to keep as-is after a shift.
+    ─────────────────────────────────────────────────────────────────────────
+
+    sheets_to_freeze: {sheet_name: [py_col_letter, ...]}
+      e.g. {"BAL SHEET": ["E"], "P L": ["E"]}
+    """
+    import zipfile as _zipfile
+
+    with _zipfile.ZipFile(output_path, "r") as zi:
+        smap = _proc._sheet_file_map(zi)
+        all_items = {item.filename: (item, zi.read(item.filename))
+                     for item in zi.infolist()}
+
+    modified = {}
+    for sheet_name, py_cols in sheets_to_freeze.items():
+        sf = smap.get(sheet_name, "")
+        if not sf or sf not in all_items:
+            continue
+        item, xml_bytes = all_items[sf]
+        text = xml_bytes.decode("utf-8", errors="replace")
+
+        for py_col in py_cols:
+            # Match all cells in this column.
+            # IMPORTANT: use TWO separate alternatives — self-closing (<c ... />) and
+            # paired (<c ...>...</c>) — to prevent a self-closing E-col cell from
+            # consuming the following non-E-col cell via the .*?</c> greedy path.
+            col_re = re.compile(
+                rf'<c\b[^>]*\br="{re.escape(py_col)}(\d+)"[^>]*/>\s*'   # self-closing
+                rf'|<c\b[^>]*\br="{re.escape(py_col)}(\d+)"[^>]*>.*?</c>',  # paired
+                re.DOTALL
+            )
+
+            def _freeze_cell(cm, _py_col=py_col):
+                full = cm.group(0)
+                # Only process cells that have a formula
+                f_match = re.search(r'<f[^>]*>.*?</f>', full, re.DOTALL)
+                f_sc_match = re.search(r'<f[^>]*/>', full)
+                has_formula = bool(f_match or f_sc_match)
+                if not has_formula:
+                    return full
+
+                # Check for cached value and cell type
+                v_match = re.search(r'<v>([^<]*)</v>', full)
+                t_attr = re.search(r'\bt="([^"]+)"', full)
+                cell_type = t_attr.group(1) if t_attr else ''
+
+                # Skip error cells — keep them as-is (#REF! etc. are pre-existing)
+                if cell_type == 'e':
+                    return full
+
+                # String-typed formula cells (t="str"): the formula evaluates to a
+                # text string (e.g. ='BAL SHEET'!A67 → "FOR AKSHIT MAHESHWARY...").
+                # Convert these to shared-string references isn't straightforward here;
+                # instead keep the formula so Excel can display the text correctly.
+                # These cells are in P L E column (footer rows) and don't affect totals.
+                if cell_type == 'str':
+                    return full
+
+                if v_match and v_match.group(1).strip():
+                    # Has a valid numeric cached value — freeze: remove formula, keep value
+                    full = re.sub(r'<f[^>]*>.*?</f>', '', full, flags=re.DOTALL)
+                    full = re.sub(r'<f[^>]*/>', '', full)
+                    # Convert self-closing to paired if needed (value is now present)
+                    if full.rstrip().endswith('/>'):
+                        full = re.sub(r'/>\s*$', '></c>', full.rstrip())
+                else:
+                    # No cached value (blank result) — replace formula with explicit 0
+                    full = re.sub(r'<f[^>]*>.*?</f>', '', full, flags=re.DOTALL)
+                    full = re.sub(r'<f[^>]*/>', '', full)
+                    # Ensure the cell has a <v>0</v>
+                    if '<v>' not in full:
+                        if full.rstrip().endswith('/>'):
+                            full = re.sub(r'/>\s*$', '><v>0</v></c>', full.rstrip())
+                        else:
+                            full = full.replace('</c>', '<v>0</v></c>')
+                    else:
+                        full = re.sub(r'<v>[^<]*</v>', '<v>0</v>', full)
+                return full
+
+            text = col_re.sub(_freeze_cell, text)
+
+        modified[sf] = (item, text.encode("utf-8"))
+
+    if not modified:
+        return
+
+    # Re-write the ZIP with the frozen sheets
+    import shutil, tempfile, os
+    tmp = output_path + ".freeze_tmp"
+    with _zipfile.ZipFile(output_path, "r") as zi:
+        with _zipfile.ZipFile(tmp, "w", _zipfile.ZIP_DEFLATED) as zo:
+            for item in zi.infolist():
+                if item.filename in modified:
+                    _, new_bytes = modified[item.filename]
+                    zo.writestr(item, new_bytes)
+                else:
+                    zo.writestr(item, zi.read(item.filename))
+    os.replace(tmp, output_path)
+
+
 
 __all__ = ["process", "_is_lumid_format"]
 
