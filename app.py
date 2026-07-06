@@ -861,7 +861,7 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
       <div class="field">
         <label>Upload Excel File (.xlsx / .xls)</label>
         <div class="dropzone" id="dropzone">
-          <input type="file" id="xlFile" accept=".xlsx,.xls" {{ 'disabled' if uploads_left==0 else '' }}/>
+          <input type="file" id="xlFile" accept=".xlsx,.xls,.xlsb" {{ 'disabled' if uploads_left==0 else '' }}/>
           <div class="dz-icon">📁</div>
           <div class="dz-text"><strong>Click to browse</strong> or drag &amp; drop</div>
           <div class="dz-text" style="margin-top:3px">.xlsx or .xls · Max 20 MB</div>
@@ -1002,7 +1002,7 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
 <section class="faq-section" id="faq">
   <h2>Frequently Asked Questions</h2>
   <details><summary>Which Excel formats are supported?</summary>
-    <p>.xlsx (Excel 2007+) and .xls (legacy Excel). Both are fully supported — .xls files are automatically converted before processing.</p></details>
+    <p>.xlsx (Excel 2007+), .xls (legacy Excel), and .xlsb (Excel Binary) are all supported — .xls and .xlsb files are automatically converted before processing.</p></details>
   <details><summary>Will it work with my firm's custom template?</summary>
     <p>Yes. Auto-detects CY/PY columns by scanning date headers like "31.03.2025". Works with any Indian CA template.</p></details>
   <details><summary>Are my formulas and formatting safe?</summary>
@@ -6026,6 +6026,74 @@ def _convert_xls_to_xlsx(xls_path, xlsx_path):
 
 @app.route("/process", methods=["POST"])
 @login_required
+def _convert_xlsb_to_xlsx(xlsb_path: str, xlsx_path: str) -> None:
+    """
+    Convert a .xlsb (Excel Binary Workbook) file to .xlsx using LibreOffice.
+
+    LibreOffice is available on Render (Ubuntu) and handles the full BIFF12
+    binary format including formatting, formulas, and merged cells — far
+    better than any pure-Python alternative.
+
+    Post-conversion cleanup:
+      • Strip empty/null <definedName> entries from workbook.xml.
+        LibreOffice writes these for print areas that are blank in the source,
+        and openpyxl 3.x raises a TypeError when it encounters them.
+      • Remove null print-title defined names for the same reason.
+    """
+    import subprocess, shutil, tempfile, zipfile as _zip, re as _re
+
+    # Work in a temp dir so LibreOffice can write alongside the source
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = os.path.join(tmpdir, os.path.basename(xlsb_path))
+        shutil.copy(xlsb_path, src)
+
+        result = subprocess.run(
+            ["libreoffice", "--headless", "--convert-to", "xlsx",
+             "--outdir", tmpdir, src],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"LibreOffice conversion failed (rc={result.returncode}): "
+                f"{result.stderr[:300]}"
+            )
+
+        # Find the output file
+        converted = None
+        for fname in os.listdir(tmpdir):
+            if fname.endswith(".xlsx"):
+                converted = os.path.join(tmpdir, fname)
+                break
+        if not converted or not os.path.exists(converted):
+            raise RuntimeError("LibreOffice did not produce an .xlsx output file.")
+
+        # ── Patch workbook.xml: remove empty/null definedNames ──────────────
+        # openpyxl crashes on <definedName ...></definedName> (empty content)
+        # and on <definedName .../>  (self-closing) for print areas/titles.
+        with _zip.ZipFile(converted, "r") as zi:
+            all_names = zi.namelist()
+            all_data  = {n: zi.read(n) for n in all_names}
+            all_infos = {item.filename: item for item in zi.infolist()}
+
+        wb_xml = all_data.get("xl/workbook.xml", b"").decode("utf-8", "replace")
+        if "definedName" in wb_xml:
+            # Remove completely empty definedName elements
+            wb_xml = _re.sub(
+                r'<definedName\b[^>]*>\s*</definedName>\s*',
+                '', wb_xml
+            )
+            wb_xml = _re.sub(
+                r'<definedName\b[^>]*/>\s*',
+                '', wb_xml
+            )
+            all_data["xl/workbook.xml"] = wb_xml.encode("utf-8")
+
+        # Write patched file to final destination
+        with _zip.ZipFile(xlsx_path, "w", _zip.ZIP_DEFLATED) as zo:
+            for name in all_names:
+                zo.writestr(all_infos[name], all_data[name])
+
+
 def process_file():
     try:
         user = get_user_by_id(session["uid"])
@@ -6036,9 +6104,11 @@ def process_file():
             return jsonify({"status": "error", "message": "No file uploaded."})
         f = request.files["file"]
         orig_name = f.filename.lower()
-        is_xls = orig_name.endswith(".xls") and not orig_name.endswith(".xlsx")
-        if not (orig_name.endswith(".xlsx") or is_xls):
-            return jsonify({"status": "error", "message": "Only .xlsx and .xls files are supported."})
+        is_xls  = orig_name.endswith(".xls") and not orig_name.endswith(".xlsx")
+        is_xlsb = orig_name.endswith(".xlsb")
+        if not (orig_name.endswith(".xlsx") or is_xls or is_xlsb):
+            return jsonify({"status": "error",
+                "message": "Only .xlsx, .xls, and .xlsb files are supported."})
         try:
             cy = int(request.form.get("closing_year", 0))
             ny = int(request.form.get("new_year", cy + 1))
@@ -6050,24 +6120,29 @@ def process_file():
         h  = uuid.uuid4().hex
         ip = os.path.join(UPLOAD_DIR, f"{h}_in.xlsx")
         op = os.path.join(OUTPUT_DIR, f"{h}_out.xlsx")
-        xls_tmp = None
+        raw_tmp = None
         try:
             if is_xls:
                 # Save .xls first, then convert to .xlsx via xlrd + openpyxl
-                xls_tmp = os.path.join(UPLOAD_DIR, f"{h}_in.xls")
-                f.save(xls_tmp)
-                _convert_xls_to_xlsx(xls_tmp, ip)
+                raw_tmp = os.path.join(UPLOAD_DIR, f"{h}_in.xls")
+                f.save(raw_tmp)
+                _convert_xls_to_xlsx(raw_tmp, ip)
+            elif is_xlsb:
+                # Save .xlsb first, then convert to .xlsx via LibreOffice
+                raw_tmp = os.path.join(UPLOAD_DIR, f"{h}_in.xlsb")
+                f.save(raw_tmp)
+                _convert_xlsb_to_xlsx(raw_tmp, ip)
             else:
                 f.save(ip)
         except Exception as e:
-            for p in (xls_tmp, ip):
+            for p in (raw_tmp, ip):
                 if p:
                     try: os.remove(p)
                     except: pass
             return jsonify({"status": "error", "message": f"File conversion error: {e}"})
         finally:
-            if xls_tmp:
-                try: os.remove(xls_tmp)
+            if raw_tmp:
+                try: os.remove(raw_tmp)
                 except: pass
         # Build clean output filename: strip year suffixes like "2024-25", "2025-26", "2026"
         # so Atultex_Industries_2024-25_2026 → Atultex_Industries_2026.xlsx
