@@ -512,6 +512,99 @@ def _rescan_changed_sheets(
         wb.close()
 
 
+def _sanitize_cash_flow_errors(input_path: str) -> str:
+    """
+    Pre-processing pass: strip t="e" (error-type) attributes and stale #REF!
+    formulas from the CASH FLOW sheet (sheet13) in the Lumid template.
+
+    WHY THIS IS NEEDED
+    ──────────────────
+    The CASH FLOW sheet's E column (PY data) was built using cross-sheet
+    formulas that reference rows which no longer exist in the P L / BAL SHEET
+    source sheets.  Those cells have been broken since the template was first
+    created — they carry  t="e"  with formulas like  'P L'!#REF!  and cached
+    value "#REF!".
+
+    When the D→E year-shift writes the correct numeric CY→PY values into those
+    E cells, processor._process_sheet_xml correctly replaces the <v> content
+    with the new number but leaves the t="e" attribute and the stale <f> tag
+    untouched (it only rewrites <v>…</v>).  The resulting cell XML:
+
+        <c r="E10" s="31" t="e"><f>'P L'!#REF!</f><v>1.1679…</v></c>
+
+    violates OOXML §3.18.11 (a t="e" cell must have an error string in <v>,
+    not a number) and triggers Excel's "Repaired Records: Cell information from
+    /xl/worksheets/sheet13.xml" dialog every time the output is opened.
+
+    FIX
+    ───
+    Before the main ZIP-edit loop runs, rewrite the CASH FLOW sheet so that
+    every t="e" cell has its  t="e"  attribute and  <f>…</f>  tag removed,
+    leaving a plain empty cell.  The year-shift then fills the <v> cleanly.
+
+    Implementation: rewrites to a temp file and returns the new path so the
+    caller can use it as the input to the main ZIP loop.  If any error occurs
+    the original path is returned unchanged (safe fallback).
+    """
+    import zipfile as _zipfile, os as _os, tempfile as _tmp
+
+    CASH_FLOW_NAME = "CASH FLOW"   # exact sheet name in the Lumid template
+
+    try:
+        with _zipfile.ZipFile(input_path, "r") as zi:
+            smap = _proc._sheet_file_map(zi)
+            cf_file = smap.get(CASH_FLOW_NAME, "")
+            if not cf_file:
+                return input_path          # sheet not found — no-op
+
+            all_names = zi.namelist()
+            all_data  = {n: zi.read(n) for n in all_names}
+            all_infos = {item.filename: item for item in zi.infolist()}
+
+        # Patch the CASH FLOW sheet XML
+        raw  = all_data[cf_file]
+        text = raw.decode("utf-8", "replace")
+
+        def _clear_error_cell(cm):
+            full = cm.group(0)
+            # Only touch cells in column E (ref like E10, E27, etc.)
+            ref_m = re.search(r'\br="([A-Z]+)(\d+)"', full)
+            if not ref_m or ref_m.group(1) != "E":
+                return full
+            # Remove t="e" attribute
+            fixed = re.sub(r'\s*t="e"', '', full, count=1)
+            # Remove the stale <f>…</f> tag (contains #REF!)
+            fixed = re.sub(r'<f[^>]*>.*?</f>', '', fixed, flags=re.DOTALL)
+            fixed = re.sub(r'<f[^>]*/>', '', fixed)
+            # Remove the stale <v>#REF!</v> cached value
+            fixed = re.sub(r'<v>\s*#REF!\s*</v>', '', fixed)
+            return fixed
+
+        patched = re.sub(
+            r'<c\b[^>]*\bt="e"[^>]*>.*?</c>',
+            _clear_error_cell, text, flags=re.DOTALL
+        )
+
+        if patched == text:
+            return input_path              # nothing changed — no-op
+
+        all_data[cf_file] = patched.encode("utf-8")
+
+        # Write to a temp file
+        fd, tmp_path = _tmp.mkstemp(suffix=".xlsx")
+        _os.close(fd)
+        with _zipfile.ZipFile(tmp_path, "w", _zipfile.ZIP_DEFLATED) as zo:
+            for name in all_names:
+                info = all_infos[name]
+                zo.writestr(info, all_data[name])
+
+        return tmp_path
+
+    except Exception:
+        # Any failure → return original path unchanged (safe fallback)
+        return input_path
+
+
 def _run_with_patched_maps(
     input_path: str,
     output_path: str,
@@ -560,6 +653,32 @@ def _run_with_patched_maps(
     # TEXT_ONLY_SHEETS already patched at module level by caller
 
     ext_count = 0
+
+    # ── Pre-processing: sanitize CASH FLOW sheet ─────────────────────────────
+    # sheet13 (CASH FLOW) was authored with its E column (PY data) populated
+    # via cross-sheet formulas that reference rows which no longer exist in the
+    # source sheets (deleted or renumbered over successive years).  Those cells
+    # carry t="e" (error type) with formulas like  'P L'!#REF!  and cached
+    # value "#REF!".
+    #
+    # When the D→E year-shift runs, it writes the correct numeric CY→PY values
+    # into those E cells.  The processor's regex correctly replaces the <v>
+    # content with the new number — but it does NOT touch the cell's t= attribute
+    # or its <f> tag (those are outside the <v>…</v> it rewrites).  The result is
+    # a cell like:
+    #
+    #   <c r="E10" s="31" t="e"><f>'P L'!#REF!</f><v>1.1679...</v></c>
+    #
+    # which is invalid per OOXML §3.18.11: a cell with t="e" MUST have an error
+    # value (#REF!, #VALUE!, etc.) in <v> — a number there is undefined behaviour.
+    # Excel detects this as corruption and shows the "Repaired Records: Cell
+    # information from /xl/worksheets/sheet13.xml" dialog.
+    #
+    # Fix: before the shift loop opens the ZIP for writing, rewrite the input ZIP
+    # in-place (via a temp file) to strip t="e" and the stale #REF! formulas from
+    # every E-column cell in CASH FLOW.  This leaves them as plain empty numeric
+    # cells, which the shift then fills correctly.
+    input_path = _sanitize_cash_flow_errors(input_path)
 
     with _zipfile.ZipFile(input_path, "r") as zi:
         smap = _proc._sheet_file_map(zi)
@@ -716,18 +835,33 @@ def _run_with_patched_maps(
     _freeze_py_columns(output_path, {"BAL SHEET": ["E"], "P L": ["E"]})
     log.append("🔒 BAL SHEET & P L: PY column formulas frozen to preserve correct values")
 
+    # Clean up the sanitized temp file created by _sanitize_cash_flow_errors
+    # (it has a different path than the original input_path argument).
+    try:
+        import os as _os2
+        original_arg = _run_with_patched_maps.__dict__.get("_orig_input")
+        if original_arg and input_path != original_arg and _os2.path.exists(input_path):
+            _os2.unlink(input_path)
+    except Exception:
+        pass   # non-critical — /tmp is cleaned up by the OS anyway
+
     return {"status": "success", "log": log}
 
 
 def _repair_worksheet_xml(output_path: str) -> None:
     """
-    Fix three classes of XML malformations left by the cell-edit regex passes,
+    Fix four classes of XML malformations left by the cell-edit regex passes,
     and remove the stale calcChain.xml that causes "Removed Records" repair noise.
 
     (a) t="str" cells with no <f>: remove the t="str" attribute.
     (b) t="s" cells with no <v>: remove the t="s" attribute.
     (c) <v>…</v> before <f>…</f>: swap them to <f>…</f><v>…</v>.
     (d) Drop calcChain.xml and its Content_Types entry entirely.
+    (e) t="e" cells whose <v> is now a number (not an error string): remove t="e"
+        and strip the stale <f> tag.  This catches any t="e" / #REF! cells that
+        survived _sanitize_cash_flow_errors (e.g. in other sheets) and then had a
+        numeric value written into them by the year-shift.  An OOXML t="e" cell
+        with a numeric <v> is undefined behaviour and triggers Excel repair.
     """
     import zipfile as _zipfile, os as _os
 
@@ -830,6 +964,33 @@ def _repair_worksheet_xml(output_path: str) -> None:
                     text = re.sub(
                         r'<c\b(?=[^>]*>(?!/))[^>]*>.*?</c>',
                         _fix_v_before_f, text, flags=re.DOTALL
+                    )
+
+                    # (e) t="e" cells with a numeric <v>: invalid per OOXML.
+                    # After the year-shift, a t="e" (error-type) cell in the PY
+                    # destination column may have had a real numeric value written
+                    # into its <v> tag while the t="e" attribute and the stale
+                    # #REF! <f> tag were left untouched.  Excel reports that as
+                    # corrupt.  Fix: remove t="e" and strip the stale <f> tag
+                    # so the cell becomes a plain numeric constant.
+                    def _fix_e_type_numeric(cm):
+                        full = cm.group(0)
+                        v_m = re.search(r'<v>([^<]*)</v>', full)
+                        if not v_m:
+                            return full
+                        try:
+                            float(v_m.group(1))
+                        except (ValueError, OverflowError):
+                            return full   # not numeric — genuine error cell, leave it
+                        # Numeric value inside t="e" cell — sanitize
+                        fixed = re.sub(r'\s*t="e"', '', full, count=1)
+                        fixed = re.sub(r'<f[^>]*>.*?</f>', '', fixed, flags=re.DOTALL)
+                        fixed = re.sub(r'<f[^>]*/>', '', fixed)
+                        return fixed
+
+                    text = re.sub(
+                        r'<c\b[^>]*\bt="e"[^>]*>.*?</c>',
+                        _fix_e_type_numeric, text, flags=re.DOTALL
                     )
 
                     data = text.encode("utf-8")
