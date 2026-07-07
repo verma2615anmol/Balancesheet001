@@ -46,7 +46,11 @@ SHEET_COL_MAP = {
     "share cap":     [("H", "J")],
     "provision":     [("H", "J")],
     "provisions":    [("H", "J")],
-    "cash flow":     [("D", "F")],
+    # CASH FLOW: many templates have stale date headers from FY2018-19 that were
+    # never updated, so auto-detection fails and falls back here. The correct
+    # layout across all known CA templates has CY in col D and PY in col E.
+    # Old value was ("D","F") which shifted into the wrong column.
+    "cash flow":     [("D", "E")],
     "dep co":        [("D", "F")],
     "consump":       [("F", "H")],
     "dep":           [("D", "F")],
@@ -57,6 +61,11 @@ TEXT_ONLY_SHEETS = {s.strip().lower() for s in [
     "notes to accounts", "Fixed Assets C. Yr.", "Fixed Assets P. Yr.",
     "FA2022", "Tax audit ", "Tax Audit report", "PPE",
     "acc policies",
+    # Depreciation schedules — "As at 1st April YYYY" headers look like CY/PY
+    # date headers to the auto-detector but these are Gross Block / Accum Dep /
+    # Net Block opening/closing columns that must NEVER be shifted.
+    "DEP COMPANIES ACT", "DEP COMPANIES ACT (2)", "DEP IT ACT",
+    "dep companies act", "dep companies act (2)", "dep it act",
 ]}
 
 # Capital sheets need special year-shift logic (Bugs 4 & 5)
