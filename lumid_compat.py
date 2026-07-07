@@ -126,6 +126,40 @@ def _is_lumid_format(filepath: str) -> bool:
         return False
 
 
+# ── Regner-format fingerprint ────────────────────────────────────────────────
+# Regner Impex (and similar CA templates with the same NOA numbering scheme)
+# uses a unique sheet naming pattern: NOA 7-9, NOA 7-11, NOA 19-22, DEP IT ACT.
+# These do NOT appear in Lumid-format workbooks.
+# Issues fixed for this template family:
+#   Issue R1 – NOA 1-2: auto-detects D→F (count col correct) but misses E→G
+#              (amount col, no year header). Fix: add (E,G) pair.
+#   Issue R2 – DEP COMPANIES ACT / DEP IT ACT: "As at 1st April YYYY" headers
+#              trigger wrong CY/PY shift on WDV schedule columns. Fix: TEXT_ONLY.
+#   Issue R3 – CASH FLOW: stale "2018/2019" headers → auto-detects D→F.
+#              Correct: D→E. Fixed globally in SHEET_COL_MAP, confirmed here.
+_REGNER_SHEET_SIGNATURES = {"noa 7-9", "noa 19-22", "dep it act"}
+_REGNER_MIN_MATCH = 3
+
+def _is_regner_format(filepath: str) -> bool:
+    """Return True if the workbook looks like a Regner/similar CA format."""
+    try:
+        wb = load_workbook(filepath, read_only=True, data_only=True)
+        names_lower = {s.strip().lower() for s in wb.sheetnames}
+        wb.close()
+        return len(_REGNER_SHEET_SIGNATURES & names_lower) >= _REGNER_MIN_MATCH
+    except Exception:
+        return False
+
+_REGNER_TEXT_ONLY_EXTRA = {
+    # Depreciation schedules — WDV opening/closing columns must not be shifted
+    "dep companies act", "dep it act",
+}
+
+_REGNER_COL_OVERRIDES: dict[str, list[tuple[str, str]]] = {
+    # NOA 1-2: auto-detects (D,F) for count col but misses (E,G) for amount col
+    "NOA 1-2": [("D", "F"), ("E", "G")],
+}
+
 # ── Pooja/GD-Singla horizontal-format fingerprint ───────────────────────────
 # This template family (e.g. POOJA_INDUSTRIES, similar GD Singla CA templates)
 # packs ALL schedules horizontally into a SINGLE sheet called "POOJA-I" or
@@ -446,8 +480,60 @@ def process(input_path: str, output_path: str,
                 set(),  # no Lumid-specific TEXT_ONLY extras
             )
 
+    # ── Regner / similar CA format ───────────────────────────────────────────
+    if _is_regner_format(input_path):
+        sizes, shift_map, cy_values, cy_formulas, cap_data = \
+            _proc._scan_workbook(input_path, closing_year)
+
+        wb_tmp_r = load_workbook(input_path, read_only=True, data_only=True)
+        sheetnames_r = wb_tmp_r.sheetnames
+        wb_tmp_r.close()
+
+        # Apply NOA 1-2 column override (adds missing amount pair E→G)
+        regner_overrides = {}
+        for sn in sheetnames_r:
+            if sn in _REGNER_COL_OVERRIDES:
+                shift_map[sn] = _REGNER_COL_OVERRIDES[sn]
+                regner_overrides[sn] = _REGNER_COL_OVERRIDES[sn]
+
+        # Remove DEP sheets from shift_map (TEXT_ONLY treatment)
+        regner_text_only_names = set()
+        for sn in sheetnames_r:
+            if sn.strip().lower() in _REGNER_TEXT_ONLY_EXTRA:
+                shift_map.pop(sn, None)
+                regner_text_only_names.add(sn)
+
+        # Re-scan CY values for sheets whose column pairs changed
+        if regner_overrides:
+            _rescan_changed_sheets(
+                input_path, closing_year, sheetnames_r, regner_overrides,
+                shift_map, cy_values, cy_formulas,
+            )
+
+        pairs = _proc._date_replacements(str(closing_year), str(new_year))
+        log: list[str] = []
+        log.append("ℹ Regner-format detected — applying compatibility overrides")
+        if regner_overrides:
+            log.append(f"  Column-pair overrides: {list(regner_overrides.keys())}")
+        if regner_text_only_names:
+            log.append(f"  TEXT_ONLY (dep schedule sheets): {sorted(regner_text_only_names)}")
+
+        original_text_only_r = _proc.TEXT_ONLY_SHEETS
+        _proc.TEXT_ONLY_SHEETS = original_text_only_r | _REGNER_TEXT_ONLY_EXTRA
+
+        result = _run_with_patched_maps(
+            input_path, output_path,
+            closing_year, new_year,
+            sizes, shift_map, cy_values, cy_formulas, cap_data,
+            pairs, log,
+            regner_text_only_names,
+        )
+
+        _proc.TEXT_ONLY_SHEETS = original_text_only_r
+        return result
+
     if not _is_lumid_format(input_path):
-        # Not Lumid-format, not Pooja-format → standard processor, no changes
+        # Not Lumid-format, not Pooja-format, not Regner-format → standard processor
         return _proc.process(input_path, output_path, closing_year, new_year)
 
     # ── Lumid-format path ────────────────────────────────────────────────────
