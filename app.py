@@ -6039,19 +6039,37 @@ def _convert_xlsb_to_xlsx(xlsb_path: str, xlsx_path: str) -> None:
 
     After conversion the year-shift runs on the clean .xlsx exactly like any
     natively-uploaded .xlsx file.
+
+    REQUIRES: pyxlsb  (pip install pyxlsb)
+    Add 'pyxlsb' to requirements.txt so Render installs it on deploy.
     """
-    import pyxlsb
+    try:
+        import pyxlsb
+    except ImportError:
+        raise ImportError(
+            "pyxlsb is not installed. Add 'pyxlsb' to requirements.txt and redeploy. "
+            "Run: pip install pyxlsb"
+        )
+
     from openpyxl import Workbook
-    from openpyxl.utils import get_column_letter
-    from datetime import datetime, date
+    from datetime import datetime
 
     # pyxlsb serial-date epoch: days since 1899-12-30
     _EPOCH = datetime(1899, 12, 30)
+
+    # pyxlsb formula placeholder values — when pyxlsb cannot decode a
+    # formula's cached result it returns the raw BIFF12 record type as a
+    # hex string (e.g. '0x17' = BrtFmlaError, '0x7' = BrtFmlaNum).
+    # These are formula artifacts from cross-sheet references, NOT real values.
+    # Treat them as empty so they don't pollute the converted xlsx.
+    _XLSB_FORMULA_ARTIFACTS = frozenset({"0x17", "0x7", "0x6", "0x9"})
 
     def _xlsb_val(cell_val):
         """Convert pyxlsb cell value to a Python type openpyxl can write."""
         if cell_val is None:
             return None
+        if isinstance(cell_val, bool):
+            return cell_val
         if isinstance(cell_val, (int, float)):
             # Dates in xlsb are stored as floats. We cannot reliably distinguish
             # date-formatted numbers without the style table (pyxlsb does not
@@ -6059,8 +6077,9 @@ def _convert_xlsb_to_xlsx(xlsb_path: str, xlsx_path: str) -> None:
             # values and date strings, so this is safe.
             return cell_val
         if isinstance(cell_val, str):
-            return cell_val
-        if isinstance(cell_val, bool):
+            # Filter out pyxlsb BIFF12 formula-record-type artifacts
+            if cell_val in _XLSB_FORMULA_ARTIFACTS:
+                return None
             return cell_val
         # Fallback: coerce to string
         return str(cell_val)
@@ -6075,12 +6094,16 @@ def _convert_xlsb_to_xlsx(xlsb_path: str, xlsx_path: str) -> None:
                 for row in ws_in.rows():
                     for cell in row:
                         val = _xlsb_val(cell.v)
-                        if val is not None:
-                            ws_out.cell(
-                                row=cell.r + 1,
-                                column=cell.c + 1,
-                                value=val,
-                            )
+                        if val is None:
+                            continue
+                        # pyxlsb cell.r and cell.c are 0-based
+                        r = cell.r
+                        c = cell.c
+                        # Guard: pyxlsb occasionally returns r=-1 or c=-1
+                        # for header/metadata rows — skip those.
+                        if r < 0 or c < 0:
+                            continue
+                        ws_out.cell(row=r + 1, column=c + 1, value=val)
 
     wb_out.save(xlsx_path)
 
