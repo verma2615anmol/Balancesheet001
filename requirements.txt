@@ -5,3 +5,4 @@ psycopg2-binary>=2.9.0
 xlrd>=2.0.0
 pdfplumber
 pymupdf>=1.23.0
+pyxlsb
