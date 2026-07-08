@@ -503,6 +503,37 @@ def process(input_path: str, output_path: str,
                 shift_map.pop(sn, None)
                 regner_text_only_names.add(sn)
 
+        # ── BAL SHEET and P L: exclude from column shift ─────────────────────
+        # These sheets are pure formula-driven summaries: every figure in their
+        # CY column (D) and PY column (E) is a cross-sheet formula reference to
+        # the NOA annexure sheets (which ARE shifted correctly).
+        #
+        # When the xlsb is converted to xlsx via pyxlsb, formula cells become
+        # plain cached values.  The D→E column shift then:
+        #   1. Copies D's cached CY value (in Rupees) into E.
+        #   2. Clears D.
+        # This is WRONG — it destroys E's PY Lakhs value with D's raw Rupees.
+        #
+        # The correct behaviour for these two sheets:
+        #   • Do NOT column-shift D→E.  The NOA sheets handle the actual data.
+        #   • DO update date strings (heading row 6 and 7).
+        #   • DO freeze E (PY col) to its cached value BEFORE Excel recalculates,
+        #     because after the NOA shifts the cross-sheet formulas in E would
+        #     otherwise pull wrong (shifted) values.
+        #
+        # Implementation: add to regner_text_only_names so _run_with_patched_maps
+        # treats them as date-update-only sheets.  The existing freeze step in
+        # _run_with_patched_maps already freezes E for both sheets — but it runs
+        # AFTER the column shift, which overwrites E.  We prevent that by removing
+        # BAL SHEET and P L from shift_map here before the shift loop runs.
+        _REGNER_SUMMARY_SHEETS = {"bal sheet", "p l"}
+        regner_summary_names = set()
+        for sn in sheetnames_r:
+            if sn.strip().lower() in _REGNER_SUMMARY_SHEETS:
+                shift_map.pop(sn, None)
+                regner_summary_names.add(sn)
+                regner_text_only_names.add(sn)
+
         # Re-scan CY values for sheets whose column pairs changed
         if regner_overrides:
             _rescan_changed_sheets(
@@ -516,7 +547,7 @@ def process(input_path: str, output_path: str,
         if regner_overrides:
             log.append(f"  Column-pair overrides: {list(regner_overrides.keys())}")
         if regner_text_only_names:
-            log.append(f"  TEXT_ONLY (dep schedule sheets): {sorted(regner_text_only_names)}")
+            log.append(f"  TEXT_ONLY (dep/summary sheets): {sorted(regner_text_only_names)}")
 
         original_text_only_r = _proc.TEXT_ONLY_SHEETS
         _proc.TEXT_ONLY_SHEETS = original_text_only_r | _REGNER_TEXT_ONLY_EXTRA
