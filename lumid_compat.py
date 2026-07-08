@@ -503,36 +503,19 @@ def process(input_path: str, output_path: str,
                 shift_map.pop(sn, None)
                 regner_text_only_names.add(sn)
 
-        # ── BAL SHEET and P L: exclude from column shift ─────────────────────
-        # These sheets are pure formula-driven summaries: every figure in their
-        # CY column (D) and PY column (E) is a cross-sheet formula reference to
-        # the NOA annexure sheets (which ARE shifted correctly).
-        #
-        # When the xlsb is converted to xlsx via pyxlsb, formula cells become
-        # plain cached values.  The D→E column shift then:
-        #   1. Copies D's cached CY value (in Rupees) into E.
-        #   2. Clears D.
-        # This is WRONG — it destroys E's PY Lakhs value with D's raw Rupees.
-        #
-        # The correct behaviour for these two sheets:
-        #   • Do NOT column-shift D→E.  The NOA sheets handle the actual data.
-        #   • DO update date strings (heading row 6 and 7).
-        #   • DO freeze E (PY col) to its cached value BEFORE Excel recalculates,
-        #     because after the NOA shifts the cross-sheet formulas in E would
-        #     otherwise pull wrong (shifted) values.
-        #
-        # Implementation: add to regner_text_only_names so _run_with_patched_maps
-        # treats them as date-update-only sheets.  The existing freeze step in
-        # _run_with_patched_maps already freezes E for both sheets — but it runs
-        # AFTER the column shift, which overwrites E.  We prevent that by removing
-        # BAL SHEET and P L from shift_map here before the shift loop runs.
-        _REGNER_SUMMARY_SHEETS = {"bal sheet", "p l"}
-        regner_summary_names = set()
-        for sn in sheetnames_r:
-            if sn.strip().lower() in _REGNER_SUMMARY_SHEETS:
-                shift_map.pop(sn, None)
-                regner_summary_names.add(sn)
-                regner_text_only_names.add(sn)
+        # ── BAL SHEET and P L: allow normal D→E column shift ────────────────
+        # These sheets are formula-driven summaries in the original xlsb, but
+        # after pyxlsb→xlsx conversion all formulas become plain cached values.
+        # The D→E shift is therefore correct and necessary:
+        #   • D col (CY Rupees) → cleared (blank for fresh FY26 data entry)
+        #   • E col (PY) ← gets old D values (FY25 in Rupees as new PY reference)
+        # Old E Lakhs values are overwritten — acceptable since they were stale
+        # cached formula results that would be wrong after the NOA sheets shift.
+        # The new E (Rupees) gives the CA the correct PY rupee reference.
+        # NOTE: the processor.py stale-reference fix (clear_v for formulas whose
+        # column refs are all outside the shift range) ensures that any formula
+        # cells in D that reference columns like DG or Y (outside D/E) are fully
+        # cleared rather than kept, so they cannot recalculate back to old values.
 
         # Re-scan CY values for sheets whose column pairs changed
         if regner_overrides:
@@ -1169,6 +1152,12 @@ def _repair_worksheet_xml(output_path: str) -> None:
         survived _sanitize_cash_flow_errors (e.g. in other sheets) and then had a
         numeric value written into them by the year-shift.  An OOXML t="e" cell
         with a numeric <v> is undefined behaviour and triggers Excel repair.
+    (f) Remove empty <workbookProtection/> tag from workbook.xml.
+        openpyxl writes this tag when building a workbook from scratch (e.g.
+        during xlsb→xlsx conversion).  An empty <workbookProtection/> with no
+        attributes is invalid — Excel shows "We found a problem with some
+        content" popup on open and requires recovery.  Strip it entirely;
+        workbooks without this tag open cleanly with no protection applied.
     """
     import zipfile as _zipfile, os as _os
 
@@ -1190,6 +1179,21 @@ def _repair_worksheet_xml(output_path: str) -> None:
                     text = data.decode("utf-8", errors="replace")
                     text = re.sub(
                         r'<Override[^>]*calcChain[^>]*/>\s*', '', text
+                    )
+                    data = text.encode("utf-8")
+
+                # (f) Strip empty <workbookProtection/> from workbook.xml.
+                # openpyxl writes this when building a workbook from scratch
+                # (xlsb→xlsx conversion).  An empty workbookProtection tag
+                # with no attributes is invalid OOXML and triggers Excel's
+                # "We found a problem with some content" recovery popup.
+                if fn == "xl/workbook.xml":
+                    text = data.decode("utf-8", errors="replace")
+                    text = re.sub(r'\s*<workbookProtection\s*/>', '', text)
+                    text = re.sub(r'\s*<workbookProtection\b[^>]*/>', '', text)
+                    text = re.sub(
+                        r'\s*<workbookProtection\b[^>]*>.*?</workbookProtection>',
+                        '', text, flags=re.DOTALL
                     )
                     data = text.encode("utf-8")
 
