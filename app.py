@@ -865,6 +865,7 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
           <div class="dz-icon">📁</div>
           <div class="dz-text"><strong>Click to browse</strong> or drag &amp; drop</div>
           <div class="dz-text" style="margin-top:3px">.xlsx or .xls · Max 20 MB</div>
+          <div class="dz-text" style="margin-top:2px;font-size:11px;color:var(--muted)">(.xlsb also accepted — formatting not preserved)</div>
           <div class="dz-file" id="dzFile"></div>
         </div>
       </div>
