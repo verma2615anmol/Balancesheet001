@@ -1273,6 +1273,28 @@ def _repair_worksheet_xml(output_path: str) -> None:
                         _fix_v_before_f, text, flags=re.DOTALL
                     )
 
+                    # (d2) t="n" cells with no <v>: strip t="n".
+                    # A numeric-typed cell with no value child is invalid OOXML
+                    # and causes Excel's "Repairs required" / "Removed Records"
+                    # dialog on open.  This arises specifically when the xlsb→xlsx
+                    # conversion writes formula-cached values as plain t="n" cells,
+                    # and the year-shift then clears the <v> tag without removing
+                    # the t="n" attribute.  The primary fix is in processor.py's
+                    # clear_v action, but we add a safety-net pass here too so any
+                    # t="n" empty cells that slipped through are caught.
+                    def _fix_n_no_v(cm):
+                        full = cm.group(0)
+                        if '<v>' in full or '<v ' in full:
+                            return full  # has value — fine
+                        if '<f' in full:
+                            return full  # has formula — value will be recalculated
+                        return re.sub(r'\s*t="n"', '', full, count=1)
+
+                    text = re.sub(
+                        r'<c\b[^>]*\bt="n"[^>]*>(?:(?!</c>).)*?</c>',
+                        _fix_n_no_v, text, flags=re.DOTALL
+                    )
+
                     # (e) t="e" cells with a numeric <v>: invalid per OOXML.
                     # After the year-shift, a t="e" (error-type) cell in the PY
                     # destination column may have had a real numeric value written
