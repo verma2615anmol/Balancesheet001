@@ -449,9 +449,28 @@ def process(input_path: str, output_path: str,
                 _proc._scan_workbook(input_path, closing_year)
 
             # Replace auto-detected pairs with correct pairs for every
-            # sheet that has a Pooja-style header
+            # sheet that has a Pooja-style header.
+            #
+            # IMPORTANT — MERGE, not replace:
+            # The override pairs (C→D, G→H, K→M, L→N) add the horizontal BS
+            # summary cols that the scanner didn't detect.  But the scanner
+            # also correctly found the schedule/notes col pairs for POOJA-I:
+            # Q→R (NCL schedule), U→V (current liabilities schedule), Y→Z
+            # (P&L schedule), AS→AU (date header cols), K→M (share capital).
+            # These schedule cols must ALSO be shifted, otherwise:
+            #   • Q remains full of old CY values
+            #   • C24 = =+Q17+Q24 recalculates to the old long-term borrowings
+            #     figure instead of zero → CY col shows stale data
+            # Fix: build merged pairs = override + any scanner pair whose CY col
+            # is not already covered by the override.
             for sn, corrected_pairs in col_overrides.items():
-                shift_map[sn] = corrected_pairs
+                override_cy_cols = {cy for cy, _ in corrected_pairs}
+                scanner_pairs_kept = [
+                    (cy, py)
+                    for cy, py in shift_map.get(sn, [])
+                    if cy not in override_cy_cols
+                ]
+                shift_map[sn] = corrected_pairs + scanner_pairs_kept
 
             # Re-scan CY values using the corrected column pairs.
             # _rescan_changed_sheets expects all workbook sheet names as arg 3.
