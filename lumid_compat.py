@@ -472,13 +472,41 @@ def process(input_path: str, output_path: str,
                 desc = ", ".join(f"{c}→{p}" for c, p in cp)
                 log.append(f"  {sn}: {desc}")
 
-            return _run_with_patched_maps(
+            result = _run_with_patched_maps(
                 input_path, output_path,
                 closing_year, new_year,
                 sizes, shift_map, cy_values, cy_formulas, cap_data,
                 pairs, log,
                 set(),  # no Lumid-specific TEXT_ONLY extras
             )
+
+            # ── Pooja: freeze then clear CY formula cells ────────────────────
+            # The Pooja-I sheet has formula cells in the CY columns (e.g.
+            # col C: =+L18, =+L85, =+Q17+Q24 — cross-schedule references).
+            # After the year-shift:
+            #   • Constant CY cells are correctly cleared (set blank).
+            #   • Formula CY cells are NOT cleared — the processor never
+            #     clears formula cells, only their cached <v> values where the
+            #     formula itself stays.  But in the Pooja layout the formula
+            #     stays LIVE and still references the same schedule columns
+            #     (L18, Q34, U37 …) which themselves got shifted.  So when the
+            #     user clicks "Enable Editing", Excel recalculates every formula
+            #     from the now-shifted columns → the CY column shows wrong
+            #     (previous-year) figures rather than being blank.
+            #
+            # Fix: for each CY column across all Pooja sheets, strip the <f>
+            # tag from every CY formula cell, preserving the cached <v>.
+            # Then a second pass removes those <v> values entirely (blank CY).
+            # Net result: CY cells that had formulas become truly blank (no
+            # formula, no cached value) — ready for the CA to fill in FY26
+            # figures without any stale formula recalculating underneath.
+            _pooja_blank_cy_formulas(output_path, col_overrides)
+            log.append(
+                "🔒 Pooja: CY formula cells blanked (formulas stripped, "
+                "values cleared) — Enable Editing will not recalculate stale refs"
+            )
+
+            return result
 
     # ── Regner / similar CA format ───────────────────────────────────────────
     if _is_regner_format(input_path):
@@ -544,6 +572,14 @@ def process(input_path: str, output_path: str,
         )
 
         _proc.TEXT_ONLY_SHEETS = original_text_only_r
+
+        # Run XML repair pass — strips empty <definedNames/>, <workbookProtection/>,
+        # stale calcChain, and worksheet cell-type malformations.  Required for
+        # xlsb-sourced Regner files where openpyxl writes <definedNames /> and
+        # <workbookPr /> tags that trigger Excel's repair dialog.
+        _repair_worksheet_xml(output_path)
+        log.append("🔧 Regner: XML repair pass completed (definedNames, calcChain cleaned)")
+
         return result
 
     if not _is_lumid_format(input_path):
@@ -1182,19 +1218,41 @@ def _repair_worksheet_xml(output_path: str) -> None:
                     )
                     data = text.encode("utf-8")
 
-                # (f) Strip empty <workbookProtection/> from workbook.xml.
-                # openpyxl writes this when building a workbook from scratch
-                # (xlsb→xlsx conversion).  An empty workbookProtection tag
-                # with no attributes is invalid OOXML and triggers Excel's
-                # "We found a problem with some content" recovery popup.
+                # (f) Strip empty <workbookProtection/> and <definedNames/>
+                #     from workbook.xml.
+                #
+                # workbookProtection: openpyxl writes this when building a
+                #   workbook from scratch (xlsb→xlsx conversion).  An empty
+                #   <workbookProtection/> with no attributes is invalid OOXML
+                #   and triggers Excel's "We found a problem with some content"
+                #   recovery popup.
+                #
+                # definedNames: openpyxl writes <definedNames /> (empty) when
+                #   there are no named ranges, which happens during xlsb→xlsx
+                #   conversion.  Excel (particularly 2016+) flags this as a
+                #   corrupt element and shows the "Removed Records: Cell
+                #   information from /xl/worksheets/sheetN.xml part" repair
+                #   dialog on open.  Strip it; workbooks with no named ranges
+                #   simply omit this tag entirely.
                 if fn == "xl/workbook.xml":
                     text = data.decode("utf-8", errors="replace")
+                    # Strip empty workbookProtection (no attrs)
                     text = re.sub(r'\s*<workbookProtection\s*/>', '', text)
                     text = re.sub(r'\s*<workbookProtection\b[^>]*/>', '', text)
                     text = re.sub(
                         r'\s*<workbookProtection\b[^>]*>.*?</workbookProtection>',
                         '', text, flags=re.DOTALL
                     )
+                    # Strip empty definedNames (no children) — Fix for
+                    # xlsb→xlsx Regner repair dialog (Issue: 2026-07-09)
+                    text = re.sub(r'\s*<definedNames\s*/>', '', text)
+                    text = re.sub(
+                        r'\s*<definedNames\b[^>]*>\s*</definedNames>',
+                        '', text, flags=re.DOTALL
+                    )
+                    # Strip empty workbookPr (no attrs) — also written by
+                    # openpyxl from scratch; some Excel versions complain
+                    text = re.sub(r'\s*<workbookPr\s*/>', '', text)
                     data = text.encode("utf-8")
 
                 # Repair worksheet XMLs only
@@ -1330,6 +1388,119 @@ def _repair_worksheet_xml(output_path: str) -> None:
 
                 zo.writestr(item, data)
 
+    _os.replace(tmp, output_path)
+
+
+def _pooja_blank_cy_formulas(
+    output_path: str,
+    col_overrides: dict,
+) -> None:
+    """
+    For every Pooja-format sheet, strip the <f> formula tag from all cells
+    in the CY columns (the first element of each shift pair) and then remove
+    their <v> value too — making those cells fully blank.
+
+    WHY: The Pooja-I sheet stores BS/P&L totals as intra-sheet formula
+    references (e.g. C17 = =+L18, C18 = =+L85, C36 = =+SUM(C16:C35)).
+    The year-shift tool correctly copies the cached <v> of those formula
+    cells into the PY column, but it cannot clear the live <f> formula —
+    only constant cells get blanked.  When the user enables editing, Excel
+    recalculates the still-live CY formulas against the now-shifted schedule
+    columns and produces wrong (prior-year) figures, making the BS unbalanced.
+
+    Fix: after the year-shift completes, find all formula cells in each CY
+    column and:
+      1. Remove the <f> tag (kills the live formula).
+      2. Remove the <v> tag (clears the cached value → truly blank cell).
+      3. Remove any t= attribute left behind (t="n" with no <v> is invalid).
+
+    This leaves the CY column fully blank — identical to what the shift does
+    for constant cells — so the CA can type in the new FY figures directly.
+    """
+    import zipfile as _zipfile
+    import re as _re
+
+    if not col_overrides:
+        return
+
+    # Collect {sheet_name: [cy_col_letter, ...]} from the override pairs
+    cy_cols_by_sheet: dict[str, list[str]] = {}
+    for sn, pairs in col_overrides.items():
+        cy_cols_by_sheet[sn] = [cy for cy, _py in pairs]
+
+    with _zipfile.ZipFile(output_path, "r") as zi:
+        smap = _proc._sheet_file_map(zi)
+        all_items = {item.filename: (item, zi.read(item.filename))
+                     for item in zi.infolist()}
+
+    modified: dict[str, tuple] = {}
+
+    for sheet_name, cy_cols in cy_cols_by_sheet.items():
+        sf = smap.get(sheet_name, "")
+        if not sf or sf not in all_items:
+            continue
+
+        item, xml_bytes = all_items[sf]
+        text = xml_bytes.decode("utf-8", errors="replace")
+
+        for cy_col in cy_cols:
+            # Match all cells in this column (self-closing and paired variants)
+            col_re = _re.compile(
+                rf'<c\b[^>]*\br="{_re.escape(cy_col)}(\d+)"[^>]*/>\s*'
+                rf'|<c\b[^>]*\br="{_re.escape(cy_col)}(\d+)"[^>]*>.*?</c>',
+                _re.DOTALL
+            )
+
+            def _blank_cy_formula_cell(cm, _cy_col=cy_col):
+                full = cm.group(0)
+                # Only touch cells that have a <f> formula tag
+                has_f = bool(
+                    _re.search(r'<f[^>]*>.*?</f>', full, _re.DOTALL) or
+                    _re.search(r'<f[^>]*/>', full)
+                )
+                if not has_f:
+                    return full  # constant cell — already handled by main shift
+                # Remove <f> tag (formula)
+                full = _re.sub(r'<f[^>]*>.*?</f>', '', full, flags=_re.DOTALL)
+                full = _re.sub(r'<f[^>]*/>', '', full)
+                # Remove <v> tag (cached value) — handles both plain <v>…</v>
+                # and attribute-bearing variants like <v xml:space="preserve">…</v>
+                full = _re.sub(r'<v\b[^>]*>[^<]*</v>', '', full)
+                # Remove t= attribute (t="n"/"str" with no <v> is invalid OOXML)
+                full = _re.sub(r'\s*\bt="[^"]*"', '', full, count=1)
+                # If now just an empty paired tag, collapse to self-closing
+                inner = _re.sub(r'<c\b[^>]*>', '', full, count=1)
+                inner = _re.sub(r'</c>\s*$', '', inner).strip()
+                if not inner:
+                    # Rebuild as minimal self-closing cell keeping only r= and s=
+                    r_m = _re.search(
+                        rf'\br="{_re.escape(_cy_col)}\d+"', full
+                    )
+                    s_m = _re.search(r'\bs="(\d+)"', full)
+                    r_attr = r_m.group(0) if r_m else ''
+                    s_attr = f' s="{s_m.group(1)}"' if s_m else ''
+                    return f'<c {r_attr}{s_attr}/>'
+                return full
+
+            text = col_re.sub(_blank_cy_formula_cell, text)
+
+        modified[sf] = (item, text.encode("utf-8"))
+
+    if not modified:
+        return
+
+    # Re-write the ZIP with the blanked CY sheets
+    import shutil as _shutil
+    import os as _os
+    tmp = output_path + ".pooja_blank_tmp"
+    with _zipfile.ZipFile(output_path, "r") as zi:
+        with _zipfile.ZipFile(tmp, "w", _zipfile.ZIP_DEFLATED) as zo:
+            for item in zi.infolist():
+                if item.filename in modified:
+                    _, new_bytes = modified[item.filename]
+                    zo.writestr(item, new_bytes)
+                else:
+                    zo.writestr(item, zi.read(item.filename))
     _os.replace(tmp, output_path)
 
 
