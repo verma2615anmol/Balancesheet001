@@ -1239,9 +1239,20 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                                 col_refs_in_formula = set(
                                     re.findall(r'\b([A-Z]+)\d+\b', cy_f_text)
                                 )
+                                # Expand the "known columns" set with any
+                                # additional scanner-detected CY cols (keys of
+                                # cy_formulas) that were overridden out of
+                                # col_pairs in templates with horizontal layout
+                                # (e.g. Pooja col C refs Q/U/AT — those are
+                                # schedule cols the scanner found as CY cols but
+                                # the override replaced with C/G/K/L pairs).
+                                # Without this expansion, Q/U/AT look "unshifted"
+                                # → their C-col formulas get wrongly blanked.
+                                _scanner_cy_cols = set(cy_formulas.keys())
+                                _known_cols = cy_letters | py_letters | _scanner_cy_cols
                                 all_unshifted = (
                                     col_refs_in_formula
-                                    and col_refs_in_formula.isdisjoint(cy_letters | py_letters)
+                                    and col_refs_in_formula.isdisjoint(_known_cols)
                                 )
                                 if all_unshifted:
                                     changes[ref] = ("clear_v", None)
