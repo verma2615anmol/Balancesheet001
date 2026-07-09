@@ -6032,11 +6032,13 @@ def _convert_xlsb_to_xlsx(xlsb_path: str, xlsx_path: str) -> None:
     pyxlsb reads the BIFF12 binary format reliably without requiring any
     external system tools (LibreOffice is not available on Render).
 
-    What is preserved: all cell values (numbers, text, dates, booleans).
-    What is NOT preserved: cell formatting, colors, borders, merged cells,
-    print settings, formulas. For the year-shift tool this is acceptable
-    because only cell values are shifted; formatting is irrelevant to the
-    algorithm. The output .xlsx will have plain formatting.
+    What is preserved: all cell values (numbers, text, dates, booleans),
+    and column widths (read from ws.cols which pyxlsb exposes).
+    What is NOT preserved: cell formatting/colors/borders/merged cells,
+    row heights, print settings, formulas.  Column widths are preserved
+    because their loss causes values to display as scientific notation
+    (e.g. 2.5E+07 instead of 25,395,177) in narrow default columns,
+    making the output appear unreadable even though the data is correct.
 
     After conversion the year-shift runs on the clean .xlsx exactly like any
     natively-uploaded .xlsx file.
@@ -6053,6 +6055,7 @@ def _convert_xlsb_to_xlsx(xlsb_path: str, xlsx_path: str) -> None:
         )
 
     from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
     from datetime import datetime
 
     # pyxlsb serial-date epoch: days since 1899-12-30
@@ -6092,6 +6095,30 @@ def _convert_xlsb_to_xlsx(xlsb_path: str, xlsx_path: str) -> None:
         for sheet_name in wb_in.sheets:
             ws_out = wb_out.create_sheet(title=sheet_name)
             with wb_in.get_sheet(sheet_name) as ws_in:
+
+                # ── Preserve column widths ────────────────────────────────────
+                # pyxlsb exposes ws_in.cols as a list of col() namedtuples:
+                #   col(c1=<first_col_0based>, c2=<last_col_0based>, width=<float>, style=<int>)
+                # A single entry can span a range (c1 to c2 inclusive).
+                # We write each width to the corresponding column(s) in ws_out.
+                # Cap at 16383 (Excel's max col index 0-based) to skip the
+                # catch-all "rest of sheet" entry (c2=16383, width=default 9).
+                try:
+                    for col_info in (ws_in.cols or []):
+                        c1 = col_info.c1   # 0-based start
+                        c2 = col_info.c2   # 0-based end (inclusive)
+                        w  = col_info.width
+                        if w is None or w <= 0:
+                            continue
+                        # Skip the "rest of sheet" sentinel range
+                        if c2 >= 16383:
+                            c2 = c1   # apply to start col only
+                        for c_idx in range(c1, c2 + 1):
+                            col_letter = get_column_letter(c_idx + 1)
+                            ws_out.column_dimensions[col_letter].width = w
+                except Exception:
+                    pass  # column widths are cosmetic — never break conversion
+
                 for row in ws_in.rows():
                     for cell in row:
                         val = _xlsb_val(cell.v)
