@@ -458,12 +458,78 @@ def process(input_path: str, output_path: str,
             _wb_tmp2 = load_workbook(input_path, read_only=True, data_only=True)
             _all_sn_pooja = _wb_tmp2.sheetnames
             _wb_tmp2.close()
+
+            # ── Preserve original scanner-detected CY cols ────────────────
+            # _rescan_changed_sheets will REPLACE cy_formulas[sn] with a new
+            # dict keyed only by the OVERRIDE cols (C, G, K, L).  But the
+            # original scanner detected Q, U, Y, AS, K as the CY cols for
+            # POOJA-I (those are the horizontal schedule cols).
+            # In processor._process_sheet_xml, the "all_unshifted" check
+            # expands the "known cols" set with cy_formulas.keys().  After
+            # rescan, cy_formulas["POOJA-I"].keys() = {C,G,K,L}, so formulas
+            # like C24=+Q17+Q24 see Q as "not a known col" → get cleared.
+            # Fix: save the pre-rescan keys and re-inject them as empty sets
+            # after the rescan so that Q/U/Y/AS remain in cy_formulas.keys()
+            # → the all_unshifted check treats them as "known" → formulas kept.
+            _pooja_scanner_cols: dict[str, set[str]] = {
+                sn: set(cy_formulas.get(sn, {}).keys())
+                for sn in col_overrides
+            }
+
             _rescan_changed_sheets(
                 input_path, closing_year,
                 _all_sn_pooja,
                 col_overrides,
                 shift_map, cy_values, cy_formulas,
             )
+
+            # Restore pre-rescan scanner cols as empty-set sentinels so
+            # processor._process_sheet_xml sees them in cy_formulas.keys()
+            for _sn, _orig_cols in _pooja_scanner_cols.items():
+                for _col in _orig_cols:
+                    cy_formulas.setdefault(_sn, {}).setdefault(_col, set())
+
+            # ── Extend sentinels with all direct cell-ref cols from CY formulas ──
+            # Even after restoring scanner-detected cols (Q, U, Y, AS), some Pooja
+            # CY formula cells reference deeper schedule cols (AT, DG, DN, AC, DD…)
+            # that the scanner never detected as CY cols.  Without sentinels for
+            # those cols, the all_unshifted check in _process_sheet_xml sees them
+            # as "not a known col" and clears the CY formula cell (e.g. C40=+AT53
+            # → C40 blanked).
+            # Fix: open the input ZIP, scan each Pooja CY sheet's XML for formula
+            # texts, extract all direct single-cell column references (excluding
+            # SUM/range refs like A1:Z100), and add those col letters as sentinel
+            # empty sets in cy_formulas.  This is a pure read-only scan; it never
+            # modifies the workbook or the shift logic.
+            _range_re = re.compile(r'\b[A-Z]+\d+:[A-Z]+\d+\b')
+            _colref_re = re.compile(r'\b([A-Z]+)\d+\b')
+            try:
+                with zipfile.ZipFile(input_path) as _zi:
+                    _smap = _proc._sheet_file_map(_zi)
+                    for _sn, _cpairs in col_overrides.items():
+                        _sf = _smap.get(_sn, "")
+                        if not _sf:
+                            continue
+                        _xml = _zi.read(_sf).decode("utf-8", errors="replace")
+                        _cy_col_set = {cy for cy, _ in _cpairs}
+                        for _cy_col in _cy_col_set:
+                            _pattern = re.compile(
+                                rf'<c\b[^>]*\br="{re.escape(_cy_col)}\d+"[^>]*>'
+                                rf'.*?<f[^>]*>(.*?)</f>.*?</c>',
+                                re.DOTALL
+                            )
+                            for _fm in _pattern.finditer(_xml):
+                                _ftext = _fm.group(1)
+                                # Strip range expressions before extracting col refs
+                                _ftext_no_ranges = _range_re.sub('', _ftext)
+                                for _ref_col in _colref_re.findall(_ftext_no_ranges):
+                                    cy_formulas.setdefault(_sn, {}).setdefault(
+                                        _ref_col, set()
+                                    )
+            except Exception:
+                pass  # sentinel expansion is best-effort; never block the shift
+
+
 
             pairs = _proc._date_replacements(str(closing_year), str(new_year))
             log: list[str] = []
