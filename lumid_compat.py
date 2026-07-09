@@ -480,44 +480,37 @@ def process(input_path: str, output_path: str,
                 set(),  # no Lumid-specific TEXT_ONLY extras
             )
 
-            # ── Pooja: freeze PY formula columns ─────────────────────────────
-            # In the Pooja-I sheet, BOTH the CY columns (C, G, K, L) AND the PY
-            # columns (D, H, M, N) are built entirely from intra-sheet formula
-            # references (e.g. D18=+M85, D17=N24, H17=+H15+H16, M22=N22/10).
+            # ── Pooja: freeze PY formula columns only ─────────────────────────
+            # The Pooja-I sheet is a formula-driven template.  The CY columns
+            # (C, G, K, L) contain intra-sheet formulas that AUTO-POPULATE from
+            # the schedule/notes columns, e.g.:
+            #   C17 = =+L18   (Share Capital from schedule col L)
+            #   C18 = =+L85   (Reserves & Surplus from schedule col L)
+            #   C36 = =+SUM(C16:C35)  (BS total)
+            # These are PRODUCTION formulas — the CA does NOT fill col C
+            # manually.  After the shift, the schedule cols (L, Q, U …) become
+            # the new CY schedule cols (blank until the CA enters FY2026 data),
+            # so C17 etc. correctly show zero until the schedules are filled.
+            # We MUST preserve these formulas — do NOT blank the CY col.
             #
-            # After the year-shift:
-            #   • CY cols (C/G/K/L) — _pooja_blank_cy_formulas() blanks them
-            #     below (formulas + values stripped → truly blank for CA to fill).
-            #   • PY cols (D/H/M/N) — the shift correctly copies old-CY cached
-            #     values into them, but the FORMULA in each PY cell still points
-            #     to the schedule columns (which now hold shifted/cleared data).
-            #     When the CA clicks "Enable Editing", Excel recalculates the PY
-            #     formula against the now-shifted schedule: D18=+M85 → M85 is the
-            #     NEW CY col (blank) → D18 recalculates to 0 instead of 45.8L.
-            #     This makes the BS total drop from ₹25.26 Cr to ₹20.68 Cr.
+            # The PY columns (D, H, M, N) are also formula-driven, e.g.:
+            #   D18 = =+M85   (PY Reserves pulling from M schedule)
+            #   D17 = =N24    (PY Share Capital from N schedule)
+            # The shift copies the old-CY cached value into D (correct), but
+            # the live <f> formula remains.  After "Enable Editing", Excel
+            # recalculates D18 = +M85 where M85 is the NEW blank CY col →
+            # D18 → 0, dropping the BS total by ₹45.8L.
             #
-            # Fix: freeze every formula cell in the PY columns to its cached <v>
-            # value (remove the <f> tag) so Enable Editing cannot recalculate it.
-            # Same mechanism as _freeze_py_columns used for Lumid BAL SHEET/P L.
-            #
-            # Determine PY col letters for each shifted sheet
-            pooja_py_cols: dict[str, list[str]] = {}
-            for sn, cpairs in col_overrides.items():
-                pooja_py_cols[sn] = [py for _cy, py in cpairs]
-
+            # Fix: freeze ONLY the PY columns to plain cached values (strip <f>).
+            # CY columns are left completely untouched — formulas preserved.
+            pooja_py_cols: dict[str, list[str]] = {
+                sn: [py for _cy, py in cpairs]
+                for sn, cpairs in col_overrides.items()
+            }
             _freeze_py_columns(output_path, pooja_py_cols)
             log.append(
-                "🔒 Pooja: PY columns frozen (formulas → plain values) "
-                "so Enable Editing preserves correct prior-year figures"
-            )
-
-            # ── Pooja: blank CY formula columns ──────────────────────────────
-            # After freezing PY cols, blank the CY formula cells.
-            # See _pooja_blank_cy_formulas docstring for full explanation.
-            _pooja_blank_cy_formulas(output_path, col_overrides)
-            log.append(
-                "🔒 Pooja: CY formula cells blanked — Enable Editing will "
-                "not recalculate stale refs in the new-year column"
+                "🔒 Pooja: PY columns frozen to plain values; "
+                "CY column formulas preserved (auto-populate from schedules)"
             )
 
             return result
