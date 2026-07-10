@@ -7942,10 +7942,39 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
        Fixed Assets C. Yr. sheet.
     2. Output Fixed Assets C. Yr. keeps formulas, but additions/sale inputs are
        cleared so the new year opens from the mirrored PY closing balances.
+
+    PERFORMANCE FIX (2026-07-10): moved workbook opens AFTER the FA sheet
+    detection check so files without FA sheets (e.g. Deluxe format) return
+    immediately without paying the openpyxl load cost. Also uses
+    _fast_load_workbook to strip bloated styles.xml (38k+ named styles) that
+    cause 7s+ load times, preventing Render request timeouts.
     """
-    from openpyxl import load_workbook as _lwb
     from openpyxl.cell import MergedCell as _MC
     import re as _re
+    import zipfile as _zf
+
+    # ── Fast sheet-name check BEFORE opening any workbook ────────────────────
+    # Avoids paying 4 × ~7s openpyxl opens when no FA sheet exists.
+    try:
+        with _zf.ZipFile(output_path, "r") as _zi:
+            _wb_xml = _zi.read("xl/workbook.xml").decode("utf-8", errors="replace")
+        import re as _re2
+        _snames_quick = _re2.findall(r'<sheet\b[^>]*name="([^"]+)"', _wb_xml)
+    except Exception:
+        _snames_quick = []
+    _cy_quick, _py_quick = detect_fixed_asset_sheet_names(_snames_quick)
+    if not _cy_quick:
+        log.append("⚠ FA C.Yr. sheet not found — skipping FA rollover")
+        return
+
+    # ── Use fast loader to strip bloated styles before openpyxl opens ────────
+    try:
+        from processor import _fast_load_workbook as _flwb
+    except ImportError:
+        from openpyxl import load_workbook as _flwb
+
+    def _lwb(path, **kwargs):
+        return _flwb(path, **kwargs)
 
     wb = _lwb(output_path)
     wb_do = _lwb(output_path, data_only=True)
