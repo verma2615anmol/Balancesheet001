@@ -91,11 +91,32 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-from openpyxl import load_workbook
+from openpyxl import load_workbook as _openpyxl_load_workbook
 from openpyxl.cell import MergedCell
 
 # ── Import the real processor ────────────────────────────────────────────────
 import processor as _proc
+
+# Use the style-stripping fast loader for ALL openpyxl opens in this module.
+# Prevents 20+ second parse times on files with tens of thousands of accumulated
+# named cell styles (e.g. deluxe_final_bs_round_off.XLSX has 38,490 cellStyles).
+def load_workbook(filepath, **kwargs):
+    """Fast drop-in: strips bloated cellStyles before opening."""
+    try:
+        return _proc._fast_load_workbook(filepath, **kwargs)
+    except Exception:
+        return _openpyxl_load_workbook(filepath, **kwargs)
+def _sheetnames_fast(filepath: str) -> set:
+    """Get sheet names from workbook.xml via ZIP — no openpyxl, ~0.09s vs ~2s."""
+    import zipfile as _zf, re as _re2
+    try:
+        with _zf.ZipFile(filepath, "r") as _zi:
+            _wb = _zi.read("xl/workbook.xml").decode("utf-8", errors="replace")
+            return set(_re2.findall(r'<sheet\b[^>]*name="([^"]+)"', _wb))
+    except Exception:
+        return set()
+
+
 
 # ── Lumid-format fingerprint ─────────────────────────────────────────────────
 # We identify a Lumid-format file by the presence of the specific annexure
@@ -123,32 +144,22 @@ def _is_deluxe_format(filepath: str) -> bool:
     used by this template family. The "BALANCE SHEET" mega-sheet contains the
     BS summary, P&L, and ALL Notes packed into one sheet (rows 1-600+), with CY
     in col D and PY in col E.
+
+    Uses ZIP-level XML parsing (no openpyxl) for ~0.09s detection vs ~2s.
     """
-    try:
-        wb = load_workbook(filepath, read_only=True, data_only=True)
-        try:
-            snames = set(wb.sheetnames)
-            return (
-                "BALANCE SHEET" in snames and
-                ("TRIAL (HO)" in snames or "TRIAL (DU)" in snames)
-            )
-        finally:
-            wb.close()
-    except Exception:
-        pass
-    return False
+    snames = _sheetnames_fast(filepath)
+    return (
+        "BALANCE SHEET" in snames and
+        ("TRIAL (HO)" in snames or "TRIAL (DU)" in snames)
+    )
 
 
 
+def _is_lumid_format(filepath: str) -> bool:
     """Return True if the workbook looks like a Lumid-format balance sheet."""
-    try:
-        wb = load_workbook(filepath, read_only=True, data_only=True)
-        names_lower = {s.strip().lower() for s in wb.sheetnames}
-        wb.close()
-        matches = _LUMID_SHEET_SIGNATURES & names_lower
-        return len(matches) >= _LUMID_MIN_MATCH
-    except Exception:
-        return False
+    names_lower = {s.strip().lower() for s in _sheetnames_fast(filepath)}
+    matches = _LUMID_SHEET_SIGNATURES & names_lower
+    return len(matches) >= _LUMID_MIN_MATCH
 
 
 # ── Regner-format fingerprint ────────────────────────────────────────────────
@@ -167,13 +178,8 @@ _REGNER_MIN_MATCH = 3
 
 def _is_regner_format(filepath: str) -> bool:
     """Return True if the workbook looks like a Regner/similar CA format."""
-    try:
-        wb = load_workbook(filepath, read_only=True, data_only=True)
-        names_lower = {s.strip().lower() for s in wb.sheetnames}
-        wb.close()
-        return len(_REGNER_SHEET_SIGNATURES & names_lower) >= _REGNER_MIN_MATCH
-    except Exception:
-        return False
+    names_lower = {s.strip().lower() for s in _sheetnames_fast(filepath)}
+    return len(_REGNER_SHEET_SIGNATURES & names_lower) >= _REGNER_MIN_MATCH
 
 _REGNER_TEXT_ONLY_EXTRA = {
     # Depreciation schedules — WDV opening/closing columns must not be shifted
