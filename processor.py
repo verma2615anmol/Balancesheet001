@@ -104,6 +104,12 @@ def detect_fixed_asset_sheet_names(sheetnames):
 
     for sn in sheetnames or []:
         sl = (sn or "").strip().lower()
+        # Exclude PPE/FA *schedule note* sheets that follow the "PPE (ENTITY) CA,YYYY"
+        # naming pattern — these are summary notes embedded in the workbook (e.g.
+        # "PPE (HO) CA,2013", "PPE (CONSOLIDATED) CA,2013"). They are NOT fixed-asset
+        # rollover registers and must not be picked up by the FA-rollover logic.
+        if "ca," in sl or "ca, " in sl or "(consolidated)" in sl:
+            continue
         if "p. yr" in sl or "p.yr" in sl or ("fixed" in sl and (" p." in sl or "p. " in sl)):
             py_sn = sn
         elif (sl.startswith("fa") and "2022" not in sl) or "ppe" in sl:
