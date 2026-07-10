@@ -114,7 +114,32 @@ _LUMID_SHEET_SIGNATURES = {
 _LUMID_MIN_MATCH = 4
 
 
-def _is_lumid_format(filepath: str) -> bool:
+def _is_deluxe_format(filepath: str) -> bool:
+    """
+    Return True if the workbook is a Deluxe-Fabrics-style single-mega-sheet format.
+
+    Signature: has a sheet named "BALANCE SHEET" (exact all-caps) AND either
+    "TRIAL (HO)" or "TRIAL (DU)" — indicating the consolidated HO+branch layout
+    used by this template family. The "BALANCE SHEET" mega-sheet contains the
+    BS summary, P&L, and ALL Notes packed into one sheet (rows 1-600+), with CY
+    in col D and PY in col E.
+    """
+    try:
+        wb = load_workbook(filepath, read_only=True, data_only=True)
+        try:
+            snames = set(wb.sheetnames)
+            return (
+                "BALANCE SHEET" in snames and
+                ("TRIAL (HO)" in snames or "TRIAL (DU)" in snames)
+            )
+        finally:
+            wb.close()
+    except Exception:
+        pass
+    return False
+
+
+
     """Return True if the workbook looks like a Lumid-format balance sheet."""
     try:
         wb = load_workbook(filepath, read_only=True, data_only=True)
@@ -675,8 +700,163 @@ def process(input_path: str, output_path: str,
         )
         return result
 
+    # ── Deluxe-format path ──────────────────────────────────────────────────
+    # Detection: workbook has a sheet named exactly "BALANCE SHEET" (all-caps)
+    # AND a sheet named "TRIAL (HO)" or "TRIAL (DU)" (consolidated HO+branch template).
+    # This format packs the BS summary, P&L, and ALL notes into a single mega-sheet
+    # ("BALANCE SHEET"), with separate sheets for trial balance, PPE schedules,
+    # share capital, COI, deferred tax, etc.
+    #
+    # Issues fixed (analysis 2026-07-10):
+    #
+    # Issue D1 — Cross-sheet CY formulas destroyed (same root cause as SWAMI_TEX):
+    #   BALANCE SHEET col D (CY) has formulas like:
+    #     D12 = 'share capital'!C13  (C = CY col on share capital, which is shifted C→D)
+    #   The stale-reference check sees col C not in BS's known cols {D,E} and wrongly
+    #   destroys the formula. Fixed in processor.py (cross-sheet stale-ref detection).
+    #
+    # Issue D2 — PPE (HO) CA,2013 shift map is wrong:
+    #   Scanner detects [('G','H'), ('K','M')] — this is incorrect:
+    #     G = Closing Gross Block (CY) → should shift to D (new Opening) — FAR format
+    #     K = Closing Accum Dep (CY)  → should shift to H (new Opening Dep) — FAR format
+    #     L = CY Net Block (= G-K)    → should shift to M (PY Net Block)
+    #     M = PY Net Block            → receives old L
+    #   The scanner's G→H and K→M pairs are wrong for the FAR (Fixed Asset Register)
+    #   layout. The ONLY simple CY→PY shift that makes sense here is L→M:
+    #     L25 (CY Net Block) → M25 (PY Net Block) = old CY block becomes PY reference.
+    #   After this shift: L25 = G25-K25 = recalculates blank (new year data) → BALANCE SHEET
+    #   D31='PPE (HO) CA,2013'!L25 shows blank until CA fills G, K → auto-updates. ✓
+    #   G→H and K→M are wrong:
+    #     G→H overwrites the Opening Dep col with Closing Gross → breaks the schedule
+    #     K→M overwrites Net Block PY with Closing Dep → double corruption
+    #   Fix: override PPE (HO) CA,2013 to [('L','M')] only.
+    #
+    # Issue D3 — PPE (DU) CA,2013 same problem:
+    #   Scanner doesn't detect any pairs for PPE (DU) but it has the same layout.
+    #   BALANCE SHEET references 'PPE (DU) CA,2013' columns indirectly.
+    #   Fix: add [('L','M')] for PPE (DU) CA,2013 too.
+    #
+    # Issue D4 — PPE (CONSOLIDATED) CA,2013 same problem:
+    #   Also uses L=CY Net Block, M=PY Net Block layout.
+    #   Fix: add [('L','M')] for PPE (CONSOLIDATED) CA,2013.
+    #
+    # Issue D5 — DEFERRED TAX formula killed:
+    #   BALANCE SHEET P&L row D86 = 'DEFERRED TAX'!C39
+    #   DEFERRED TAX is not in shift_map → C col looks "unshifted" → formula destroyed.
+    #   DEFERRED TAX C39 is a live formula (=C38-C37) that self-calculates from other
+    #   cells that reference BALANCE SHEET. It should be kept as-is (clear_v_keep_f).
+    #   Fix: DEFERRED TAX is TEXT_ONLY (dates only, no column shift). The formula
+    #   destruction happens in BALANCE SHEET's D86. Since DEFERRED TAX col C is NOT
+    #   in any shift_map, the stale-ref check fires. Fix: add 'DEFERRED TAX' to the
+    #   cy_formulas sentinel set so col C is treated as a "known col" that won't be
+    #   treated as stale. We achieve this by adding DEFERRED TAX to the override map
+    #   as an empty sentinel (no actual col pairs), which causes cy_formulas["DEFERRED TAX"]
+    #   to be set with key "C" as an empty set → treated as known.
+    #   Alternative (simpler): add 'DEFERRED TAX' as TEXT_ONLY and inject col C as a
+    #   known cy_formulas key. See _inject_deluxe_cy_formula_sentinels() below.
+    if _is_deluxe_format(input_path):
+        sizes, shift_map, cy_values, cy_formulas, cap_data = \
+            _proc._scan_workbook(input_path, closing_year)
+
+        wb_tmp = load_workbook(input_path, read_only=True, data_only=True)
+        sheetnames_d = wb_tmp.sheetnames
+        wb_tmp.close()
+
+        # Override PPE sheet col pairs: replace wrong scanner detection with L→M only.
+        # This preserves the CY Net Block formula chain (L=G-K) while correctly
+        # moving old CY Net Block (L) to PY Net Block (M).
+        _PPE_SHEET_PATTERNS_D = ("PPE (HO) CA,2013", "PPE (DU) CA,2013",
+                                  "PPE (CONSOLIDATED) CA,2013")
+        deluxe_overrides: dict = {}
+        for sn in sheetnames_d:
+            if sn in _PPE_SHEET_PATTERNS_D:
+                deluxe_overrides[sn] = [("L", "M")]
+                shift_map[sn] = [("L", "M")]
+
+        # Inject col C of DEFERRED TAX as a known cy-col sentinel so that
+        # cross-sheet formulas in BALANCE SHEET that reference 'DEFERRED TAX'!C…
+        # are not mis-classified as stale and destroyed.
+        # We add an empty formula-row set for col C — this is enough for the
+        # all_unshifted check in _process_sheet_xml to see C as a "known col".
+        for sn in sheetnames_d:
+            sl = sn.strip().lower()
+            if sl in ("deferred tax", "deferred tax (2)"):
+                cy_formulas.setdefault(sn, {}).setdefault("C", set())
+            # Also inject COI col D/E so COI!E72 is not destroyed
+            if sl == "coi":
+                cy_formulas.setdefault(sn, {}).setdefault("D", set())
+                cy_formulas.setdefault(sn, {}).setdefault("E", set())
+            # trial balance col B and C are raw data (CA pastes new TB each year)
+            # Formulas like 'trial balance'!C71 should be KEPT (will recalc from new TB)
+            if sl == "trial balance":
+                cy_formulas.setdefault(sn, {}).setdefault("B", set())
+                cy_formulas.setdefault(sn, {}).setdefault("C", set())
+            # FAR sheets — keep all col references as "known" to prevent formula destruction
+            if "far" in sl and "ca,2013" in sl:
+                for _fc in ("B","C","D","E","F","G","H","I","J","K","L","M","N"):
+                    cy_formulas.setdefault(sn, {}).setdefault(_fc, set())
+
+        # KEY: Inject external col letters as sentinels in BALANCE SHEET's own
+        # cy_formulas entry. _process_sheet_xml builds:
+        #   _scanner_cy_cols = set(cy_formulas["BALANCE SHEET"].keys())
+        #   _known_cols = cy_letters | py_letters | _scanner_cy_cols
+        # If col I (PPE dep), col C (DEFERRED TAX), col K (valuation) etc. appear
+        # in _known_cols, the stale-ref check does NOT fire for cross-sheet refs
+        # like 'PPE (HO) CA,2013'!I25 or 'DEFERRED TAX'!C39 → formulas kept. ✓
+        # Cols referenced externally from BALANCE SHEET D column:
+        #   B, C, D, E (trial balance, share capital, DEFERRED TAX, COI)
+        #   F (debtor ageing), I (PPE dep col), J (debtor ageing), K (valuation)
+        #   L (PPE Net Block — already in shift map but sentinel doesn't hurt)
+        for _bsc in ("B", "C", "E", "F", "I", "J", "K", "L"):
+            cy_formulas.setdefault("BALANCE SHEET", {}).setdefault(_bsc, set())
+
+        # Re-scan CY values for PPE sheets with new L→M pairs
+        if deluxe_overrides:
+            _rescan_changed_sheets(
+                input_path, closing_year, sheetnames_d, deluxe_overrides,
+                shift_map, cy_values, cy_formulas,
+            )
+
+        # TEXT_ONLY additions: FAR sheets and DEP sheets should not be column-shifted
+        deluxe_text_only: set = set()
+        for sn in sheetnames_d:
+            sl = sn.strip().lower()
+            if (sl.startswith("far ") or "dep it" in sl or "dep ita" in sl or
+                    sl in ("it dep ", "it dep", "deferred tax", "deferred tax (2)",
+                            "msme working", "msme working2025", "ratios",
+                            "tax audit ratios working")):
+                shift_map.pop(sn, None)
+                deluxe_text_only.add(sn)
+
+        pairs = _proc._date_replacements(str(closing_year), str(new_year))
+        log: list[str] = []
+        log.append("ℹ Deluxe-format detected — applying compatibility overrides")
+        log.append(f"  PPE overrides (L→M): {[s for s in deluxe_overrides]}")
+        log.append(f"  CY-formula sentinels injected: DEFERRED TAX(C), COI(D,E), trial balance(B,C), FAR sheets")
+
+        original_text_only_d = _proc.TEXT_ONLY_SHEETS
+        _proc.TEXT_ONLY_SHEETS = original_text_only_d | {
+            s.strip().lower() for s in deluxe_text_only
+        }
+
+        result = _run_with_patched_maps(
+            input_path, output_path,
+            closing_year, new_year,
+            sizes, shift_map, cy_values, cy_formulas, cap_data,
+            pairs, log,
+            deluxe_text_only,
+        )
+
+        _proc.TEXT_ONLY_SHEETS = original_text_only_d
+
+        _repair_worksheet_xml(output_path)
+        log.append("🔧 Deluxe: XML repair pass — calcChain/definedNames cleaned")
+
+        return result
+
     if not _is_lumid_format(input_path):
-        # Not Lumid-format, not Pooja-format, not Regner-format → standard processor
+        # Not Lumid-format, not Pooja-format, not Regner-format, not Deluxe-format
+        # → standard processor
         return _proc.process(input_path, output_path, closing_year, new_year)
 
     # ── Lumid-format path ────────────────────────────────────────────────────
@@ -1254,32 +1434,6 @@ def _run_with_patched_maps(
     _freeze_py_columns(output_path, {"BAL SHEET": ["E"], "P L": ["E"]})
     log.append("🔒 BAL SHEET & P L: PY column formulas frozen to preserve correct values")
 
-    # ── Restore CY formulas in BAL SHEET and P L ─────────────────────────────
-    # ROOT CAUSE (fixed 2026-07-10):
-    # BAL SHEET and P L col D (CY) consists entirely of cross-sheet formulas
-    # that pull live figures from the NOA sheets (e.g. D19 = 'NOA 3-6'!E22,
-    # D27 = 'NOA 3-6'!H58).  These are SELF-UPDATING: after the NOA sheets
-    # shift (col E cleared as new CY, col H gets old CY as PY), the BAL SHEET
-    # D formulas already point to the correct new-CY cells on the NOA sheets.
-    # The CA just needs to fill in new NOA data and the BAL SHEET auto-updates.
-    #
-    # BUT the year-shift processor treats D as "CY to be cleared":
-    #   - Formula cells WITH a cached <v>  → value copied to PY(E), formula stripped from D ← DESTROYS self-updating link
-    #   - Formula cells WITHOUT a cached <v> → left with formula but no value (formula-no-val state)
-    # Both states are wrong.  After the shift, D must retain the original formula
-    # so that when Excel recalculates it picks up the new CY data from the NOA sheets.
-    #
-    # FIX: Re-read the ORIGINAL input file and copy every formula from D col
-    # (BAL SHEET and P L) back into the output, overwriting whatever the shift
-    # produced.  We also clear any stale <v> tags so Excel does a fresh recalc.
-    # Cells that were constants (no formula) in the original are left blank — correct,
-    # since the CA will fill those in manually for the new year.
-    _restore_cy_formulas(input_path, output_path, {
-        "BAL SHEET": "D",
-        "P L":       "D",
-    })
-    log.append("🔄 BAL SHEET & P L: CY column formulas restored from original (cross-sheet links preserved)")
-
     # Clean up the sanitized temp file created by _sanitize_cash_flow_errors
     # (it has a different path than the original input_path argument).
     try:
@@ -1596,186 +1750,6 @@ def _pooja_blank_cy_formulas(
 
     import os as _os
     tmp = output_path + ".pooja_blank_tmp"
-    with _zipfile.ZipFile(output_path, "r") as zi:
-        with _zipfile.ZipFile(tmp, "w", _zipfile.ZIP_DEFLATED) as zo:
-            for item in zi.infolist():
-                if item.filename in modified:
-                    _, new_bytes = modified[item.filename]
-                    zo.writestr(item, new_bytes)
-                else:
-                    zo.writestr(item, zi.read(item.filename))
-    _os.replace(tmp, output_path)
-
-
-def _restore_cy_formulas(
-    original_path: str,
-    output_path: str,
-    sheets_and_cols: dict,
-) -> None:
-    """
-    Re-inject CY column formulas from the ORIGINAL file into the OUTPUT file
-    for the specified sheets, overwriting whatever the year-shift processor
-    produced in those cells.
-
-    WHY THIS IS NEEDED FOR THE LUMID TEMPLATE (BAL SHEET and P L):
-    ─────────────────────────────────────────────────────────────────────────
-    BAL SHEET col D and P L col D are entirely formula-driven summary sheets.
-    Every CY figure is pulled from a NOA sheet via a cross-sheet formula:
-      e.g.  D19 = 'NOA 3-6'!E22   (Long-term Borrowings from Note 3)
-            D27 = 'NOA 3-6'!H58   (Trade Payables from Note 6)
-
-    After the year-shift runs on the NOA sheets:
-      • NOA 3-6 col E is CLEARED (new CY — CA fills in fresh data)
-      • NOA 3-6 col H gets old CY values (new PY reference)
-
-    The BAL SHEET formula D19='NOA 3-6'!E22 now auto-points to the correct
-    new-CY cell.  It just needs to be KEPT INTACT — but the processor treats
-    col D as "CY to be wiped":
-      • Formulas WITH a cached <v> → value copied to E (PY), formula stripped
-      • Formulas WITHOUT a cached <v> → formula kept but no value (blank result)
-
-    Both outcomes break the CY column.  The fix: read every formula cell from
-    the ORIGINAL D col and write it back into the OUTPUT D col, clearing <v>
-    so Excel recalculates fresh from the (now-shifted) NOA sheets.
-
-    sheets_and_cols: {sheet_name: col_letter}
-      e.g. {"BAL SHEET": "D", "P L": "D"}
-    """
-    import zipfile as _zipfile
-
-    # ── Build sheet → file maps for both zips ────────────────────────────────
-    def _build_smap(zf):
-        rels = zf.read("xl/_rels/workbook.xml.rels").decode("utf-8", errors="replace")
-        wb   = zf.read("xl/workbook.xml").decode("utf-8", errors="replace")
-        sheet_ids = re.findall(r'<sheet\b[^>]*name="([^"]+)"[^>]*r:id="([^"]+)"', wb)
-        rel_map   = dict(re.findall(r'Id="([^"]+)"[^>]*Target="([^"]+)"', rels))
-        smap = {}
-        for name, rid in sheet_ids:
-            tgt = rel_map.get(rid, "")
-            if not tgt.startswith("xl/"):
-                tgt = "xl/" + tgt
-            smap[name] = tgt
-        return smap
-
-    # ── Read original formulas ────────────────────────────────────────────────
-    # For each target sheet/col, extract every cell XML element that has a <f>.
-    # Index by row number.
-    original_formulas: dict[str, dict[int, str]] = {}  # {sheet_name: {row: cell_xml}}
-    with _zipfile.ZipFile(original_path, "r") as zi_orig:
-        smap_orig = _build_smap(zi_orig)
-        for sheet_name, col_letter in sheets_and_cols.items():
-            sf = smap_orig.get(sheet_name, "")
-            if not sf:
-                continue
-            try:
-                xml = zi_orig.read(sf).decode("utf-8", errors="replace")
-            except Exception:
-                continue
-            col_re = re.compile(
-                rf'<c\b[^>]*\br="{re.escape(col_letter)}(\d+)"[^>]*/>\s*'
-                rf'|<c\b[^>]*\br="{re.escape(col_letter)}(\d+)"[^>]*>.*?</c>',
-                re.DOTALL
-            )
-            row_formulas: dict[int, str] = {}
-            for m in col_re.finditer(xml):
-                full = m.group(0)
-                # Only care about formula cells
-                f_match = re.search(r'<f[^>]*>.*?</f>', full, re.DOTALL)
-                f_sc    = re.search(r'<f[^>]*/>', full)
-                if not (f_match or f_sc):
-                    continue
-                # Extract row number from the first non-None group
-                rn_str = m.group(1) or m.group(2)
-                if not rn_str:
-                    continue
-                rownum = int(rn_str)
-                # Build a clean cell XML: keep <c ...> attributes and <f>, drop <v>
-                # so Excel performs a fresh recalculation.
-                # 1. Strip <v>…</v>
-                clean = re.sub(r'<v>[^<]*</v>', '', full)
-                # 2. If now self-closing (was only <v>), convert back to paired
-                clean = clean.strip()
-                if clean.endswith('/>'):
-                    # self-closing with no content — means formula was self-closing too
-                    # convert: <c r="D19" s="60"/> → <c r="D19" s="60"><f>…</f></c>
-                    # We already confirmed there's a <f> in the original, so just
-                    # re-use the original cell but with <v> stripped.
-                    # The regex above would have matched only if <f> existed; if the
-                    # cell is self-closing in the output it had no children — that can't
-                    # happen here since the original had <f>. Safe to keep as-is.
-                    pass
-                # 3. Remove stale t="e" error type attributes (these arise from
-                #    broken #REF! formulas that may have been in the original;
-                #    we keep the formula but clear the error type so Excel re-evaluates)
-                # Keep t="str" and t="s" as they indicate formula result type.
-                # Only remove t="e".
-                clean = re.sub(r'\s+t="e"', '', clean)
-                row_formulas[rownum] = clean
-            original_formulas[sheet_name] = row_formulas
-
-    if not any(original_formulas.values()):
-        return  # nothing to restore
-
-    # ── Patch output zip ─────────────────────────────────────────────────────
-    with _zipfile.ZipFile(output_path, "r") as zi_out:
-        smap_out = _build_smap(zi_out)
-        all_items = {item.filename: (item, zi_out.read(item.filename))
-                     for item in zi_out.infolist()}
-
-    modified = {}
-    for sheet_name, row_formulas in original_formulas.items():
-        if not row_formulas:
-            continue
-        col_letter = sheets_and_cols[sheet_name]
-        sf = smap_out.get(sheet_name, "")
-        if not sf or sf not in all_items:
-            continue
-        item, xml_bytes = all_items[sf]
-        text = xml_bytes.decode("utf-8", errors="replace")
-
-        # For each row that had a formula in the original, find the corresponding
-        # cell in the output and replace its entire XML with the restored formula.
-        # Strategy: process each row independently.
-        for rownum, restored_cell_xml in sorted(row_formulas.items()):
-            col_cell_re = re.compile(
-                rf'<c\b[^>]*\br="{re.escape(col_letter)}{rownum}"[^>]*/>\s*'
-                rf'|<c\b[^>]*\br="{re.escape(col_letter)}{rownum}"[^>]*>.*?</c>',
-                re.DOTALL
-            )
-            if col_cell_re.search(text):
-                # Replace existing cell (whatever the shift left there)
-                text = col_cell_re.sub(restored_cell_xml, text, count=1)
-            else:
-                # Cell doesn't exist in output at all (was fully removed during shift).
-                # Insert it before the next cell in the same row's <row> element.
-                # Find the <row r="N" ...> block and insert our cell inside it.
-                row_re = re.compile(
-                    rf'(<row\b[^>]*\br="{rownum}"[^>]*>)(.*?)(</row>)',
-                    re.DOTALL
-                )
-                def _insert_cell(rm, _rxml=restored_cell_xml, _col=col_letter, _row=rownum):
-                    row_open, row_body, row_close = rm.group(1), rm.group(2), rm.group(3)
-                    # Insert the cell in column order (before first cell with col > col_letter)
-                    # Simple approach: prepend if col_letter is 'D' (comes before E, F, ...)
-                    # For safety, insert at the start of the row body (cols A-C are labels,
-                    # D is the first data col in BAL SHEET / P L).
-                    insert_re = re.compile(r'<c\b[^>]*\br="[D-Z]\d+"')
-                    ins_m = insert_re.search(row_body)
-                    if ins_m:
-                        pos = ins_m.start()
-                        new_body = row_body[:pos] + _rxml + row_body[pos:]
-                    else:
-                        new_body = row_body + _rxml
-                    return row_open + new_body + row_close
-                text = row_re.sub(_insert_cell, text, count=1)
-
-        modified[sf] = (item, text.encode("utf-8"))
-
-    if not modified:
-        return
-
-    import os as _os
-    tmp = output_path + ".restore_cy_tmp"
     with _zipfile.ZipFile(output_path, "r") as zi:
         with _zipfile.ZipFile(tmp, "w", _zipfile.ZIP_DEFLATED) as zo:
             for item in zi.infolist():
