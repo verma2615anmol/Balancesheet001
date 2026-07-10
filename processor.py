@@ -1235,6 +1235,20 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                             # instead of being blank for fresh entry.
                             # Fix: treat these as disguised constants and do a
                             # full clear_v (remove <f> too).
+                            #
+                            # CROSS-SHEET FORMULA FIX (2026-07-10):
+                            # The same-sheet "known cols" check fails for
+                            # cross-sheet refs like "'notes to bs'!C8" where
+                            # col C is a CY col on ANOTHER shifted sheet.
+                            # E.g. BS col D (CY) has D10 = 'notes to bs'!C8.
+                            # On BS: cy_col=D, py_col=E → _known_cols = {D,E}.
+                            # col_refs_in_formula = {C} → C ∉ {D,E} → "stale"
+                            # → formula DESTROYED. Wrong: 'notes to bs' col C
+                            # IS being cleared as new CY data on that sheet,
+                            # so the formula is self-updating and must be kept.
+                            # Fix: for cross-sheet refs, check the referenced
+                            # sheet's CY cols in the full shift_map before
+                            # declaring the formula stale.
                             if cy_f_text:
                                 col_refs_in_formula = set(
                                     re.findall(r'\b([A-Z]+)\d+\b', cy_f_text)
@@ -1254,6 +1268,30 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                                     col_refs_in_formula
                                     and col_refs_in_formula.isdisjoint(_known_cols)
                                 )
+                                # Cross-sheet ref override: if the formula
+                                # contains "!" and appears stale from the
+                                # same-sheet perspective, check whether any
+                                # referenced column is a CY col on its own
+                                # sheet in the full shift_map.  If it is, the
+                                # formula will auto-update after that sheet is
+                                # shifted → NOT stale → keep formula.
+                                if all_unshifted and "!" in cy_f_text:
+                                    _xref_re = re.compile(
+                                        r"'([^']+)'!([A-Z]+)\d+"   # 'sheet name'!ColRow
+                                        r"|([A-Za-z0-9_]+)!([A-Z]+)\d+"  # SheetName!ColRow
+                                    )
+                                    for _xm in _xref_re.finditer(cy_f_text):
+                                        _ref_sn = (_xm.group(1) or _xm.group(3) or "").strip()
+                                        _ref_col = (_xm.group(2) or _xm.group(4) or "")
+                                        _sheet_cy_cols = {
+                                            c for c, _ in (shift_map or {}).get(_ref_sn, [])
+                                        }
+                                        if _ref_col and _ref_col in _sheet_cy_cols:
+                                            # Referenced col IS a CY col being
+                                            # cleared on its sheet → formula
+                                            # self-updates → NOT stale
+                                            all_unshifted = False
+                                            break
                                 if all_unshifted:
                                     changes[ref] = ("clear_v", None)
                                 else:
