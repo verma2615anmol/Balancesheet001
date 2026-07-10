@@ -1254,6 +1254,32 @@ def _run_with_patched_maps(
     _freeze_py_columns(output_path, {"BAL SHEET": ["E"], "P L": ["E"]})
     log.append("🔒 BAL SHEET & P L: PY column formulas frozen to preserve correct values")
 
+    # ── Restore CY formulas in BAL SHEET and P L ─────────────────────────────
+    # ROOT CAUSE (fixed 2026-07-10):
+    # BAL SHEET and P L col D (CY) consists entirely of cross-sheet formulas
+    # that pull live figures from the NOA sheets (e.g. D19 = 'NOA 3-6'!E22,
+    # D27 = 'NOA 3-6'!H58).  These are SELF-UPDATING: after the NOA sheets
+    # shift (col E cleared as new CY, col H gets old CY as PY), the BAL SHEET
+    # D formulas already point to the correct new-CY cells on the NOA sheets.
+    # The CA just needs to fill in new NOA data and the BAL SHEET auto-updates.
+    #
+    # BUT the year-shift processor treats D as "CY to be cleared":
+    #   - Formula cells WITH a cached <v>  → value copied to PY(E), formula stripped from D ← DESTROYS self-updating link
+    #   - Formula cells WITHOUT a cached <v> → left with formula but no value (formula-no-val state)
+    # Both states are wrong.  After the shift, D must retain the original formula
+    # so that when Excel recalculates it picks up the new CY data from the NOA sheets.
+    #
+    # FIX: Re-read the ORIGINAL input file and copy every formula from D col
+    # (BAL SHEET and P L) back into the output, overwriting whatever the shift
+    # produced.  We also clear any stale <v> tags so Excel does a fresh recalc.
+    # Cells that were constants (no formula) in the original are left blank — correct,
+    # since the CA will fill those in manually for the new year.
+    _restore_cy_formulas(input_path, output_path, {
+        "BAL SHEET": "D",
+        "P L":       "D",
+    })
+    log.append("🔄 BAL SHEET & P L: CY column formulas restored from original (cross-sheet links preserved)")
+
     # Clean up the sanitized temp file created by _sanitize_cash_flow_errors
     # (it has a different path than the original input_path argument).
     try:
@@ -1570,6 +1596,186 @@ def _pooja_blank_cy_formulas(
 
     import os as _os
     tmp = output_path + ".pooja_blank_tmp"
+    with _zipfile.ZipFile(output_path, "r") as zi:
+        with _zipfile.ZipFile(tmp, "w", _zipfile.ZIP_DEFLATED) as zo:
+            for item in zi.infolist():
+                if item.filename in modified:
+                    _, new_bytes = modified[item.filename]
+                    zo.writestr(item, new_bytes)
+                else:
+                    zo.writestr(item, zi.read(item.filename))
+    _os.replace(tmp, output_path)
+
+
+def _restore_cy_formulas(
+    original_path: str,
+    output_path: str,
+    sheets_and_cols: dict,
+) -> None:
+    """
+    Re-inject CY column formulas from the ORIGINAL file into the OUTPUT file
+    for the specified sheets, overwriting whatever the year-shift processor
+    produced in those cells.
+
+    WHY THIS IS NEEDED FOR THE LUMID TEMPLATE (BAL SHEET and P L):
+    ─────────────────────────────────────────────────────────────────────────
+    BAL SHEET col D and P L col D are entirely formula-driven summary sheets.
+    Every CY figure is pulled from a NOA sheet via a cross-sheet formula:
+      e.g.  D19 = 'NOA 3-6'!E22   (Long-term Borrowings from Note 3)
+            D27 = 'NOA 3-6'!H58   (Trade Payables from Note 6)
+
+    After the year-shift runs on the NOA sheets:
+      • NOA 3-6 col E is CLEARED (new CY — CA fills in fresh data)
+      • NOA 3-6 col H gets old CY values (new PY reference)
+
+    The BAL SHEET formula D19='NOA 3-6'!E22 now auto-points to the correct
+    new-CY cell.  It just needs to be KEPT INTACT — but the processor treats
+    col D as "CY to be wiped":
+      • Formulas WITH a cached <v> → value copied to E (PY), formula stripped
+      • Formulas WITHOUT a cached <v> → formula kept but no value (blank result)
+
+    Both outcomes break the CY column.  The fix: read every formula cell from
+    the ORIGINAL D col and write it back into the OUTPUT D col, clearing <v>
+    so Excel recalculates fresh from the (now-shifted) NOA sheets.
+
+    sheets_and_cols: {sheet_name: col_letter}
+      e.g. {"BAL SHEET": "D", "P L": "D"}
+    """
+    import zipfile as _zipfile
+
+    # ── Build sheet → file maps for both zips ────────────────────────────────
+    def _build_smap(zf):
+        rels = zf.read("xl/_rels/workbook.xml.rels").decode("utf-8", errors="replace")
+        wb   = zf.read("xl/workbook.xml").decode("utf-8", errors="replace")
+        sheet_ids = re.findall(r'<sheet\b[^>]*name="([^"]+)"[^>]*r:id="([^"]+)"', wb)
+        rel_map   = dict(re.findall(r'Id="([^"]+)"[^>]*Target="([^"]+)"', rels))
+        smap = {}
+        for name, rid in sheet_ids:
+            tgt = rel_map.get(rid, "")
+            if not tgt.startswith("xl/"):
+                tgt = "xl/" + tgt
+            smap[name] = tgt
+        return smap
+
+    # ── Read original formulas ────────────────────────────────────────────────
+    # For each target sheet/col, extract every cell XML element that has a <f>.
+    # Index by row number.
+    original_formulas: dict[str, dict[int, str]] = {}  # {sheet_name: {row: cell_xml}}
+    with _zipfile.ZipFile(original_path, "r") as zi_orig:
+        smap_orig = _build_smap(zi_orig)
+        for sheet_name, col_letter in sheets_and_cols.items():
+            sf = smap_orig.get(sheet_name, "")
+            if not sf:
+                continue
+            try:
+                xml = zi_orig.read(sf).decode("utf-8", errors="replace")
+            except Exception:
+                continue
+            col_re = re.compile(
+                rf'<c\b[^>]*\br="{re.escape(col_letter)}(\d+)"[^>]*/>\s*'
+                rf'|<c\b[^>]*\br="{re.escape(col_letter)}(\d+)"[^>]*>.*?</c>',
+                re.DOTALL
+            )
+            row_formulas: dict[int, str] = {}
+            for m in col_re.finditer(xml):
+                full = m.group(0)
+                # Only care about formula cells
+                f_match = re.search(r'<f[^>]*>.*?</f>', full, re.DOTALL)
+                f_sc    = re.search(r'<f[^>]*/>', full)
+                if not (f_match or f_sc):
+                    continue
+                # Extract row number from the first non-None group
+                rn_str = m.group(1) or m.group(2)
+                if not rn_str:
+                    continue
+                rownum = int(rn_str)
+                # Build a clean cell XML: keep <c ...> attributes and <f>, drop <v>
+                # so Excel performs a fresh recalculation.
+                # 1. Strip <v>…</v>
+                clean = re.sub(r'<v>[^<]*</v>', '', full)
+                # 2. If now self-closing (was only <v>), convert back to paired
+                clean = clean.strip()
+                if clean.endswith('/>'):
+                    # self-closing with no content — means formula was self-closing too
+                    # convert: <c r="D19" s="60"/> → <c r="D19" s="60"><f>…</f></c>
+                    # We already confirmed there's a <f> in the original, so just
+                    # re-use the original cell but with <v> stripped.
+                    # The regex above would have matched only if <f> existed; if the
+                    # cell is self-closing in the output it had no children — that can't
+                    # happen here since the original had <f>. Safe to keep as-is.
+                    pass
+                # 3. Remove stale t="e" error type attributes (these arise from
+                #    broken #REF! formulas that may have been in the original;
+                #    we keep the formula but clear the error type so Excel re-evaluates)
+                # Keep t="str" and t="s" as they indicate formula result type.
+                # Only remove t="e".
+                clean = re.sub(r'\s+t="e"', '', clean)
+                row_formulas[rownum] = clean
+            original_formulas[sheet_name] = row_formulas
+
+    if not any(original_formulas.values()):
+        return  # nothing to restore
+
+    # ── Patch output zip ─────────────────────────────────────────────────────
+    with _zipfile.ZipFile(output_path, "r") as zi_out:
+        smap_out = _build_smap(zi_out)
+        all_items = {item.filename: (item, zi_out.read(item.filename))
+                     for item in zi_out.infolist()}
+
+    modified = {}
+    for sheet_name, row_formulas in original_formulas.items():
+        if not row_formulas:
+            continue
+        col_letter = sheets_and_cols[sheet_name]
+        sf = smap_out.get(sheet_name, "")
+        if not sf or sf not in all_items:
+            continue
+        item, xml_bytes = all_items[sf]
+        text = xml_bytes.decode("utf-8", errors="replace")
+
+        # For each row that had a formula in the original, find the corresponding
+        # cell in the output and replace its entire XML with the restored formula.
+        # Strategy: process each row independently.
+        for rownum, restored_cell_xml in sorted(row_formulas.items()):
+            col_cell_re = re.compile(
+                rf'<c\b[^>]*\br="{re.escape(col_letter)}{rownum}"[^>]*/>\s*'
+                rf'|<c\b[^>]*\br="{re.escape(col_letter)}{rownum}"[^>]*>.*?</c>',
+                re.DOTALL
+            )
+            if col_cell_re.search(text):
+                # Replace existing cell (whatever the shift left there)
+                text = col_cell_re.sub(restored_cell_xml, text, count=1)
+            else:
+                # Cell doesn't exist in output at all (was fully removed during shift).
+                # Insert it before the next cell in the same row's <row> element.
+                # Find the <row r="N" ...> block and insert our cell inside it.
+                row_re = re.compile(
+                    rf'(<row\b[^>]*\br="{rownum}"[^>]*>)(.*?)(</row>)',
+                    re.DOTALL
+                )
+                def _insert_cell(rm, _rxml=restored_cell_xml, _col=col_letter, _row=rownum):
+                    row_open, row_body, row_close = rm.group(1), rm.group(2), rm.group(3)
+                    # Insert the cell in column order (before first cell with col > col_letter)
+                    # Simple approach: prepend if col_letter is 'D' (comes before E, F, ...)
+                    # For safety, insert at the start of the row body (cols A-C are labels,
+                    # D is the first data col in BAL SHEET / P L).
+                    insert_re = re.compile(r'<c\b[^>]*\br="[D-Z]\d+"')
+                    ins_m = insert_re.search(row_body)
+                    if ins_m:
+                        pos = ins_m.start()
+                        new_body = row_body[:pos] + _rxml + row_body[pos:]
+                    else:
+                        new_body = row_body + _rxml
+                    return row_open + new_body + row_close
+                text = row_re.sub(_insert_cell, text, count=1)
+
+        modified[sf] = (item, text.encode("utf-8"))
+
+    if not modified:
+        return
+
+    import os as _os
+    tmp = output_path + ".restore_cy_tmp"
     with _zipfile.ZipFile(output_path, "r") as zi:
         with _zipfile.ZipFile(tmp, "w", _zipfile.ZIP_DEFLATED) as zo:
             for item in zi.infolist():
