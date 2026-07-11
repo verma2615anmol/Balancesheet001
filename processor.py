@@ -1,5 +1,5 @@
 """
-Balance Sheet Year-Shift Processor  (v9 — single-pass, Render-safe)
+Balance Sheet Year-Shift Processor  (v9.1 — single-pass, Render-safe)
 
 Key improvements over v8:
   • ONE workbook open total (was 4). Collects values + formulas in one pass.
@@ -10,6 +10,14 @@ Key improvements over v8:
   • XML edits via regex on raw bytes — never ET.tostring → no namespace corruption.
   • Falls back gracefully when lxml absent (sharedStrings via ET is safe there).
   • BIG_ROWS raised; big sheets skip CY/PY shift but still get date text updates.
+
+v9.1 fix (2026-07-11):
+  • SHARED FORMULA MASTER protection: clear_v now detects if the CY cell being
+    cleared is a shared formula master (<f t="shared" ref="...">). If so, it
+    keeps the <f> tag and only removes <v> (downgrade to clear_v_keep_f).
+    Previously, removing the <f> tag orphaned slave cells (<f t="shared" si="N"/>
+    with no ref=), causing Excel "Repairs required / Removed Records: Shared
+    formula from xl/worksheets/sheetN.xml" on every open of the output file.
 """
 
 import re
@@ -1422,21 +1430,42 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
             return full
         action, new_val = changes[ref]
         if action == "clear_v":
-            # Remove both formula <f> and cached value <v> so cell is truly blank
-            # (keeping <f> would cause formula to recalculate, showing stale data)
-            full = re.sub(r'<f[^>]*>.*?</f>', '', full, flags=re.DOTALL)
-            full = re.sub(r'<f[^>]*/>', '', full)
-            full = re.sub(r'<v>[^<]*</v>', '', full)
-            full = re.sub(r'<v\s*/>', '', full)
-            # FIX: after removing <v>, also strip t="n" if no <v> remains.
-            # OOXML: a numeric cell (t="n") MUST have a <v> child; leaving
-            # <c t="n"></c> with no <v> is invalid and causes Excel to show
-            # "Repairs required" and silently drop those cells on open.
-            # This is triggered specifically by the pyxlsb→xlsx conversion
-            # which writes formula-cached values as plain t="n" cells — after
-            # the CY column is cleared the <v> is removed but t="n" remains.
-            if '<v>' not in full and '<v ' not in full:
-                full = re.sub(r'\s*t="n"', '', full)
+            # SHARED-FORMULA-MASTER FIX (2026-07-11):
+            # If this CY cell is a shared formula MASTER (i.e. its <f> tag has
+            # both t="shared" AND a ref="..." attribute), removing the <f> tag
+            # destroys the master definition.  All slave cells (<f t="shared"
+            # si="N"/> with no ref=) would then reference a non-existent master
+            # → Excel shows "Repairs required / Removed Records: Shared formula
+            # from xl/worksheets/sheetN.xml part".
+            # Fix: if the cell is a shared master, demote to clear_v_keep_f
+            # (keep <f>, only remove <v>). Excel recalculates the master (and
+            # all its slaves) to zero / empty once the input CY cells are blank —
+            # which is exactly the correct new-year behaviour.
+            _is_shared_master = bool(re.search(
+                r'<f\b[^>]*t=["\']shared["\'][^>]*ref=|'
+                r'<f\b[^>]*ref=[^>]*t=["\']shared["\']',
+                full
+            ))
+            if _is_shared_master:
+                # Downgrade: keep <f> master definition, only clear cached <v>
+                full = re.sub(r'<v>[^<]*</v>', '', full)
+                full = re.sub(r'<v\s*/>', '', full)
+            else:
+                # Remove both formula <f> and cached value <v> so cell is truly blank
+                # (keeping <f> would cause formula to recalculate, showing stale data)
+                full = re.sub(r'<f[^>]*>.*?</f>', '', full, flags=re.DOTALL)
+                full = re.sub(r'<f[^>]*/>', '', full)
+                full = re.sub(r'<v>[^<]*</v>', '', full)
+                full = re.sub(r'<v\s*/>', '', full)
+                # FIX: after removing <v>, also strip t="n" if no <v> remains.
+                # OOXML: a numeric cell (t="n") MUST have a <v> child; leaving
+                # <c t="n"></c> with no <v> is invalid and causes Excel to show
+                # "Repairs required" and silently drop those cells on open.
+                # This is triggered specifically by the pyxlsb→xlsx conversion
+                # which writes formula-cached values as plain t="n" cells — after
+                # the CY column is cleared the <v> is removed but t="n" remains.
+                if '<v>' not in full and '<v ' not in full:
+                    full = re.sub(r'\s*t="n"', '', full)
         elif action == "clear_v_keep_f":
             # Keep <f> formula tag, just clear the cached <v> value
             # Excel recalculates formula when file is opened
@@ -1453,8 +1482,28 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                                        .replace(">", "&gt;"))
             if full.rstrip().endswith('/>'):
                 full = re.sub(r'/>\s*$', '></c>', full.rstrip())
+            # SHARED-FORMULA-MASTER FIX (2026-07-11) — set_f variant:
+            # If the PY cell being formula-replaced is a shared formula MASTER
+            # (<f t="shared" ref="..." si="N">), naively replacing the whole <f>
+            # tag with a plain <f>formula</f> strips the t="shared", ref=, and
+            # si= attributes → slaves with <f t="shared" si="N"/> become orphaned.
+            # Fix: when replacing the formula text, KEEP the original <f ...>
+            # opening tag attributes intact (t=, ref=, si=) — just replace the
+            # formula CONTENT between the tags, not the tag itself.
+            _sf_master_m = re.search(
+                r'<f\b([^>]*t=["\']shared["\'][^>]*ref=[^>]*)>(.*?)</f>',
+                full, re.DOTALL
+            )
+            if _sf_master_m:
+                # Preserve the opening tag attributes, update only the formula body
+                _orig_attrs = _sf_master_m.group(1)
+                full = re.sub(
+                    r'<f\b[^>]*t=["\']shared["\'][^>]*ref=[^>]*>.*?</f>',
+                    f'<f{_orig_attrs}>{esc_formula}</f>',
+                    full, flags=re.DOTALL
+                )
             # Replace existing <f>...</f> or <f .../> with the new formula
-            if re.search(r'<f\b[^>]*>.*?</f>', full, flags=re.DOTALL):
+            elif re.search(r'<f\b[^>]*>.*?</f>', full, flags=re.DOTALL):
                 full = re.sub(r'<f\b[^>]*>.*?</f>', f'<f>{esc_formula}</f>',
                                full, flags=re.DOTALL)
             elif re.search(r'<f\b[^>]*/>', full):
@@ -1480,9 +1529,22 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
             full = re.sub(r'\s*t="s"', '', full)
         elif action in ("set_v", "set_v_overwrite", "set_v_keep_f"):
             if action == "set_v_overwrite":
-                # Remove any <f>...</f> formula tag first (convert formula → value)
-                full = re.sub(r'<f\b[^>]*>.*?</f>', '', full, flags=re.DOTALL)
-                full = re.sub(r'<f\b[^>]*/>', '', full)
+                # SHARED-FORMULA-MASTER FIX (2026-07-11) — PY column variant:
+                # If the PY cell being overwritten is itself a shared formula
+                # MASTER (<f t="shared" ref="...">), removing its <f> tag will
+                # orphan all slave cells → Excel repair error.  Detect this
+                # and downgrade to set_v_keep_f (update cached <v>, keep <f>).
+                # The master formula stays live; slaves remain valid; Excel
+                # recalculates on open with the PY value stored in <v>.
+                _py_is_shared_master = bool(re.search(
+                    r'<f\b[^>]*t=["\']shared["\'][^>]*ref=|'
+                    r'<f\b[^>]*ref=[^>]*t=["\']shared["\']',
+                    full
+                ))
+                if not _py_is_shared_master:
+                    # Remove any <f>...</f> formula tag first (convert formula → value)
+                    full = re.sub(r'<f\b[^>]*>.*?</f>', '', full, flags=re.DOTALL)
+                    full = re.sub(r'<f\b[^>]*/>', '', full)
             # set_v_keep_f: keep formula tag, just update cached <v> value
             # (for PY cells that have cross-sheet formulas like ='notes to bs'!E20)
             # BUG 1 FIX: self-closing empty cells (<c r="E16" s="814"/>) end with />
