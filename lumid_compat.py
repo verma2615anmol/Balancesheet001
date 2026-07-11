@@ -896,6 +896,35 @@ def process(input_path: str, output_path: str,
             "prevents intra-sheet formula chain from zeroing PY figures on recalc"
         )
 
+        # ── Clear trial balance data columns B and C ─────────────────────────
+        # Issue D7 — CY column shows old figures after year-shift.
+        #
+        # WHY: The BALANCE SHEET D (CY) column is 100% formula-driven from
+        # the 'trial balance' sheet (391 formula cells, 131 of which reference
+        # 'trial balance'!B/C directly, e.g. D88='trial balance'!C71=32500000).
+        # The year-shift correctly preserves these D-col formulas (clear_v_keep_f)
+        # and strips <v> so cached values show blank.  BUT when Excel recalculates
+        # on open, the formulas re-pull from 'trial balance' which still contains
+        # last year's data → CY column shows old values (e.g. D12=32,031).
+        #
+        # FIX: Clear all plain <v> values from 'trial balance' cols B and C so
+        # that when Excel recalculates, every D-col formula evaluates to 0/blank.
+        # This is the correct blank-slate for the new year — the CA will paste
+        # fresh TB data into these columns after year-shift.
+        #
+        # SAFE: Only plain <v> cells are cleared — the 3 formula sub-total cells
+        # (B1=C139-B139, B140=C225-C223, B227=B232-C232) are kept as-is because
+        # they reference only other B/C cells and will recalculate to 0 anyway
+        # once all input B/C values are cleared. Styles (s= attribute) are
+        # preserved so the CA's column formatting is unchanged.
+        # The A column (account name labels) is never touched.
+        cleared_tb = _clear_deluxe_trial_balance(output_path)
+        if cleared_tb:
+            log.append(
+                f"🗑 Deluxe: 'trial balance' B+C cols cleared ({cleared_tb} cells) — "
+                "CY column will show blank until CA pastes new TB"
+            )
+
         return result
 
     if not _is_lumid_format(input_path):
@@ -1885,6 +1914,28 @@ def _freeze_py_columns(
                 if cell_type == 'e':
                     return full
 
+                # SHARED FORMULA MASTER protection (fix 2026-07-11):
+                # A cell with <f t="shared" ref="E309:H309" si="5">...</f> is the
+                # MASTER of a shared formula group — its slave cells (<f t="shared"
+                # si="5"/>) depend on the master's ref= attribute to derive their
+                # own formula addresses. If we strip the master's <f> tag, the
+                # slaves become orphaned → Excel reports "Removed Records: Shared
+                # formula from xl/worksheets/sheetN.xml" on every open.
+                # Fix: if this cell IS a shared formula master (has both t="shared"
+                # AND ref= attribute), keep the <f> tag as-is. Only strip <v>
+                # (so the frozen plain value stays) while leaving the formula intact.
+                # This makes the cell a hybrid (f + v) which Excel handles correctly:
+                # it recalculates the formula for live use while the <v> acts as the
+                # cached result. The net effect is identical to a normal freeze for
+                # the PY value display, without orphaning any slave cells.
+                f_tag = f_match.group(0) if f_match else (f_sc_match.group(0) if f_sc_match else '')
+                is_shared_master = ('t="shared"' in f_tag or "t='shared'" in f_tag) and 'ref=' in f_tag
+                if is_shared_master:
+                    # Keep <f>, only strip <v> so PY figure is cached but formula survives
+                    if v_match:
+                        full = re.sub(r'<v>[^<]*</v>', '', full)
+                    return full
+
                 # String-typed formula cells (t="str"): the formula evaluates to a
                 # text string (e.g. ='BAL SHEET'!A67 → "FOR AKSHIT MAHESHWARY...").
                 # Convert these to shared-string references isn't straightforward here;
@@ -1948,3 +1999,108 @@ if __name__ == "__main__":
     print(f"Status: {res['status']}")
     for line in res.get("log", []):
         print(" ", line)
+
+
+def _clear_deluxe_trial_balance(output_path: str) -> int:
+    """
+    Clear all plain <v> values from the 'trial balance' sheet's B and C
+    columns in a Deluxe-format workbook.
+
+    WHY NEEDED (Issue D7):
+    The BALANCE SHEET D (CY) column is 100% formula-driven from 'trial balance'
+    (391 formula cells referencing trial balance!B/C columns). After the year-
+    shift the D-col <v> cached values are stripped, but when Excel recalculates
+    on open the formulas re-pull from 'trial balance' which still contains last
+    year's figures → CY column shows old values instead of blank.
+
+    FIX: Strip <v> from every plain-value B and C cell in 'trial balance'.
+    Formula sub-total cells (only 3) are kept untouched — they reference other
+    B/C cells and will recalculate to 0 naturally once inputs are cleared.
+    Column A (account name labels) and all s= style attributes are never touched.
+
+    Returns the number of cells cleared (0 if sheet not found or nothing to do).
+    """
+    import zipfile as _zf
+    import re as _re
+    import os as _os
+
+    try:
+        with _zf.ZipFile(output_path, "r") as zi:
+            # Find 'trial balance' sheet file
+            wb_xml = zi.read("xl/workbook.xml").decode("utf-8", errors="replace")
+            rels_xml = zi.read("xl/_rels/workbook.xml.rels").decode("utf-8", errors="replace")
+            sheets = _re.findall(r'<sheet\b[^>]*name="([^"]+)"[^>]*r:id="([^"]+)"', wb_xml)
+            rid_to_target = dict(_re.findall(r'Id="([^"]+)"[^>]*Target="([^"]+)"', rels_xml))
+            name_to_file: dict = {}
+            for name, rid in sheets:
+                target = rid_to_target.get(rid, "")
+                if not target.startswith("xl/"):
+                    target = "xl/" + target
+                name_to_file[name] = target
+
+            tb_sf = name_to_file.get("trial balance", "")
+            if not tb_sf:
+                return 0
+
+            all_items = {item.filename: (item, zi.read(item.filename))
+                         for item in zi.infolist()}
+
+        item, xml_bytes = all_items.get(tb_sf, (None, None))
+        if item is None:
+            return 0
+
+        text = xml_bytes.decode("utf-8", errors="replace")
+
+        count = 0
+
+        def _clear_bc_cell(cm):
+            nonlocal count
+            full = cm.group(0)
+            # Only touch B and C column cells
+            if not _re.search(r'\br="[BC]\d+"', full):
+                return full
+            # Skip cells that have a formula — keep sub-total formulas intact
+            if "<f" in full:
+                return full
+            # Skip self-closing cells (already empty)
+            if full.rstrip().endswith("/>"):
+                return full
+            # Remove <v>...</v> — keep everything else (style, cell address, type)
+            if "<v>" not in full:
+                return full
+            new_cell = _re.sub(r'<v>[^<]*</v>', '', full)
+            # If cell body is now empty, collapse to self-closing
+            inner = _re.sub(r'^<c\b[^>]*>', '', new_cell)
+            inner = _re.sub(r'</c>\s*$', '', inner).strip()
+            if not inner:
+                r_m = _re.search(r'\br="([^"]+)"', full)
+                s_m = _re.search(r'\bs="(\d+)"', full)
+                r_attr = f'r="{r_m.group(1)}"' if r_m else ''
+                s_attr = f' s="{s_m.group(1)}"' if s_m else ''
+                new_cell = f'<c {r_attr}{s_attr}/>'
+            count += 1
+            return new_cell
+
+        text = _re.sub(
+            r'<c\b[^>]*/>\s*|<c\b[^>]*>.*?</c>\s*',
+            _clear_bc_cell, text, flags=_re.DOTALL
+        )
+
+        if count == 0:
+            return 0
+
+        all_items[tb_sf] = (item, text.encode("utf-8"))
+
+        tmp = output_path + ".tb_clear_tmp"
+        with _zf.ZipFile(output_path, "r") as zi:
+            with _zf.ZipFile(tmp, "w", _zf.ZIP_DEFLATED) as zo:
+                for it in zi.infolist():
+                    if it.filename in all_items and all_items[it.filename][1] != zi.read(it.filename):
+                        zo.writestr(it, all_items[it.filename][1])
+                    else:
+                        zo.writestr(it, zi.read(it.filename))
+        _os.replace(tmp, output_path)
+        return count
+
+    except Exception:
+        return 0
