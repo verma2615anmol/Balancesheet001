@@ -1,5 +1,5 @@
 """
-Balance Sheet Year-Shift Processor  (v9.1 — single-pass, Render-safe)
+Balance Sheet Year-Shift Processor  (v9.2 — single-pass, Render-safe)
 
 Key improvements over v8:
   • ONE workbook open total (was 4). Collects values + formulas in one pass.
@@ -10,6 +10,16 @@ Key improvements over v8:
   • XML edits via regex on raw bytes — never ET.tostring → no namespace corruption.
   • Falls back gracefully when lxml absent (sharedStrings via ET is safe there).
   • BIG_ROWS raised; big sheets skip CY/PY shift but still get date text updates.
+
+v9.2 fix (2026-07-11):
+  • EMPTY-CELL collapse: after clear_v / clear_v_keep_f empties a cell body,
+    paired-tag empty cells (<c r="D22"></c>) are collapsed to self-closing
+    (<c r="D22"/>) as OOXML requires.  Paired empty cells caused Excel
+    "Cell information" repairs on sheet4 (BS), sheet18, sheet20, sheet30.
+  • COLUMN-ORDER insertion: PY cells inserted for rows where the PY cell
+    doesn't exist in the original XML are now placed in correct column order
+    (before the first cell with a higher column index) instead of being
+    appended at end-of-row.  Out-of-order cells also trigger Excel repair.
 
 v9.1 fix (2026-07-11):
   • SHARED FORMULA MASTER protection: clear_v now detects if the CY cell being
@@ -1466,11 +1476,25 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                 # the CY column is cleared the <v> is removed but t="n" remains.
                 if '<v>' not in full and '<v ' not in full:
                     full = re.sub(r'\s*t="n"', '', full)
+                # EMPTY-CELL FIX (2026-07-11):
+                # After clearing <f> and <v>, a cell can become <c r="D22"></c>
+                # (paired open/close with empty body). Excel treats this as
+                # "Cell information" missing and repairs/discards the row.
+                # OOXML requires empty cells to be self-closing: <c r="D22"/>
+                # Collapse paired-tag empty cells to self-closing here.
+                if re.search(r'<c\b[^>]*>\s*</c>', full):
+                    full = re.sub(r'(<c\b[^>]*)>\s*</c>', r'\1/>', full)
         elif action == "clear_v_keep_f":
             # Keep <f> formula tag, just clear the cached <v> value
             # Excel recalculates formula when file is opened
             full = re.sub(r'<v>[^<]*</v>', '', full)
             full = re.sub(r'<v\s*/>', '', full)
+            # EMPTY-CELL FIX (clear_v_keep_f variant, 2026-07-11):
+            # If <f> was already stripped by _strip_external_formulas before
+            # this function runs, clearing <v> leaves an empty paired-tag cell.
+            # Collapse to self-closing so Excel doesn't "repair" it.
+            if re.search(r'<c\b[^>]*>\s*</c>', full):
+                full = re.sub(r'(<c\b[^>]*)>\s*</c>', r'\1/>', full)
         elif action == "set_f":
             # Replace the cell's formula entirely with a new formula (translated
             # from the CY cell's range formula), and set the cached <v> to the
@@ -1588,14 +1612,45 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
             if rn in insertions:
                 # For each PY letter that needs a new cell in this row
                 existing_refs = set(re.findall(r'r="([A-Z]+\d+)"', row_xml))
-                new_cells = ""
-                for py_l, val_str in sorted(insertions[rn].items(),
-                                            key=lambda x: _col_idx(x[0])):
+                new_cells_dict = {}
+                for py_l, val_str in insertions[rn].items():
                     ref = f"{py_l}{rn}"
                     if ref not in existing_refs:
-                        new_cells += f'<c r="{ref}"><v>{val_str}</v></c>'
-                if new_cells:
-                    row_xml = row_xml.replace("</row>", new_cells + "</row>")
+                        new_cells_dict[py_l] = f'<c r="{ref}"><v>{val_str}</v></c>'
+                if new_cells_dict:
+                    # COLUMN-ORDER FIX (2026-07-11):
+                    # Naively appending new cells at end-of-row (before </row>) places
+                    # them after higher-lettered columns → out-of-column-order.
+                    # Excel "Cell information" repair removes out-of-order cells.
+                    # Fix: insert each new cell immediately before the first existing
+                    # cell whose column index exceeds the new cell's column index.
+                    for py_l in sorted(new_cells_dict.keys(), key=_col_idx):
+                        new_cell_xml = new_cells_dict[py_l]
+                        new_col_idx  = _col_idx(py_l)
+                        _inserted = [False]
+
+                        def _insert_before_higher(rm2,
+                                                   _nx=new_cell_xml,
+                                                   _ni=new_col_idx,
+                                                   _flag=_inserted):
+                            if _flag[0]:
+                                return rm2.group(0)
+                            tag = rm2.group(0)
+                            cm2 = re.search(r'r="([A-Z]+)\d+"', tag)
+                            if cm2 and _col_idx(cm2.group(1)) > _ni:
+                                _flag[0] = True
+                                return _nx + tag
+                            return tag
+
+                        new_row = re.sub(
+                            r'<c\b[^>]*/>\s*|<c\b[^>]*>.*?</c>\s*',
+                            _insert_before_higher, row_xml, flags=re.DOTALL
+                        )
+                        if _inserted[0]:
+                            row_xml = new_row
+                        else:
+                            # No higher-column cell found — safe to append before </row>
+                            row_xml = row_xml.replace("</row>", new_cell_xml + "</row>")
         return row_xml
 
     text = re.sub(r'<row\b[^>]*>.*?</row>', _fix_row, text, flags=re.DOTALL)
