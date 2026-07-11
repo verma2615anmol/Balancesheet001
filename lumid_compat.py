@@ -746,7 +746,17 @@ def process(input_path: str, output_path: str,
     #   Also uses L=CY Net Block, M=PY Net Block layout.
     #   Fix: add [('L','M')] for PPE (CONSOLIDATED) CA,2013.
     #
-    # Issue D5 — DEFERRED TAX formula killed:
+    # Issue D6 — BALANCE SHEET E-column (PY) zeroed on recalculation (fix 2026-07-11):
+#   The BALANCE SHEET D column is a formula-chain mega-sheet.  The shift copies
+#   old CY cached <v> into E (correct), and also copies the D-column formula text
+#   into E (e.g. D13=D138 → E13=E138).  E138=E125+E131+E136 — but E125/E131/E136
+#   are blank (PY notes input rows have no shifted data), so Excel recalculates
+#   E138=0 → E13=0 → PY column shows zeros.
+#   Fix: call _freeze_py_columns(output_path, {"BALANCE SHEET": ["E"]}) after the
+#   shift to strip all <f> tags from E-col cells, keeping cached <v> as plain values.
+#   This is identical to the Lumid BAL SHEET / Pooja PY-column freeze pattern.
+#
+# Issue D5 — DEFERRED TAX formula killed:
     #   BALANCE SHEET P&L row D86 = 'DEFERRED TAX'!C39
     #   DEFERRED TAX is not in shift_map → C col looks "unshifted" → formula destroyed.
     #   DEFERRED TAX C39 is a live formula (=C38-C37) that self-calculates from other
@@ -857,6 +867,34 @@ def process(input_path: str, output_path: str,
 
         _repair_worksheet_xml(output_path)
         log.append("🔧 Deluxe: XML repair pass — calcChain/definedNames cleaned")
+
+        # ── Freeze BALANCE SHEET PY (E) column ──────────────────────────────
+        # Issue D6 — BALANCE SHEET is a formula-chain mega-sheet.
+        # The D (CY) column has live intra-sheet formulas like:
+        #   D12 = 'share capital'!C13
+        #   D13 = D138   (D138 = D125+D131+D136, chain continues into notes rows)
+        #   D16 = D200   (Long Term Borrowings sub-total from notes rows D162:D188)
+        # After the D→E shift the processor correctly:
+        #   • Copies old CY cached <v> into E12, E16 etc.  ✓
+        #   • Strips <v> from D12, D16 etc. (clear_v_keep_f: formula kept)  ✓
+        # BUT the shift also copies D's formula text into E:
+        #   E13 = E138  (was D13 = D138, column letter changed D→E)
+        #   E16 = E200  (was D16 = D200)
+        # E138 = E125+E131+E136, but E125/E131/E136 (PY notes input rows) are
+        # blank — they only received plain-value copies where D had plain values
+        # (D296→E296=plain value, ok) but formula-chained rows have no E input.
+        # Result when Excel recalculates: E138=0, E13=0 → PY column shows zeros.
+        #
+        # Fix: freeze ALL E-column cells in BALANCE SHEET to plain cached values
+        # (strip <f>, keep <v>).  The cached values are correct — they were
+        # written during the shift from the old CY <v>.  Freezing makes them
+        # immune to recalculation, exactly as done for Lumid's BAL SHEET/P L
+        # and Pooja's PY columns.
+        _freeze_py_columns(output_path, {"BALANCE SHEET": ["E"]})
+        log.append(
+            "🔒 Deluxe: BALANCE SHEET E-col (PY) frozen to plain values — "
+            "prevents intra-sheet formula chain from zeroing PY figures on recalc"
+        )
 
         return result
 
