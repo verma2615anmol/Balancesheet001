@@ -3697,11 +3697,22 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             _recv_section_start = 74   # hard fallback for unexpected templates
         recv_end_row = (_recv_total_row - 1) if _recv_total_row else (_recv_section_start + 80)
 
+        # Floor guard: debtor scan must stay BELOW the creditor/AFC section.
+        # cred_end_row is the SUM row of the creditor block; the recv section
+        # should start well after it. Using max() protects against stale
+        # _recv_section_start values that predate AFC insert_rows operations.
+        _recv_scan_start = max(_recv_section_start, cred_end_row + 5)
+
         for acct in receivable_accounts:
             placed = False
-            # First try to match by name within the FULL recv section
-            for r in range(_recv_section_start, recv_end_row + 1):
-                b = det_cache.get((r, 2))
+            # First try to match by name within the trade-receivable section.
+            # FIX (2026-07-16): read LIVE from ws_det (not det_cache) because
+            # det_cache was built before AFC insert_rows operations shifted all
+            # debtor template rows. det_cache[(66,2)] still says "Bawa Garments"
+            # but after AFC inserts "Bawa Garments" is now at sheet row 83.
+            # Using det_cache causes debtor amounts to land at the (now AFC) row 66.
+            for r in range(_recv_scan_start, recv_end_row + 1):
+                b = ws_det.cell(r, 2).value
                 if b and _fuzzy_match_name(acct["name"], str(b)) and r not in recv_written:
                     if _safe_write(ws_det, r, 4, abs(acct["net"])):
                         injected.append(f"Details!D{r} ({acct['name']}) = {abs(acct['net']):,.2f}")
@@ -3722,17 +3733,22 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                 # prior-year debtor no longer owes us, safe to replace with new debtor
                 _recv_blank   = []
                 _recv_zero_py = []
-                for r in range(_recv_section_start, recv_end_row + 1):
+                # FIX (2026-07-16 v2): for debtors, only use TRULY BLANK rows
+                # (col B has no name). Reusing zero-PY named rows (old approach)
+                # caused debtor writes to land in AFC rows that were inserted into
+                # the same range by a prior AFC insert_rows pass, polluting the
+                # creditor block with debtor amounts and producing wrong SUMs.
+                # Use insert_rows for any debtor that has no blank slot.
+                # Use live ws_det reads (not stale det_cache) for blank-row scan.
+                _recv_floor = max(_recv_section_start, cred_end_row + 5)
+                for r in range(_recv_floor, recv_end_row + 1):
                     if r in recv_written: continue
-                    b_r = det_cache.get((r, 2))
-                    d_r = det_cache.get((r, 4))
-                    e_r = det_cache.get((r, 5))
+                    b_r = ws_det.cell(r, 2).value   # live read
+                    d_r = ws_det.cell(r, 4).value   # live read
                     b_empty = b_r is None or str(b_r).strip() in ("", " ", "Nil", "-")
-                    if b_empty and d_r is None:
+                    if b_empty and (d_r is None or d_r == 0):
                         _recv_blank.append(r)
-                    elif not b_empty and (e_r in (None, 0)) and d_r is None:
-                        _recv_zero_py.append(r)
-                _recv_reuse = _recv_blank + _recv_zero_py
+                _recv_reuse = _recv_blank  # no zero-PY reuse for debtors
                 if _recv_reuse:
                     r = _recv_reuse[0]
                     ws_det.cell(r, 1).value = "M/s."
@@ -3856,65 +3872,143 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             ws_det.cell(_pending_total_row, 4).value = _new_sum
             injected.append(f"Details!D{_pending_total_row} TOTAL formula set: {_new_sum}")
 
+        # ── FINAL REPAIR: re-detect actual debtor range from live sheet ─────
+        # recv_written holds PRE-AFC-insert row numbers. After AFC inserts (+N rows),
+        # those rows shifted. The notes-to-bs SUM and Details TOTAL must use
+        # POST-INSERT positions. Re-scan the live Details sheet to find the actual
+        # TOTAL row and the true min/max of written debtor data rows.
+        _actual_min = min(recv_written) if recv_written else None
+        _actual_max = max(recv_written) if recv_written else None
+        if recv_written and "Details" in wb.sheetnames:
+            _ws_det_live = wb["Details"]
+            _lr_header = None
+            for _lr in range(1, 500):
+                _la = _ws_det_live.cell(_lr, 1).value
+                _lb = _ws_det_live.cell(_lr, 2).value
+                _ll = str(_la or _lb or "").strip().lower()
+                if ("trade receivable" in _ll
+                        and ("less" in _ll or "<6" in _ll.replace(" ", ""))):
+                    _lr_header = _lr
+                    break
+            _lr_total = None
+            if _lr_header:
+                for _lr in range(_lr_header + 1, _lr_header + 300):
+                    _la2 = _ws_det_live.cell(_lr, 1).value
+                    _ld2 = _ws_det_live.cell(_lr, 4).value
+                    _is_t2 = str(_la2 or "").strip().upper() in ("TOTAL", "TOTALS")
+                    _is_s2 = (isinstance(_ld2, str) and "SUM" in _ld2.upper()
+                              and _lr > _lr_header + 5)
+                    if _is_t2 or _is_s2:
+                        _lr_total = _lr
+                        break
+            # Collect all rows with data in the debtor area (post-inserts)
+            _actual_recv_rows = []
+            if _lr_header:
+                _scan_end2 = (_lr_total - 1) if _lr_total else (_lr_header + 200)
+                for _lr in range(_lr_header + 2, _scan_end2 + 1):
+                    _ld3 = _ws_det_live.cell(_lr, 4).value
+                    if isinstance(_ld3, (int, float)) and _ld3 != 0:
+                        _actual_recv_rows.append(_lr)
+            if _actual_recv_rows:
+                _actual_min = min(_actual_recv_rows)
+                _actual_max = max(_actual_recv_rows)
+                if _lr_total:
+                    _correct_sum = f"=SUM(D{_actual_min}:D{_actual_max})"
+                    _old_total_f = _ws_det_live.cell(_lr_total, 4).value
+                    if _old_total_f != _correct_sum:
+                        _ws_det_live.cell(_lr_total, 4).value = _correct_sum
+                        log.append(
+                            f"✓ Details!D{_lr_total} recv TOTAL repaired: "
+                            f"{_old_total_f} → {_correct_sum}"
+                        )
+
         # ── FIX: repair notes to bs Trade Receivables formula ───────────
         # Dynamically locate the "Unsecured Considered good" row for the
-        # <6months debtor section in notes to bs (row 80 in Fashion Adda,
-        # row 90 in JEANS WORLD, etc.) and rewrite it to SUM the full
-        # actual range we wrote into Details, so Trade Receivables on the
-        # BS always reflects the true aggregate regardless of template layout.
+        # <6months debtor section in notes to bs and rewrite it to SUM the
+        # full actual range written into Details.
+        #
+        # FIX (2026-07-16): the old condition checked whether the existing
+        # formula's row reference was WITHIN recv_written range (min_r:max_r).
+        # If it was (e.g. =Details!D108 and 108 is between 82 and 123), it
+        # skipped the repair even though D108 is a SINGLE CELL pointing at one
+        # debtor, not a SUM of all debtors.  Now always replace any single-cell
+        # Details ref with the full SUM formula.
         if recv_written and "notes to bs" in wb.sheetnames:
             ws_nbs_fix = wb["notes to bs"]
-            min_r = min(recv_written)
-            max_r = max(recv_written)
+            # Use live-detected range (post-inserts) if available; fallback to recv_written
+            min_r = _actual_min if _actual_min else min(recv_written)
+            max_r = _actual_max if _actual_max else max(recv_written)
 
-            # Dynamically find the two debtor note rows:
-            # _lt6_row = row of "(b) Unsecured Considered good" in the <6months block
-            # _gt6_row = same in the >6months block (we zero this out)
             _lt6_row, _gt6_row = None, None
-            _in_trade_rec = False
             _found_lt6_header = False
             for _nr in range(1, 300):
-                _na  = ws_nbs_fix.cell(_nr, 1).value
-                _nb  = ws_nbs_fix.cell(_nr, 2).value
-                _nlbl = str(_na or _nb or "").strip().lower()
-                # Detect "trade receivable" header
-                if "trade receivable" in _nlbl or "trade rec" in _nlbl:
-                    if not _found_lt6_header:
-                        _found_lt6_header = True
-                        _in_trade_rec = True
-                if _in_trade_rec and "(b)" in _nlbl and "unsecured" in _nlbl:
+                _nb   = ws_nbs_fix.cell(_nr, 2).value   # col B = always the text label
+                _nlbl = str(_nb or "").strip().lower()
+                if "trade receivable" in _nlbl:
+                    _found_lt6_header = True
+                if _found_lt6_header and "(b)" in _nlbl and "unsecured" in _nlbl:
                     if _lt6_row is None:
                         _lt6_row = _nr
                     else:
                         _gt6_row = _nr
-                        break   # found both
+                        break
 
-            # Fallback to original hardcoded rows if scan fails
-            if _lt6_row is None:
-                _lt6_row = 80
-            if _gt6_row is None:
-                _gt6_row = 86
+            if _lt6_row is None: _lt6_row = 80
+            if _gt6_row is None: _gt6_row = 86
 
             _lt6_val = ws_nbs_fix.cell(_lt6_row, 4).value
-            import re as _re_recv
-            def _ref_row(formula_val):
-                if isinstance(formula_val, str):
-                    m = _re_recv.search(r'!D(\d+)', formula_val)
-                    if m:
-                        return int(m.group(1))
-                return None
-            _lt6_ref = _ref_row(_lt6_val)
-            needs_fix = (_lt6_ref is None or not (min_r <= _lt6_ref <= max_r))
-            if needs_fix:
+            # Always replace if it's a single-cell ref OR a stale SUM
+            _is_single_ref = (isinstance(_lt6_val, str) and
+                              "Details" in _lt6_val and
+                              "SUM" not in _lt6_val.upper())
+            _is_stale_sum  = (isinstance(_lt6_val, str) and
+                              "SUM" in _lt6_val.upper() and
+                              f"D{min_r}" not in _lt6_val)
+            if _is_single_ref or _is_stale_sum or _lt6_val is None:
+                _nbs_min = _actual_min if _actual_min else min_r
+                _nbs_max = _actual_max if _actual_max else max_r
                 ws_nbs_fix.cell(_lt6_row, 4).value = (
-                    f"=SUM(Details!D{min_r}:D{max_r})"
+                    f"=SUM(Details!D{_nbs_min}:D{_nbs_max})"
                 )
                 ws_nbs_fix.cell(_gt6_row, 4).value = 0
                 log.append(
                     f"✓ Repaired 'notes to bs'!D{_lt6_row} → "
-                    f"SUM(Details!D{min_r}:D{max_r}) "
-                    f"(Trade Receivables total; was pointing to stale row)"
+                    f"SUM(Details!D{_nbs_min}:D{_nbs_max}) "
+                    f"(Trade Receivables; was: {repr(_lt6_val)})"
                 )
+
+        # ── POST-PASS: fix stale SUM formulas in Details sheet itself ────
+        # After insert_rows operations (AFC and debtor overflow), the Details
+        # sheet may have SUM formulas whose range no longer covers the actual
+        # data.  e.g. =SUM(D66:D106) at row 124 when debtors are in D82:D123.
+        # Scan all SUM formulas in Details whose range falls entirely OUTSIDE
+        # the current recv_written range and rewrite them.
+        if recv_written and "Details" in wb.sheetnames:
+            import re as _dre
+            _sum_re = _dre.compile(r'=SUM\(D(\d+):D(\d+)\)', _dre.IGNORECASE)
+            _min_rw, _max_rw = min(recv_written), max(recv_written)
+            _ws_det_pp = wb["Details"]
+            for _pp_r in range(1, 300):
+                _pp_v = _ws_det_pp.cell(_pp_r, 4).value
+                if not (isinstance(_pp_v, str) and "SUM" in _pp_v.upper()):
+                    continue
+                _mm = _sum_re.match(_pp_v)
+                if not _mm:
+                    continue
+                _sr, _er = int(_mm.group(1)), int(_mm.group(2))
+                # Only fix SUM formulas that belong to the trade-receivable
+                # section (row >= _recv_section_start). The same condition
+                # must NOT fire on unsecured-loan or creditor sub-totals that
+                # happen to use the D column.
+                _in_recv_area = (_pp_r >= _recv_section_start) if _recv_section_start else (_pp_r > 60)
+                # Stale: row is in the recv area AND range doesn't fully cover data
+                if _in_recv_area and not (_sr <= _min_rw and _er >= _max_rw):
+                    _new_f = f"=SUM(D{_min_rw}:D{_max_rw})"
+                    _ws_det_pp.cell(_pp_r, 4).value = _new_f
+                    log.append(
+                        f"✓ Details!D{_pp_r}: repaired stale SUM "
+                        f"{_pp_v} → {_new_f}"
+                    )
 
         # NOTE: LT borrowings are written to notes to bs!D8 directly (Section 2 above).
         # Do NOT also write to Details D7-D12 — that would double-count because
@@ -4185,6 +4279,37 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                             f"Adv-from-customer '{acct['name']}': "
                             f"insert failed ({_afc_ins_exc}) — not placed"
                         )
+
+        # ── Re-detect trade-receivable section after AFC inserts ──────────
+        # AFC insert_rows operations shift the TRADE RECEIVABLE header and all
+        # debtor rows downward.  _recv_section_start was detected from the
+        # template BEFORE those inserts, so it now points at the wrong rows.
+        # Re-scan ws_det (current state) to find the updated section boundaries.
+        if adv_from_customer and "Details" in wb.sheetnames:
+            _new_recv_start = None
+            _new_recv_total = None
+            for _rs in range(1, 400):
+                _rv = ws_det.cell(_rs, 1).value
+                _rl = str(_rv or "").strip().lower()
+                if "trade receivable" in _rl and "less than" in _rl or \
+                   ("trade receivable" in _rl and "<6" in _rl.replace(" ", "")):
+                    _new_recv_start = _rs + 2   # skip header + PARTICULARS
+                if _new_recv_start and _rs > _new_recv_start:
+                    _rd = ws_det.cell(_rs, 4).value
+                    _is_t = _rl in ("total", "totals")
+                    _is_s = isinstance(_rd, str) and "sum" in _rd.lower()
+                    if _is_t or _is_s:
+                        _new_recv_total = _rs
+                        break
+            if _new_recv_start and _new_recv_start != _recv_section_start:
+                log.append(
+                    f"✓ Trade-receivable section re-detected after AFC inserts: "
+                    f"start {_recv_section_start} → {_new_recv_start}, "
+                    f"total row {_recv_total_row} → {_new_recv_total}"
+                )
+                _recv_section_start = _new_recv_start
+                _recv_total_row     = _new_recv_total
+                recv_end_row = (_new_recv_total - 1) if _new_recv_total else (_new_recv_start + 80)
 
     # ────────────────────────────────────────────────────────────────
     # 4. CLOSING STOCK / INVENTORIES
