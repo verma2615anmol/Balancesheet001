@@ -8486,50 +8486,60 @@ def _inject_cap_fa(output_path, cap_entries, fa_entries, log):
                     )
                     ws.cell(insert_at, 9).value = f"=F{insert_at}-H{insert_at}"
 
-                    # FIX (2026-07-16): After insert_rows openpyxl does NOT update
-                    # the text of SUM formulas in cells below the insertion point.
-                    # e.g. =SUM(B8:B41) stays as-is even though Land moved from
-                    # row 41 to row 42, causing Land's WDV to be excluded from the
-                    # grand total. Fix: scan the entire FA sheet for SUM formulas
-                    # whose range ENDS before or at insert_at (now stale) and extend
-                    # the end by 1. Also update cross-sheet references that point to
-                    # cells at or below insert_at in the same sheet.
+                    # FIX (2026-07-16 v2): After insert_rows openpyxl does NOT update
+                    # formula text. We must expand SUM ranges and shift same-sheet refs.
+                    #
+                    # CRITICAL RULE: ONLY touch same-sheet formulas.
+                    # Cross-sheet refs like ='Fixed Assets P. Yr.'!I35 point to the PY
+                    # sheet's OWN fixed layout. Shifting them (I35→I36) is WRONG — the
+                    # PY sheet was not modified by insert_rows on the CY sheet.
+                    # Only bare same-sheet refs (=B9+C9, =F9-H9, =SUM(B8:B41)) need updating.
+                    #
+                    # Three formula types in the FA sheet, and what we do with each:
+                    #
+                    # Type 1 — =SUM(B8:B41)   → expand END by 1 if end >= insert_at
+                    #           (total row: covers all assets; must include new row)
+                    #           START is never moved (always row 8, before any insert)
+                    #
+                    # Type 2 — =B32+C32+D32-E32  (col F, same-row arithmetic)
+                    #           =F32-H32            (col I)
+                    #           These reference only the CURRENT row, which openpyxl
+                    #           already shifts correctly when rows move. We leave them alone.
+                    #           (Actually _repair_fa_formula handles these in Pass 2.)
+                    #
+                    # Type 3 — ='Fixed Assets P. Yr.'!I35  (col B cross-sheet)
+                    #           NEVER touch — PY sheet layout is unchanged.
+                    #
+                    # Summary: only expand =SUM(...) end-of-range. Skip everything else.
                     import re as _fa_re
                     _sum_pat = _fa_re.compile(
                         r'=SUM\(([A-Z]+)(\d+):([A-Z]+)(\d+)\)', _fa_re.IGNORECASE
                     )
-                    _ref_pat = _fa_re.compile(r'([A-Z]+)(\d+)')
                     for _fr in range(1, 120):
                         for _fc in range(1, 15):
                             _fv = ws.cell(_fr, _fc).value
                             if not (isinstance(_fv, str) and _fv.startswith('=')):
                                 continue
-                            # Update SUM ranges that straddle or end at the insert point
-                            def _expand_sum(m, _ins=insert_at):
-                                c1, r1, c2, r2 = m.group(1), int(m.group(2)), m.group(3), int(m.group(4))
-                                # If the range end was AT OR AFTER insert_at, expand it by 1
-                                if r2 >= _ins:
-                                    r2 += 1
-                                # Also shift the start if it was at or after insert_at
-                                if r1 >= _ins:
-                                    r1 += 1
-                                return f'=SUM({c1}{r1}:{c2}{r2})'
-                            _new_fv = _sum_pat.sub(_expand_sum, _fv)
-                            # For non-SUM formulas, shift bare cell refs at/above insert_at
-                            if _new_fv == _fv and not _fv.upper().startswith('=SUM('):
-                                def _shift_ref(m, _ins=insert_at, _cur_row=_fr):
-                                    col, row_n = m.group(1), int(m.group(2))
-                                    # Only shift refs that point to rows >= insert_at
-                                    # (skip refs to the current row itself if it moved)
-                                    if row_n >= _ins and _cur_row >= _ins:
-                                        return f'{col}{row_n + 1}'
-                                    return m.group(0)
-                                _new_fv = _ref_pat.sub(_shift_ref, _fv)
-                            if _new_fv != _fv:
+                            # Skip cross-sheet formulas completely — never shift them.
+                            if '!' in _fv:
+                                continue
+                            _m = _sum_pat.match(_fv)
+                            if not _m:
+                                continue  # not a SUM — leave all other same-sheet formulas
+                                          # to _repair_fa_formula (Pass 2) which handles
+                                          # per-row arithmetic refs correctly
+                            # Expand SUM range end if it reaches at or past insert_at.
+                            # Start is left alone (always row 8 = before any insertion).
+                            c1, r1, c2, r2 = (
+                                _m.group(1), int(_m.group(2)),
+                                _m.group(3), int(_m.group(4))
+                            )
+                            if r2 >= insert_at:
+                                _new_fv = f'=SUM({c1}{r1}:{c2}{r2 + 1})'
                                 ws.cell(_fr, _fc).value = _new_fv
                                 log.append(
-                                    f"✓ {fa_sheet}!{chr(64+_fc)}{_fr}: updated formula "
-                                    f"{_fv} → {_new_fv} (FA row insert at {insert_at})"
+                                    f"✓ {fa_sheet}!{chr(64+_fc)}{_fr}: SUM expanded "
+                                    f"{_fv} → {_new_fv} (new asset row at {insert_at})"
                                 )
 
                     log.append(
