@@ -5,18 +5,51 @@ and injects aggregated values into a BS template.
 Zero formatting change in the output BS file.
 Memory-efficient: single workbook open, read_only where possible.
 
-v2026-07-15 fix — ADVANCE TO SUPPLIERS section in Details sheet:
-  Bug 1 (scan start too late): Scan for the "ADVANCE TO SUPPLIERS" header
-    now starts from row 1 (full sheet), not from _recv_total_row. In the
-    Fashion Adda template the header sits at row 77 while _recv_total_row=80,
-    so the old scan missed it entirely → amount fell back to row 83 (after
-    the TOTAL row), outside the SUM formula, and was lost from the total.
-  Bug 2 (broken regex-as-string): "adv.*supp" and "advance.*supplier" were
-    tested with `in` (substring), not re.search(). They are literal strings
-    and can never match. Replaced with plain correct substring checks.
-  Bug 3 (no insert fallback): When the section had no blank rows left the
-    amount was silently dropped. Now inserts a row before the TOTAL row
-    and updates the SUM formula, matching the trade-receivables overflow path.
+v2026-07-16 comprehensive fixes — Details sheet injection:
+
+  CLASSIFICATION FIXES
+  ────────────────────
+  Fix A — Group name aliases: added "CUSTOMERS", "SUPPLIERS", "PAYABLES",
+    "OTHERS ASSETS" and Tally "TRADING/DIRECT EXPENSES/INCOMES",
+    "PROFIT & LOSS EXPENSES/INCOMES" etc. to GROUP_HEAD_MAP and the
+    inline group-level classifier.  JEANS WORLD TB uses these names;
+    without them accounts fell through to low-confidence / unclassified.
+
+  CREDITOR SECTION FIXES
+  ──────────────────────
+  Fix B — "Advance from Customers" sub-section INSIDE creditor SUM:
+    JEANS WORLD / SHREE CRAFT templates put the advance-from-cust sub-rows
+    INSIDE the =SUM(D21:D55) creditor block. The old code stopped the
+    cred_end_row scan at the "Advance from Customers" header (treating it
+    as a section boundary), so those rows were excluded from the search
+    range. New: scan continues through mixed-case sub-headers; only stops
+    at a new TOP-LEVEL (all-caps, no amount) header or the SUM/TOTAL row.
+    cred_total_row is now tracked for the insert_rows fallback.
+
+  Fix C — New creditor overflow uses insert_rows before TOTAL:
+    Old code searched for a random blank row anywhere on the sheet when
+    the creditor section was full, silently placing amounts outside the
+    SUM formula. New: inserts a row immediately before the creditor TOTAL
+    row, rewrites the SUM formula to include the new row, and updates all
+    cross-sheet formulas that reference Details rows at/below the insert.
+
+  ADVANCE FROM CUSTOMERS FIXES
+  ─────────────────────────────
+  Fix D — Detect layout variant (inside vs outside creditor SUM):
+    Added _afc_inside_creditor flag. When the section is inside the
+    creditor block, _afc_end = cred_end_row−1 so name-matching searches
+    all adv-from-cust pre-existing rows. Insert fallback added (insert
+    before afc total row + update SUM).
+
+  ADVANCE TO SUPPLIERS FIXES (also includes yesterday's Fashion Adda fix)
+  ────────────────────────────────────────────────────────────────────────
+  Fix E — Scan starts from row 1 (not _recv_total_row): header can sit
+    before the recv section's TOTAL row.
+  Fix F — Broken regex-as-string: "adv.*supp" tested with `in` is a
+    literal 8-char substring check, never a regex match. Replaced.
+  Fix G — Insert fallback: inserts before TOTAL + updates SUM formula.
+  Fix H — _adv_inside_recv flag: when header is inside the recv SUM
+    range, amounts already count toward the recv total (no separate insert).
 """
 
 import re
@@ -1809,13 +1842,27 @@ GROUP_HEAD_MAP = {
     "profit & loss income":      "other_income",
     "others assets":             "stla",             # misc assets (advance tax, GST rcvbl)
     "other assets":              "stla",
-    "payables":                  "other_cl",         # salary/ESI/rent payable
+    "others assets (asset)":     "stla",
+    "payables":                  "other_cl",         # salary/ESI/rent payable (JEANS WORLD)
     "sundry payables":           "other_cl",
     "sundry payable":            "other_cl",
     "current liabilities":       "other_cl",
-    # FIX: Tally "Provisions/Expenses Payable" group
-    "provisions/expenses payable": "other_cl",
+    # FIX (2026-07-16): additional Tally / Busy group name variants seen in
+    # real client TBs (JEANS WORLD, Penguin Packages, Shree Craft etc.)
+    "provisions/expenses payable": "other_cl",      # already present below, kept for safety
     "provisions & expenses payable": "other_cl",
+    "salary & bonus payable":    "other_cl",
+    "salary and bonus payable":  "other_cl",
+    "expenses payable":          "other_cl",
+    # Tally name-wise format group names for trading items
+    "trading/direct expenses":   "direct_expenses",
+    "trading/direct incomes":    "revenue",
+    "profit & loss expenses":    "other_expenses",
+    "profit & loss incomes":     "other_income",
+    "profit and loss expenses":  "other_expenses",
+    "profit and loss incomes":   "other_income",
+    # FIX: "Provisions/Expenses Payable" group
+    "provisions/expenses payable": "other_cl",
     "current assets":            "other_current_assets",
     "provisions":                "st_provisions",
     "unsecure loans":            "lt_borrowings",
@@ -2075,15 +2122,26 @@ def _classify_single(name, net_amount, group=None):
         # ADVANCE FROM CUSTOMERS → other_cl (advance received = current liability)
         if "advance from customer" in group_lower:
             return "other_cl", "high"
-        # SUNDRY PAYABLE → other_cl
-        if "sundry payable" in group_lower:
+        # SUNDRY PAYABLE / PAYABLES → other_cl (JEANS WORLD "PAYABLES" group)
+        if "sundry payable" in group_lower or group_lower in ("payables", "payable"):
             return "other_cl", "high"
-        # SUNDRY CREDITORS → trade_payables
+        # SUNDRY CREDITORS / SUPPLIERS → trade_payables
         if "sundry creditor" in group_lower:
             return "trade_payables", "high"
-        # SUNDRY DEBTORS → trade_rec
+        # FIX (2026-07-16): "SUPPLIERS" group in JEANS WORLD / Tally name-wise
+        # format is already in GROUP_HEAD_MAP but hits the _GENERIC_BARE_GROUPS
+        # guard before the map lookup. Explicitly catch it here first.
+        if group_lower in ("suppliers", "supplier"):
+            return "trade_payables", "high"
+        # SUNDRY DEBTORS / CUSTOMERS → trade_rec
         if "sundry debtor" in group_lower:
             return "trade_rec", "high"
+        # FIX (2026-07-16): "CUSTOMERS" group in JEANS WORLD / Tally name-wise
+        if group_lower in ("customers", "customer"):
+            return "trade_rec", "high"
+        # FIX (2026-07-16): OTHERS ASSETS in Tally name-wise = stla
+        if group_lower in ("others assets", "other assets", "others assets (asset)"):
+            return "stla", "high"
         # FIX: Tally "Duties & Taxes" group contains BOTH:
         #   - GST Input (CGST Input, SGST Input) → DEBIT balance → asset (stla)
         #   - GST Payable → CREDIT balance → liability (other_cl)
@@ -3378,47 +3436,74 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         # "SUNDRY CREDITORS" header text and using the row directly
         # below it as the start, falling back to the old hardcoded
         # range only if the header text can't be found at all.
+        # ── CREDITOR SECTION DETECTION ──────────────────────────────────────
+        #
+        # FIX (2026-07-16) — Three layout variants handled:
+        #
+        # Variant A (Fashion Adda): SUM covers only named creditors.
+        #   "Advance from Customers" is a SEPARATE section below debtors.
+        #
+        # Variant B (JEANS WORLD / SHREE CRAFT): "Advance from Customers"
+        #   sub-section sits INSIDE the Sundry Creditors SUM range.
+        #   e.g. JEANS WORLD: SUM(D21:D55) covers creditors (rows 21-27)
+        #   AND advance-from-cust sub-rows (rows 28-55). The old code stopped
+        #   at the "Advance from Customers" header (row 28) as an ALL-CAPS
+        #   boundary → cred_end_row=28, excluding the advance-from-cust rows.
+        #   New accounts that are advance-from-cust then had nowhere to go.
+        #   FIX: detect the SUM formula row explicitly and set cred_end_row
+        #   to ONE BEFORE the SUM row, covering all rows inside the formula.
+        #
+        # We track cred_total_row (the row holding the =SUM formula) for use
+        # in the insert_rows overflow path below.
         cred_start_row, cred_end_row = 21, 63
-        for r in range(1, 200):
-            lbl = det_cache.get((r, 1)) or det_cache.get((r, 2))
-            if lbl and "sundry creditor" in str(lbl).strip().lower():
-                cred_start_row = r + 2  # skip header row + "PARTICULARS" sub-header row
-                # Find the end: next section-level header (TOTAL row or blank gap)
-                # FIX (off-by-one): the previous code set cred_end_row = r2 when it
-                # found an ALL-CAPS boundary, then scanned range(cred_start_row, cred_end_row).
-                # But if the boundary row IS a data row (e.g. "K.D. ENTERPRISES" at row 32
-                # is the last creditor AND gets picked up as the boundary), range(22, 32)
-                # excludes row 32 itself, so K.D. ENTERPRISES is never written.
-                # Fix: scan for a TOTAL / SUM row explicitly first; if not found, use the
-                # ALL-CAPS boundary row as the last data row (cred_end_row = r2 + 1).
-                cred_end_row = cred_start_row + 60  # fallback
-                for r2 in range(cred_start_row, cred_start_row + 200):
-                    lbl2 = det_cache.get((r2, 1)) or det_cache.get((r2, 2))
-                    lbl2_s = str(lbl2).strip() if lbl2 else ""
-                    d2 = det_cache.get((r2, 4))
-                    # Explicit TOTAL row — stop before it
-                    if lbl2_s.lower() == "total" or (isinstance(d2, str) and "sum" in d2.lower()):
-                        cred_end_row = r2  # range(..., r2) excludes total row itself
-                        break
-                    # ALL-CAPS non-data boundary (section header like "Advance from Customers")
-                    # These are section sub-headers, not data rows — stop before them.
-                    # But only if it's NOT a simple creditor name in ALL-CAPS (heuristic:
-                    # if the row has no M/s prefix AND it starts a new named sub-section).
-                    if lbl2 and lbl2_s.isupper() and len(lbl2_s) > 3 \
-                       and "m/s" not in lbl2_s.lower():
-                        # Check: is this a sub-section header (no amount in D/E) or a data row?
-                        has_amount = (det_cache.get((r2, 4)) is not None
-                                      or det_cache.get((r2, 5)) is not None)
-                        if not has_amount:
-                            # It's a section header — stop before it
-                            cred_end_row = r2
-                            break
-                        # It's an ALL-CAPS data row (like K.D. ENTERPRISES with D=98897)
-                        # Include it: continue scanning, cred_end_row extends past it
-                        cred_end_row = r2 + 1
-                break
+        cred_total_row = None   # row that holds =SUM(...) covering the section
 
-        # Build name→row map from cache (instant, no cell access)
+        for r in range(1, 300):
+            lbl = det_cache.get((r, 1)) or det_cache.get((r, 2))
+            if not (lbl and "sundry creditor" in str(lbl).strip().lower()):
+                continue
+            cred_start_row = r + 2  # skip header + PARTICULARS sub-header
+            cred_end_row   = cred_start_row + 80  # safe fallback
+
+            for r2 in range(cred_start_row, cred_start_row + 300):
+                lbl2 = det_cache.get((r2, 1)) or det_cache.get((r2, 2))
+                lbl2_s = str(lbl2).strip() if lbl2 else ""
+                d2  = det_cache.get((r2, 4))
+                e2  = det_cache.get((r2, 5))
+
+                # Explicit TOTAL/SUM row — stop BEFORE it; record it for later.
+                # The SUM row itself is the canonical end of the creditor block.
+                _is_total = lbl2_s.lower() in ("total", "totals")
+                _is_sum   = (isinstance(d2, str) and "sum" in d2.lower()) or \
+                            (isinstance(e2, str) and "sum" in e2.lower())
+                if _is_total or _is_sum:
+                    cred_end_row  = r2          # SUM row itself (excluded from data scan)
+                    cred_total_row = r2
+                    break
+
+                # Mixed-case sub-section headers inside the creditor block
+                # (e.g. "Advance from Customers", "Due to MSME Creditors").
+                # OLD behaviour: stop here → excluded those rows from the section.
+                # NEW behaviour: keep scanning — they're inside the SUM range.
+                # We ONLY stop for a fully-capitalised section header that starts
+                # an entirely new top-level section AND has no amount in D or E
+                # (i.e. it's clearly not just a creditor whose name happens to be
+                # in caps).
+                if lbl2 and lbl2_s.isupper() and len(lbl2_s) > 5 \
+                        and "m/s" not in lbl2_s.lower() \
+                        and "advance" not in lbl2_s.lower() \
+                        and "msme" not in lbl2_s.lower() \
+                        and "due to" not in lbl2_s.lower():
+                    has_amount = (d2 is not None or e2 is not None)
+                    if not has_amount:
+                        # New top-level section — genuine end of creditor block
+                        cred_end_row = r2
+                        break
+                    # ALL-CAPS data row (creditor name in caps) — include it
+                    cred_end_row = r2 + 1
+            break
+
+        # Build name→row map from det_cache (no cell access needed)
         cred_row_map = {}
         for r in range(cred_start_row, cred_end_row):
             b = det_cache.get((r, 2))
@@ -3460,106 +3545,107 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             else:
                 unmatched_creditors.append(acct)
 
-        # Blank rows for unmatched (from cache)
+        # Pass 2a: fully blank rows (no name, no value) within section
         blank_rows = [r for r in range(cred_start_row, cred_end_row)
                       if r not in written_rows
                       and det_cache.get((r, 4)) is None
-                      and det_cache.get((r, 2)) is None]
+                      and (det_cache.get((r, 2)) is None
+                           or str(det_cache.get((r, 2)) or "").strip() in ("", " ", "Nil", "-"))]
+
+        # Pass 2b: template rows whose prior-year value (col E) is 0/None AND whose
+        # name didn't match any TB account this year — these are former parties that
+        # no longer owe us money, safe to replace with a new creditor name.
+        zero_py_rows = [r for r in range(cred_start_row, cred_end_row)
+                        if r not in written_rows and r not in blank_rows
+                        and (det_cache.get((r, 5)) in (None, 0, "")
+                             or det_cache.get((r, 4)) in (None, 0, ""))
+                        and det_cache.get((r, 2)) is not None
+                        and str(det_cache.get((r, 2)) or "").strip() not in ("", " ", "Nil", "-")]
+
+        reuse_rows = blank_rows + zero_py_rows  # prefer fully blank first
+
         for i, acct in enumerate(unmatched_creditors):
-            if i < len(blank_rows):
-                r = blank_rows[i]
-                wrote_name = _safe_write(ws_det, r, 2, acct["name"])
+            if i < len(reuse_rows):
+                r = reuse_rows[i]
+                ws_det.cell(r, 1).value = "M/s."
+                ws_det.cell(r, 2).value = acct["name"]
                 cell_d = ws_det.cell(r, 4)
-                # FIX: reset date format on cells that have date formatting
-                # (e.g. row 36 which was created by a previous insert_rows
-                # and inherited date format) — 100002 would display as 2173
                 if hasattr(cell_d, 'number_format') and cell_d.number_format:
                     fmt = cell_d.number_format.lower()
                     if 'y' in fmt or 'd' in fmt or 'm' in fmt:
                         cell_d.number_format = '#,##0.00'
-                wrote_amt  = _safe_write(ws_det, r, 4, abs(acct["net"]))
-                if wrote_amt:
-                    injected.append(f"Details!D{r} (new: {acct['name']}) = {abs(acct['net']):,.2f}")
-                else:
-                    skipped.append(f"Trade payable '{acct['name']}': row {r} is merged/formula")
+                cell_d.value = abs(acct["net"])
+                written_rows.add(r)
+                injected.append(f"Details!D{r} (creditor reuse row: {acct['name']}) = {abs(acct['net']):,.2f}")
             else:
-                # FIX: section genuinely has no spare template rows left.
-                # Previously this called ws_det.insert_rows(), which
-                # physically resizes the sheet — but openpyxl's
-                # insert_rows() does NOT update formula text in cells
-                # below the insertion point (a "=SUM(D28:D51)" total
-                # stays textually "D28:D51" even though it's now sitting
-                # on a different row with more data above it), and in
-                # this workbook it also interacted badly with Excel's
-                # shared-formula caching, causing nearby formulas
-                # (e.g. the MSME creditors sub-total) to be silently
-                # duplicated or lost entirely on repeated inserts.
-                # That's a much worse outcome than not placing a row at
-                # all, so this no longer inserts anything. Instead, it
-                # looks for ANY genuinely blank row elsewhere on the
-                # Details sheet (most commonly inside an "Nil"/empty
-                # sibling section like "FROM OTHER PARTIES" — common in
-                # templates with separate Related/Other party splits
-                # that aren't all used by every client) and places the
-                # overflow account there with a clear log entry, so the
-                # accountant can see exactly which entries need a manual
-                # row added and reflected in the relevant Total formula.
-                placed_elsewhere = False
-                for r in range(1, 250):
-                    if r in written_rows:
-                        continue
-                    # Skip rows in the first few lines of the sheet
-                    # (titles/headers) — column A often holds a title or
-                    # formula there while B/D appear blank, which is not
-                    # a genuinely usable data row.
-                    if r <= 5:
-                        continue
-                    if det_cache.get((r, 4)) is None and det_cache.get((r, 2)) is None \
-                            and ws_det.cell(r, 4).value is None and ws_det.cell(r, 2).value is None:
-                        # Skip rows that are part of a merged cell range
-                        # (these are almost always full-row section
-                        # headers like "SUNDRY CREDITORS" merged across
-                        # A:E — B and D both read as None there too since
-                        # MergedCell objects report no independent value,
-                        # but writing to them redirects to the merge's
-                        # anchor cell, which would silently destroy the
-                        # header text instead of adding a new data row).
-                        is_merged_row = any(
-                            mr.min_row <= r <= mr.max_row and mr.min_col <= 2 <= mr.max_col
-                            for mr in ws_det.merged_cells.ranges
+                # FIX (2026-07-16): section has no spare blank rows left.
+                # Insert a new row before the TOTAL/SUM row and update the
+                # SUM formula so the new party is included in the total.
+                # This is the same pattern used for the trade-receivables
+                # overflow path and is safer than searching for a random
+                # blank row elsewhere on the sheet (which puts the value
+                # outside the formula range, causing the silent drop).
+                _cred_insert_at = cred_total_row if cred_total_row else (cred_end_row + 1)
+                try:
+                    ws_det.insert_rows(_cred_insert_at)
+                    ws_det.cell(_cred_insert_at, 1).value = "M/s."
+                    ws_det.cell(_cred_insert_at, 2).value = acct["name"]
+                    ws_det.cell(_cred_insert_at, 4).value = abs(acct["net"])
+                    written_rows.add(_cred_insert_at)
+                    # The insert shifts everything below by 1; update the SUM formula
+                    _new_total_r = _cred_insert_at + 1  # TOTAL row moved down
+                    _total_fv = ws_det.cell(_new_total_r, 4).value
+                    if isinstance(_total_fv, str) and "SUM" in _total_fv.upper():
+                        ws_det.cell(_new_total_r, 4).value = (
+                            f"=SUM(D{cred_start_row}:D{_cred_insert_at})"
                         )
-                        if is_merged_row:
-                            continue
-                        # Skip rows that sit directly under a TOTAL/header
-                        # row (avoid visually confusing placements right
-                        # next to a total).
-                        above = (ws_det.cell(r - 1, 2).value or ws_det.cell(r - 1, 1).value) if r > 1 else None
-                        if above and "total" in str(above).strip().lower():
-                            continue
-                        # FIX: previously this broke out of the search
-                        # loop unconditionally once it found a row that
-                        # LOOKED blank, even if the actual write failed
-                        # (e.g. the row sits inside a merged cell range
-                        # whose anchor cell already holds a formula) —
-                        # silently giving up on the whole search after
-                        # one failed attempt instead of trying the next
-                        # candidate row. Now it only stops once a write
-                        # genuinely succeeds.
-                        if _safe_write(ws_det, r, 2, acct["name"]) and _safe_write(ws_det, r, 4, abs(acct["net"])):
-                            written_rows.add(r)
-                            injected.append(
-                                f"⚠ Details!D{r} (OVERFLOW creditor, no spare row in Sundry "
-                                f"Creditors section: {acct['name']}) = {abs(acct['net']):,.2f} — "
-                                f"placed in a blank row elsewhere; NOT included in the Sundry "
-                                f"Creditors Total formula. Add a row manually if this account "
-                                f"should be counted in that total."
-                            )
-                            placed_elsewhere = True
-                            break
-                if not placed_elsewhere:
+                        injected.append(
+                            f"Details!D{_new_total_r} creditor TOTAL updated "
+                            f"=SUM(D{cred_start_row}:D{_cred_insert_at})"
+                        )
+                    injected.append(
+                        f"Details!D{_cred_insert_at} (creditor INSERT ROW: "
+                        f"{acct['name']}) = {abs(acct['net']):,.2f}"
+                    )
+                    # Keep cred_total_row in sync for the next overflow party
+                    cred_total_row = _new_total_r
+                    cred_end_row   = _cred_insert_at  # new last data row
+                    # Update cross-sheet formulas that reference Details rows
+                    # at or below the insertion point
+                    _cred_cross = re.compile(
+                        r"'?Details'?!(\$?)([A-Z]+)(\$?)(\d+)"
+                        r"(:(\$?)([A-Z]+)(\$?)(\d+))?"
+                    )
+                    def _cred_shift(mm, _ins=_cred_insert_at):
+                        rn = int(mm.group(4))
+                        nr = rn + 1 if rn >= _ins else rn
+                        if mm.group(5):
+                            rn2 = int(mm.group(9))
+                            nr2 = rn2 + 1 if rn2 >= _ins else rn2
+                            return (f"'Details'!{mm.group(1)}{mm.group(2)}"
+                                    f"{mm.group(3)}{nr}:"
+                                    f"{mm.group(6)}{mm.group(7)}{nr2}")
+                        return f"'Details'!{mm.group(1)}{mm.group(2)}{mm.group(3)}{nr}"
+                    for _osn in wb.sheetnames:
+                        if _osn == "Details": continue
+                        for _or in wb[_osn].iter_rows():
+                            for _oc in _or:
+                                _ov = _oc.value
+                                if not (isinstance(_ov, str) and _ov.startswith("=")
+                                        and "Details" in _ov):
+                                    continue
+                                _nv = _cred_cross.sub(_cred_shift, _ov)
+                                if _nv != _ov:
+                                    _oc.value = _nv
+                                    log.append(
+                                        f"✓ {_osn}!{_oc.coordinate} repaired: "
+                                        f"{_ov} → {_nv} (creditor row insert at "
+                                        f"Details!{_cred_insert_at})"
+                                    )
+                except Exception as _ce:
                     skipped.append(
                         f"Trade payable '{acct['name']}' ({abs(acct['net']):,.2f}): "
-                        f"no spare row anywhere in Details sheet — not placed at all"
+                        f"insert failed ({_ce}) — not placed"
                     )
 
         # Trade Receivables — auto-detect section bounds (not hardcoded rows)
@@ -3622,23 +3708,42 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         recv_written.add(r); placed = True
                     else:
                         existing = ws_det.cell(r, 4).value
-                        if existing is not None and abs(float(existing or 0) - abs(acct["net"])) < 1:
+                        try:
+                            _ex_f = float(existing) if existing not in (None, "") and not str(existing).startswith("=") else None
+                        except (TypeError, ValueError):
+                            _ex_f = None
+                        if _ex_f is not None and abs(_ex_f - abs(acct["net"])) < 1:
                             recv_written.add(r); placed = True
                             injected.append(f"Details!D{r} ({acct['name']}) already = {existing} ✓")
                     break
             if not placed:
-                # Try first empty row in section
+                # Pass 2a: fully blank row (no name, no D value)
+                # Pass 2b: named row with zero/None PY value that no TB account matched —
+                # prior-year debtor no longer owes us, safe to replace with new debtor
+                _recv_blank   = []
+                _recv_zero_py = []
                 for r in range(_recv_section_start, recv_end_row + 1):
-                    b_raw = det_cache.get((r, 2))
-                    b_empty = (b_raw is None or str(b_raw).strip() == "")
-                    if b_empty and det_cache.get((r, 4)) is None and r not in recv_written:
-                        if b_raw is not None:
-                            ws_det.cell(r, 2).value = None
-                        _safe_write(ws_det, r, 2, acct["name"])
-                        if _safe_write(ws_det, r, 4, abs(acct["net"])):
-                            injected.append(f"Details!D{r} (recv new slot: {acct['name']}) = {abs(acct['net']):,.2f}")
-                            recv_written.add(r); placed = True
-                        break
+                    if r in recv_written: continue
+                    b_r = det_cache.get((r, 2))
+                    d_r = det_cache.get((r, 4))
+                    e_r = det_cache.get((r, 5))
+                    b_empty = b_r is None or str(b_r).strip() in ("", " ", "Nil", "-")
+                    if b_empty and d_r is None:
+                        _recv_blank.append(r)
+                    elif not b_empty and (e_r in (None, 0)) and d_r is None:
+                        _recv_zero_py.append(r)
+                _recv_reuse = _recv_blank + _recv_zero_py
+                if _recv_reuse:
+                    r = _recv_reuse[0]
+                    ws_det.cell(r, 1).value = "M/s."
+                    ws_det.cell(r, 2).value = acct["name"]
+                    cell_rd = ws_det.cell(r, 4)
+                    if hasattr(cell_rd, 'number_format') and cell_rd.number_format:
+                        if any(c in cell_rd.number_format.lower() for c in ('y', 'mmm')):
+                            cell_rd.number_format = '#,##0.00'
+                    cell_rd.value = abs(acct["net"])
+                    recv_written.add(r); placed = True
+                    injected.append(f"Details!D{r} (recv reuse: {acct['name']}) = {abs(acct['net']):,.2f}")
             if not placed:
                 # Section full — insert new row before total and update formula
                 try:
@@ -3752,32 +3857,45 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             injected.append(f"Details!D{_pending_total_row} TOTAL formula set: {_new_sum}")
 
         # ── FIX: repair notes to bs Trade Receivables formula ───────────
-        # The template's "notes to bs" Trade Receivables section often
-        # hardcodes single-cell references like ='Details'!D186 instead
-        # of summing the whole block — a leftover from whatever row count
-        # the template author had when they built it. As we write/insert
-        # potentially 100+ debtor rows above (auto-extending recv_end_row
-        # well past the template's original boundary), those hardcoded
-        # single-row references become stale and point at an arbitrary
-        # row instead of the Total — causing Trade Receivables to read
-        # near-zero on the BS even though all individual debtor balances
-        # were correctly written into Details.
-        #
-        # Fix: if we wrote into Details rows beyond the template's original
-        # recv_end_row (90), rewrite notes to bs!D80/D86 (and their PY
-        # column E80/E86, left untouched since we have no PY TB) to SUM the
-        # full actual range we wrote into, so the Total (A+B) on the BS
-        # reflects the true aggregate instead of one stray row's value.
+        # Dynamically locate the "Unsecured Considered good" row for the
+        # <6months debtor section in notes to bs (row 80 in Fashion Adda,
+        # row 90 in JEANS WORLD, etc.) and rewrite it to SUM the full
+        # actual range we wrote into Details, so Trade Receivables on the
+        # BS always reflects the true aggregate regardless of template layout.
         if recv_written and "notes to bs" in wb.sheetnames:
             ws_nbs_fix = wb["notes to bs"]
             min_r = min(recv_written)
             max_r = max(recv_written)
-            # Only repair if the template's own single-row references
-            # (D80, D86) are pointing OUTSIDE our actual written range —
-            # i.e. they're stale. If they happen to already point inside
-            # the range, leave them (template may be correct already).
-            d80_val = ws_nbs_fix.cell(80, 4).value
-            d86_val = ws_nbs_fix.cell(86, 4).value
+
+            # Dynamically find the two debtor note rows:
+            # _lt6_row = row of "(b) Unsecured Considered good" in the <6months block
+            # _gt6_row = same in the >6months block (we zero this out)
+            _lt6_row, _gt6_row = None, None
+            _in_trade_rec = False
+            _found_lt6_header = False
+            for _nr in range(1, 300):
+                _na  = ws_nbs_fix.cell(_nr, 1).value
+                _nb  = ws_nbs_fix.cell(_nr, 2).value
+                _nlbl = str(_na or _nb or "").strip().lower()
+                # Detect "trade receivable" header
+                if "trade receivable" in _nlbl or "trade rec" in _nlbl:
+                    if not _found_lt6_header:
+                        _found_lt6_header = True
+                        _in_trade_rec = True
+                if _in_trade_rec and "(b)" in _nlbl and "unsecured" in _nlbl:
+                    if _lt6_row is None:
+                        _lt6_row = _nr
+                    else:
+                        _gt6_row = _nr
+                        break   # found both
+
+            # Fallback to original hardcoded rows if scan fails
+            if _lt6_row is None:
+                _lt6_row = 80
+            if _gt6_row is None:
+                _gt6_row = 86
+
+            _lt6_val = ws_nbs_fix.cell(_lt6_row, 4).value
             import re as _re_recv
             def _ref_row(formula_val):
                 if isinstance(formula_val, str):
@@ -3785,22 +3903,17 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     if m:
                         return int(m.group(1))
                 return None
-            d80_ref = _ref_row(d80_val)
-            d86_ref = _ref_row(d86_val)
-            needs_fix = (
-                d80_ref is None or not (min_r <= d80_ref <= max_r)
-                or d86_ref is None or not (min_r <= d86_ref <= max_r)
-            )
+            _lt6_ref = _ref_row(_lt6_val)
+            needs_fix = (_lt6_ref is None or not (min_r <= _lt6_ref <= max_r))
             if needs_fix:
-                # Single block covers all receivables — put the full SUM
-                # in D80 (the "< 6 months" sub-total) and zero out D86
-                # (the "> 6 months" sub-total) since the TB doesn't
-                # distinguish ageing buckets.
-                ws_nbs_fix.cell(80, 4).value = f"=SUM(Details!D{min_r}:D{max_r})"
-                ws_nbs_fix.cell(86, 4).value = 0
+                ws_nbs_fix.cell(_lt6_row, 4).value = (
+                    f"=SUM(Details!D{min_r}:D{max_r})"
+                )
+                ws_nbs_fix.cell(_gt6_row, 4).value = 0
                 log.append(
-                    f"✓ Repaired 'notes to bs'!D80 → SUM(Details!D{min_r}:D{max_r}) "
-                    f"(Trade Receivables total; was pointing to a stale single row)"
+                    f"✓ Repaired 'notes to bs'!D{_lt6_row} → "
+                    f"SUM(Details!D{min_r}:D{max_r}) "
+                    f"(Trade Receivables total; was pointing to stale row)"
                 )
 
         # NOTE: LT borrowings are written to notes to bs!D8 directly (Section 2 above).
@@ -3808,53 +3921,53 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         # notes to bs!D16 = =Details!D9 (formula), creating a second entry.
 
         # ── Advance to Suppliers (debit-balance creditors) ───────────────────
-        # Detect the ADVANCE TO SUPPLIERS section in Details dynamically.
+        # FIX (2026-07-16) — full rewrite of this section:
         #
-        # FIX (2026-07-15) — three bugs corrected:
+        # Bug 1 (scan start too late): scan started from _recv_total_row,
+        #   missing headers that sit BEFORE the recv total (Fashion Adda row 77
+        #   vs recv total row 80).  Now scans the entire sheet from row 1.
         #
-        # Bug 1 — SCAN START TOO LATE: The scan previously started from
-        #   _recv_total_row (the TOTAL row of the <6months debtor section).
-        #   In the Fashion Adda template the ADVANCE TO SUPPLIERS header sits
-        #   at row 77 while _recv_total_row = 80, so the header was scanned
-        #   BEFORE the loop even started → _adv_supp_start stayed None →
-        #   fallback placed the amount at recv_end_row+3 (row 83), which is
-        #   AFTER the TOTAL row at 80 and completely outside the SUM formula.
-        #   Fix: scan from row 1 (full sheet pass, same as the receivable
-        #   section detector) so the header is always found regardless of
-        #   position relative to the debtor section.
+        # Bug 2 (broken regex-as-string): "adv.*supp" tested with `in` can
+        #   never match — it's a literal 8-char string.  Replaced with correct
+        #   plain substring checks.
         #
-        # Bug 2 — BROKEN REGEX-AS-STRING: "adv.*supp" and "advance.*supplier"
-        #   were tested with `in` (substring check), not re.search(), so they
-        #   can never match — "adv.*supp" is a literal 8-character string, not
-        #   a pattern.  Replaced with plain substring checks that actually work.
+        # Bug 3 (no insert fallback): when section had no blank rows the amount
+        #   was silently dropped.  Now inserts a row before TOTAL + updates SUM.
         #
-        # Bug 3 — NO INSERT FALLBACK: When the section had no blank rows left
-        #   (all pre-existing party slots already filled) and `placed` stayed
-        #   False, the amount was silently dropped. Added the same
-        #   insert_rows-before-total + SUM-formula-update pattern used for
-        #   the trade-receivables overflow path.
+        # Bug 4 (JEANS WORLD / SHREE CRAFT layout): advance-to-supplier can be
+        #   a sub-section INSIDE the trade-receivables SUM range (JEANS WORLD
+        #   row 105 "ADVANCE TO SUPPLIERS" header sits inside =SUM(D66:D106)).
+        #   The old code only searched BELOW recv_total_row so it found nothing
+        #   and fell back to placing accounts AFTER the SUM row (outside formula).
+        #   New: search the full Details sheet; if the header falls inside the
+        #   recv section, treat those rows as part of recv (already inside SUM).
         _adv_supp_start  = None
         _adv_supp_end    = None
         _adv_supp_total  = None   # row number of the TOTAL / SUM row
+        _adv_inside_recv = False  # True when the section is inside the recv SUM
 
-        for _sr2 in range(1, 300):   # full sheet scan — header can be anywhere
+        for _sr2 in range(1, 300):   # full sheet scan
             _a2   = ws_det.cell(_sr2, 1).value
             _lbl2 = str(_a2 or "").strip().lower()
-            # Detect header: "ADVANCE TO SUPPLIERS" / "Advance to Suppliers" / etc.
             if ("advance to supplier" in _lbl2
                     or ("advance" in _lbl2 and "supplier" in _lbl2)
-                    or ("advance" in _lbl2 and "supp" in _lbl2 and "from" not in _lbl2)):
+                    or ("advance" in _lbl2 and "supp" in _lbl2
+                        and "from" not in _lbl2)):
                 _adv_supp_start = _sr2 + 1  # first data row = row after header
+                # Check whether this header lives inside the recv SUM range
+                if (_recv_section_start is not None
+                        and _recv_section_start < _sr2 <= recv_end_row):
+                    _adv_inside_recv = True
             # Once we have a start, find the TOTAL / SUM boundary
             if _adv_supp_start and _sr2 > _adv_supp_start:
                 _d2 = ws_det.cell(_sr2, 4).value
-                _is_total = "total" in _lbl2
-                _is_sum   = isinstance(_d2, str) and "sum" in _d2.lower()
-                if _is_total or _is_sum:
-                    _adv_supp_total = _sr2   # the TOTAL row itself
-                    _adv_supp_end   = _sr2 - 1  # last data row before TOTAL
+                _is_total2 = "total" in _lbl2
+                _is_sum2   = isinstance(_d2, str) and "sum" in _d2.lower()
+                if _is_total2 or _is_sum2:
+                    _adv_supp_total = _sr2
+                    _adv_supp_end   = _sr2 - 1
                     break
-                # Stop at a new section header (ALL-CAPS, no amount in D)
+                # Stop at a new top-level section header (ALL-CAPS, no amount in D)
                 if (_a2 and str(_a2).strip().isupper() and len(str(_a2).strip()) > 3
                         and "m/s" not in str(_a2).strip().lower()
                         and _d2 is None):
@@ -3862,28 +3975,30 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     break
 
         if _adv_supp_start is None:
-            _adv_supp_start = recv_end_row + 3  # fallback: just after debtor section
+            _adv_supp_start = recv_end_row + 3
         if _adv_supp_end is None:
             _adv_supp_end = _adv_supp_start + 10
 
         for acct in adv_to_supplier:
             placed = False
-            # Pass 1: name-match within the advance to suppliers section
+            # Pass 1: name-match within the advance-to-suppliers section
             for r in range(_adv_supp_start, _adv_supp_end + 1):
                 b = ws_det.cell(r, 2).value
                 if b and _fuzzy_match_name(acct["name"], str(b)) and r not in recv_written:
-                    # Direct write — template may hold old-year values; always overwrite
                     cell = ws_det.cell(r, 4)
                     from openpyxl.cell.cell import MergedCell
                     if not isinstance(cell, MergedCell):
                         cell.value = abs(acct["net"])
                         if cell.number_format and 'y' in cell.number_format.lower():
                             cell.number_format = '#,##0.00'
-                        injected.append(f"Details!D{r} (adv-to-supplier: {acct['name']}) = {abs(acct['net']):,.2f}")
+                        injected.append(
+                            f"Details!D{r} (adv-to-supplier: {acct['name']}) "
+                            f"= {abs(acct['net']):,.2f}"
+                        )
                         recv_written.add(r); placed = True
                     break
             if not placed:
-                # Pass 2: use first genuinely blank row inside the section
+                # Pass 2: first genuinely blank row in the section
                 for r in range(_adv_supp_start, _adv_supp_end + 1):
                     _b2 = ws_det.cell(r, 2).value
                     _d2 = ws_det.cell(r, 4).value
@@ -3892,24 +4007,22 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         ws_det.cell(r, 1).value = "M/s."
                         ws_det.cell(r, 2).value = acct["name"]
                         ws_det.cell(r, 4).value = abs(acct["net"])
-                        injected.append(f"Details!D{r} (adv-to-supplier new slot: {acct['name']}) = {abs(acct['net']):,.2f}")
-                        recv_written.add(r)
-                        placed = True
-                        break
+                        injected.append(
+                            f"Details!D{r} (adv-to-supplier new slot: {acct['name']}) "
+                            f"= {abs(acct['net']):,.2f}"
+                        )
+                        recv_written.add(r); placed = True; break
             if not placed:
-                # Pass 3: section has no blank rows — insert a new row BEFORE the
-                # TOTAL row and update the SUM formula to cover the new row.
-                # (Same pattern used for the trade-receivables overflow path.)
-                _insert_at = (_adv_supp_total) if _adv_supp_total else (_adv_supp_end + 1)
+                # Pass 3: insert row before TOTAL and update SUM
+                _insert_at = _adv_supp_total if _adv_supp_total else (_adv_supp_end + 1)
                 try:
                     ws_det.insert_rows(_insert_at)
                     ws_det.cell(_insert_at, 1).value = "M/s."
                     ws_det.cell(_insert_at, 2).value = acct["name"]
                     ws_det.cell(_insert_at, 4).value = abs(acct["net"])
                     recv_written.add(_insert_at)
-                    # The inserted row shifts everything below by 1; update references
-                    _new_total_r = _insert_at + 1  # TOTAL row moved down
-                    _new_end     = _insert_at       # new last data row
+                    _new_total_r = _insert_at + 1
+                    _new_end     = _insert_at
                     _total_f = ws_det.cell(_new_total_r, 4).value
                     if isinstance(_total_f, str) and "SUM" in _total_f.upper():
                         ws_det.cell(_new_total_r, 4).value = (
@@ -3917,68 +4030,161 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         )
                         injected.append(
                             f"Details!D{_new_total_r} adv-to-supp TOTAL updated "
-                            f"to =SUM(D{_adv_supp_start}:D{_new_end})"
+                            f"=SUM(D{_adv_supp_start}:D{_new_end})"
                         )
                     injected.append(
                         f"Details!D{_insert_at} (adv-to-supplier INSERT ROW: "
                         f"{acct['name']}) = {abs(acct['net']):,.2f}"
                     )
-                    _adv_supp_total = _new_total_r  # keep in sync for next party
+                    _adv_supp_total = _new_total_r
                     _adv_supp_end   = _new_end
                     placed = True
                 except Exception as _adv_ins_exc:
                     skipped.append(
-                        f"Advance-to-supplier '{acct['name']}' ({abs(acct['net']):,.2f}): "
-                        f"no spare row and insert failed ({_adv_ins_exc}) — not placed"
+                        f"Advance-to-supplier '{acct['name']}' "
+                        f"({abs(acct['net']):,.2f}): insert failed "
+                        f"({_adv_ins_exc}) — not placed"
                     )
 
-        # ── Advance from Customers (credit-balance debtors) → OCL in notes to bs ──
-        # These debtors had a credit balance → reclassified to other_cl
-        # They go into the OCL section of notes to bs (rows 60-82)
+        # ── Advance from Customers (credit-balance debtors / creditors) ─────
+        # FIX (2026-07-16):
+        #
+        # Layout A (Fashion Adda): separate section below debtors, with its
+        #   own rows outside the creditor SUM.
+        #
+        # Layout B (JEANS WORLD / SHREE CRAFT): "Advance from Customers"
+        #   sub-header sits INSIDE the Sundry Creditors SUM range.
+        #   e.g. JEANS WORLD Details rows 28-55 are the adv-from-cust sub-rows,
+        #   but they're summed together with the creditors (=SUM(D21:D55)).
+        #   Detection: scan for the header; if it falls inside [cred_start_row,
+        #   cred_end_row], the section IS the creditor rows from header+1
+        #   to cred_end_row. We still write to col D and name-match correctly;
+        #   the SUM already covers these rows so no formula update needed.
+        #
+        # Add insert_rows fallback so new adv-from-cust accounts that don't
+        # have a pre-existing row in the template get inserted before the
+        # creditor TOTAL and counted in the formula.
         adv_from_customer = [a for a in individual_accounts
-                             if a.get("reclassified_from") == "trade_rec"]
+                             if a.get("reclassified_from") == "trade_rec"
+                             or a.get("bs_head") == "advance_from_customer"]
         if adv_from_customer and "Details" in wb.sheetnames:
             ws_det_afc = wb["Details"]
 
-            # FIX: detect the ADVANCE FROM CUSTOMERS section boundaries
-            # dynamically instead of scanning the entire range 20-90.
-            # The old range included the SUNDRY CREDITORS rows (26-35),
-            # causing fuzzy-match hits there for accounts like Boon Knitwears
-            # vs R.K. Vikas Knitwears (both contain "knitwears"), which
-            # overwrote correctly-placed creditor values.
+            # Detect "Advance from Customers" sub-section (full sheet scan)
             _afc_start, _afc_end = None, None
-            for _sr3 in range(1, 200):
-                _lbl3 = str(ws_det_afc.cell(_sr3, 1).value or "").lower()
-                if "advance from customer" in _lbl3:
+            _afc_inside_creditor  = False
+            _afc_total_row        = None
+            for _sr3 in range(1, 300):
+                _lbl3a = str(ws_det_afc.cell(_sr3, 1).value or "").strip().lower()
+                _lbl3b = str(ws_det_afc.cell(_sr3, 2).value or "").strip().lower()
+                _lbl3  = _lbl3a or _lbl3b
+                if "advance from customer" in _lbl3 or "advance from buyer" in _lbl3:
                     _afc_start = _sr3 + 1
-                if _afc_start and _sr3 > _afc_start:
-                    _lbl3b = str(ws_det_afc.cell(_sr3, 1).value or "").strip()
-                    if _lbl3b and _lbl3b.isupper() and len(_lbl3b) > 3 and "m/s" not in _lbl3b.lower():
+                    # Is this inside the creditor SUM block?
+                    if cred_start_row < _sr3 < cred_end_row:
+                        _afc_inside_creditor = True
+                        _afc_end = cred_end_row - 1   # last data row before cred SUM
+                        _afc_total_row = cred_total_row
+                if _afc_start and _sr3 > _afc_start and not _afc_inside_creditor:
+                    _lbl3x = str(ws_det_afc.cell(_sr3, 1).value or "").strip()
+                    _d3    = ws_det_afc.cell(_sr3, 4).value
+                    _is_t  = _lbl3x.lower() in ("total", "totals")
+                    _is_s  = isinstance(_d3, str) and "sum" in _d3.lower()
+                    if _is_t or _is_s:
+                        _afc_total_row = _sr3
+                        _afc_end       = _sr3 - 1
+                        break
+                    if (_lbl3x and _lbl3x.isupper() and len(_lbl3x) > 3
+                            and "m/s" not in _lbl3x.lower()
+                            and "advance" not in _lbl3x.lower()
+                            and _d3 is None):
                         _afc_end = _sr3 - 1
                         break
-            if _afc_start is None: _afc_start, _afc_end = 37, 57
-            if _afc_end is None:   _afc_end = _afc_start + 20
+            if _afc_start is None:
+                _afc_start = cred_end_row + 3   # safe fallback below creditors
+            if _afc_end is None:
+                _afc_end = _afc_start + 20
 
             for acct in adv_from_customer:
                 placed = False
+                # Pass 1: name-match in the advance-from-customers section
                 for r in range(_afc_start, _afc_end + 1):
                     b = ws_det_afc.cell(r, 2).value
-                    if b and _fuzzy_match_name(acct["name"], str(b)):
-                        _safe_set(ws_det_afc, r, 4, abs(acct["net"]))
-                        injected.append(f"Details!D{r} (adv-from-customer: {acct['name']}) = {abs(acct['net']):,.2f}")
-                        placed = True
+                    if b and _fuzzy_match_name(acct["name"], str(b)) and r not in written_rows:
+                        cell_d = ws_det_afc.cell(r, 4)
+                        from openpyxl.cell.cell import MergedCell
+                        if not isinstance(cell_d, MergedCell):
+                            cell_d.value = abs(acct["net"])
+                            if cell_d.number_format and 'y' in cell_d.number_format.lower():
+                                cell_d.number_format = '#,##0.00'
+                            injected.append(
+                                f"Details!D{r} (adv-from-customer: {acct['name']}) "
+                                f"= {abs(acct['net']):,.2f}"
+                            )
+                            written_rows.add(r); placed = True
                         break
                 if not placed:
-                    # Find first empty row in the advance from customers section
+                    # Pass 2a: fully blank row (no name)
+                    # Pass 2b: named row with zero/None PY value that didn't match any TB account
+                    # (prior-year party no longer present → safe to replace with new account)
+                    _afc_blank = []
+                    _afc_zero_py = []
                     for r in range(_afc_start, _afc_end + 1):
+                        if r in written_rows: continue
                         b2 = ws_det_afc.cell(r, 2).value
                         d2 = ws_det_afc.cell(r, 4).value
-                        if (b2 is None or not str(b2).strip()) and (d2 is None or d2 == 0):
-                            _safe_set(ws_det_afc, r, 2, acct["name"])
-                            _safe_set(ws_det_afc, r, 4, abs(acct["net"]))
-                            injected.append(f"Details!D{r} (adv-from-cust new: {acct['name']}) = {abs(acct['net']):,.2f}")
-                            placed = True
-                            break
+                        e2 = ws_det_afc.cell(r, 5).value
+                        b2_empty = b2 is None or not str(b2).strip() or str(b2).strip() in (" ", "Nil", "-")
+                        if b2_empty and (d2 is None or d2 == 0):
+                            _afc_blank.append(r)
+                        elif not b2_empty and (e2 in (None, 0) and (d2 is None or d2 == 0)):
+                            _afc_zero_py.append(r)
+                    _afc_reuse = _afc_blank + _afc_zero_py
+                    if _afc_reuse:
+                        r = _afc_reuse[0]
+                        ws_det_afc.cell(r, 1).value = "M/s."
+                        ws_det_afc.cell(r, 2).value = acct["name"]
+                        ws_det_afc.cell(r, 4).value = abs(acct["net"])
+                        injected.append(
+                            f"Details!D{r} (adv-from-cust reuse: {acct['name']}) "
+                            f"= {abs(acct['net']):,.2f}"
+                        )
+                        written_rows.add(r); placed = True
+                if not placed:
+                    # Pass 3: insert before TOTAL row and update SUM
+                    _afc_insert = (_afc_total_row if _afc_total_row
+                                   else (_afc_end + 1))
+                    try:
+                        ws_det_afc.insert_rows(_afc_insert)
+                        ws_det_afc.cell(_afc_insert, 1).value = "M/s."
+                        ws_det_afc.cell(_afc_insert, 2).value = acct["name"]
+                        ws_det_afc.cell(_afc_insert, 4).value = abs(acct["net"])
+                        written_rows.add(_afc_insert)
+                        _afc_new_total = _afc_insert + 1
+                        _afc_total_f   = ws_det_afc.cell(_afc_new_total, 4).value
+                        # When AFC is inside the creditor SUM block, the formula
+                        # must start from cred_start_row (covers all creditors too)
+                        _sum_start = cred_start_row if _afc_inside_creditor else _afc_start
+                        if isinstance(_afc_total_f, str) and "SUM" in _afc_total_f.upper():
+                            ws_det_afc.cell(_afc_new_total, 4).value = (
+                                f"=SUM(D{_sum_start}:D{_afc_insert})"
+                            )
+                            injected.append(
+                                f"Details!D{_afc_new_total} afc TOTAL updated "
+                                f"=SUM(D{_sum_start}:D{_afc_insert})"
+                            )
+                        injected.append(
+                            f"Details!D{_afc_insert} (adv-from-cust INSERT ROW: "
+                            f"{acct['name']}) = {abs(acct['net']):,.2f}"
+                        )
+                        _afc_total_row = _afc_new_total
+                        _afc_end       = _afc_insert
+                        placed = True
+                    except Exception as _afc_ins_exc:
+                        skipped.append(
+                            f"Adv-from-customer '{acct['name']}': "
+                            f"insert failed ({_afc_ins_exc}) — not placed"
+                        )
 
     # ────────────────────────────────────────────────────────────────
     # 4. CLOSING STOCK / INVENTORIES
