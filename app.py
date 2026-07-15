@@ -8477,12 +8477,60 @@ def _inject_cap_fa(output_path, cap_entries, fa_entries, log):
                     if sale:
                         ws.cell(insert_at, 5).value = round(sale, 2)
                     total_cost = round(gt + lt - sale, 2)
-                    ws.cell(insert_at, 6).value = total_cost
+                    # Use formulas (not hardcoded values) so Excel recalculates correctly
+                    ws.cell(insert_at, 6).value = f"=B{insert_at}+C{insert_at}+D{insert_at}-E{insert_at}"
                     ws.cell(insert_at, 7).value = rate
-                    # Depreciation: >180 days = full rate; <180 days = half rate
-                    dep = round((gt * rate / 100) + (lt * rate / 100 * 0.5), 2)
-                    ws.cell(insert_at, 8).value = dep
-                    ws.cell(insert_at, 9).value = round(total_cost - dep, 2)
+                    ws.cell(insert_at, 8).value = (
+                        f"=(B{insert_at}+C{insert_at}-E{insert_at})*G{insert_at}/100"
+                        f"+(D{insert_at}*G{insert_at}/200)"
+                    )
+                    ws.cell(insert_at, 9).value = f"=F{insert_at}-H{insert_at}"
+
+                    # FIX (2026-07-16): After insert_rows openpyxl does NOT update
+                    # the text of SUM formulas in cells below the insertion point.
+                    # e.g. =SUM(B8:B41) stays as-is even though Land moved from
+                    # row 41 to row 42, causing Land's WDV to be excluded from the
+                    # grand total. Fix: scan the entire FA sheet for SUM formulas
+                    # whose range ENDS before or at insert_at (now stale) and extend
+                    # the end by 1. Also update cross-sheet references that point to
+                    # cells at or below insert_at in the same sheet.
+                    import re as _fa_re
+                    _sum_pat = _fa_re.compile(
+                        r'=SUM\(([A-Z]+)(\d+):([A-Z]+)(\d+)\)', _fa_re.IGNORECASE
+                    )
+                    _ref_pat = _fa_re.compile(r'([A-Z]+)(\d+)')
+                    for _fr in range(1, 120):
+                        for _fc in range(1, 15):
+                            _fv = ws.cell(_fr, _fc).value
+                            if not (isinstance(_fv, str) and _fv.startswith('=')):
+                                continue
+                            # Update SUM ranges that straddle or end at the insert point
+                            def _expand_sum(m, _ins=insert_at):
+                                c1, r1, c2, r2 = m.group(1), int(m.group(2)), m.group(3), int(m.group(4))
+                                # If the range end was AT OR AFTER insert_at, expand it by 1
+                                if r2 >= _ins:
+                                    r2 += 1
+                                # Also shift the start if it was at or after insert_at
+                                if r1 >= _ins:
+                                    r1 += 1
+                                return f'=SUM({c1}{r1}:{c2}{r2})'
+                            _new_fv = _sum_pat.sub(_expand_sum, _fv)
+                            # For non-SUM formulas, shift bare cell refs at/above insert_at
+                            if _new_fv == _fv and not _fv.upper().startswith('=SUM('):
+                                def _shift_ref(m, _ins=insert_at, _cur_row=_fr):
+                                    col, row_n = m.group(1), int(m.group(2))
+                                    # Only shift refs that point to rows >= insert_at
+                                    # (skip refs to the current row itself if it moved)
+                                    if row_n >= _ins and _cur_row >= _ins:
+                                        return f'{col}{row_n + 1}'
+                                    return m.group(0)
+                                _new_fv = _ref_pat.sub(_shift_ref, _fv)
+                            if _new_fv != _fv:
+                                ws.cell(_fr, _fc).value = _new_fv
+                                log.append(
+                                    f"✓ {fa_sheet}!{chr(64+_fc)}{_fr}: updated formula "
+                                    f"{_fv} → {_new_fv} (FA row insert at {insert_at})"
+                                )
 
                     log.append(
                         f"✓ {fa_sheet}: inserted new asset '{name}' at row {insert_at} "
@@ -9735,13 +9783,20 @@ function addFARow(name, rate, sectionLabel) {
   const tr = document.createElement('tr');
   tr.className = 'fa-row';
   tr.dataset.idx = idx;
+  // FIX (2026-07-16): New assets (row=0) show an editable text input for the name
+  // so the user can correct typos or rename before submitting. Static text was used
+  // before, making the name uneditable once the row was added.
   tr.innerHTML = `
-    <td style="padding:8px;border:1px solid var(--border);font-weight:600">${escHtml(name)}
+    <td style="padding:6px;border:1px solid var(--border);font-weight:600">
+      <input type="text" class="fa-name-input" value="${escHtml(name)}"
+        style="width:100%;border:1.5px solid var(--brand);border-radius:5px;
+               padding:4px 7px;font-size:12px;font-weight:600;font-family:inherit;
+               background:#EFF6FF;outline:none"
+        placeholder="Asset name…">
       <input type="hidden" class="fa-rownum" value="0">
       <input type="hidden" class="fa-rate-val" value="${rate}">
-      <input type="hidden" class="fa-name-val" value="${escHtml(name)}">
       <input type="hidden" class="fa-section-val" value="${escHtml(sectionLabel||'PLANT & MACHINERY')}">
-      <span style="display:block;font-size:10px;color:var(--muted);font-weight:400">${escHtml(sectionLabel||'')}</span>
+      <span style="display:block;font-size:10px;color:var(--muted);font-weight:400;margin-top:2px">${escHtml(sectionLabel||'')} · editable</span>
     </td>
     <td style="padding:8px;border:1px solid var(--border);text-align:right;color:var(--muted)">₹0</td>
     <td style="padding:4px;border:1px solid var(--border)"><input type="number" class="fa-add-gt" step="0.01" value="0" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;text-align:right;font-size:12px"></td>
@@ -9787,10 +9842,19 @@ function collectFAEntries() {
     const gt = parseFloat(tr.querySelector('.fa-add-gt')?.value) || 0;
     const lt = parseFloat(tr.querySelector('.fa-add-lt')?.value) || 0;
     const sale = parseFloat(tr.querySelector('.fa-sale')?.value) || 0;
-    // FIX Bug 1: also collect name, rate, and section for row=0 (new) assets
-    const nameEl = tr.querySelector('td:first-child');
-    const nameNode = nameEl ? Array.from(nameEl.childNodes).find(n => n.nodeType === 3) : null;
-    const name = nameNode ? nameNode.textContent.trim() : (nameEl ? nameEl.textContent.trim() : '');
+    // FIX (2026-07-16): read name from the editable input (.fa-name-input) for
+    // new assets (row=0). Old assets use static text extracted from the first <td>.
+    let name = '';
+    const nameInput = tr.querySelector('.fa-name-input');
+    if (nameInput) {
+      // New asset row — name is in the editable text input
+      name = nameInput.value.trim();
+    } else {
+      // Existing asset row — name is static text in first <td>
+      const nameEl = tr.querySelector('td:first-child');
+      const nameNode = nameEl ? Array.from(nameEl.childNodes).find(n => n.nodeType === 3) : null;
+      name = nameNode ? nameNode.textContent.trim() : (nameEl ? nameEl.textContent.trim() : '');
+    }
     const rateEl = tr.querySelector('.fa-rate-val');
     const rate = rateEl ? (parseFloat(rateEl.value) || 0) : 0;
     const sectionEl = tr.querySelector('.fa-section-val');
