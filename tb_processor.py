@@ -4,6 +4,19 @@ Reads a trial balance, classifies accounts under BS/P&L heads,
 and injects aggregated values into a BS template.
 Zero formatting change in the output BS file.
 Memory-efficient: single workbook open, read_only where possible.
+
+v2026-07-15 fix — ADVANCE TO SUPPLIERS section in Details sheet:
+  Bug 1 (scan start too late): Scan for the "ADVANCE TO SUPPLIERS" header
+    now starts from row 1 (full sheet), not from _recv_total_row. In the
+    Fashion Adda template the header sits at row 77 while _recv_total_row=80,
+    so the old scan missed it entirely → amount fell back to row 83 (after
+    the TOTAL row), outside the SUM formula, and was lost from the total.
+  Bug 2 (broken regex-as-string): "adv.*supp" and "advance.*supplier" were
+    tested with `in` (substring), not re.search(). They are literal strings
+    and can never match. Replaced with plain correct substring checks.
+  Bug 3 (no insert fallback): When the section had no blank rows left the
+    amount was silently dropped. Now inserts a row before the TOTAL row
+    and updates the SUM formula, matching the trade-receivables overflow path.
 """
 
 import re
@@ -3795,17 +3808,59 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
         # notes to bs!D16 = =Details!D9 (formula), creating a second entry.
 
         # ── Advance to Suppliers (debit-balance creditors) ───────────────────
-        # Detect the ADVANCE TO SUPPLIERS section in Details dynamically
-        # (it sits BELOW the trade receivables total, not inside it)
-        _adv_supp_start = None
-        _adv_supp_end   = None
-        for _sr2 in range(_recv_total_row or 95, 200):
-            _lbl2 = str(ws_det.cell(_sr2, 1).value or "").lower()
-            if "advance to s" in _lbl2 or "adv.*supp" in _lbl2 or "advance.*supplier" in _lbl2:
-                _adv_supp_start = _sr2 + 1
-            if _adv_supp_start and _sr2 > _adv_supp_start and ("total" in _lbl2 or ws_det.cell(_sr2, 4).value and str(ws_det.cell(_sr2, 4).value).startswith("=")):
-                _adv_supp_end = _sr2 - 1
-                break
+        # Detect the ADVANCE TO SUPPLIERS section in Details dynamically.
+        #
+        # FIX (2026-07-15) — three bugs corrected:
+        #
+        # Bug 1 — SCAN START TOO LATE: The scan previously started from
+        #   _recv_total_row (the TOTAL row of the <6months debtor section).
+        #   In the Fashion Adda template the ADVANCE TO SUPPLIERS header sits
+        #   at row 77 while _recv_total_row = 80, so the header was scanned
+        #   BEFORE the loop even started → _adv_supp_start stayed None →
+        #   fallback placed the amount at recv_end_row+3 (row 83), which is
+        #   AFTER the TOTAL row at 80 and completely outside the SUM formula.
+        #   Fix: scan from row 1 (full sheet pass, same as the receivable
+        #   section detector) so the header is always found regardless of
+        #   position relative to the debtor section.
+        #
+        # Bug 2 — BROKEN REGEX-AS-STRING: "adv.*supp" and "advance.*supplier"
+        #   were tested with `in` (substring check), not re.search(), so they
+        #   can never match — "adv.*supp" is a literal 8-character string, not
+        #   a pattern.  Replaced with plain substring checks that actually work.
+        #
+        # Bug 3 — NO INSERT FALLBACK: When the section had no blank rows left
+        #   (all pre-existing party slots already filled) and `placed` stayed
+        #   False, the amount was silently dropped. Added the same
+        #   insert_rows-before-total + SUM-formula-update pattern used for
+        #   the trade-receivables overflow path.
+        _adv_supp_start  = None
+        _adv_supp_end    = None
+        _adv_supp_total  = None   # row number of the TOTAL / SUM row
+
+        for _sr2 in range(1, 300):   # full sheet scan — header can be anywhere
+            _a2   = ws_det.cell(_sr2, 1).value
+            _lbl2 = str(_a2 or "").strip().lower()
+            # Detect header: "ADVANCE TO SUPPLIERS" / "Advance to Suppliers" / etc.
+            if ("advance to supplier" in _lbl2
+                    or ("advance" in _lbl2 and "supplier" in _lbl2)
+                    or ("advance" in _lbl2 and "supp" in _lbl2 and "from" not in _lbl2)):
+                _adv_supp_start = _sr2 + 1  # first data row = row after header
+            # Once we have a start, find the TOTAL / SUM boundary
+            if _adv_supp_start and _sr2 > _adv_supp_start:
+                _d2 = ws_det.cell(_sr2, 4).value
+                _is_total = "total" in _lbl2
+                _is_sum   = isinstance(_d2, str) and "sum" in _d2.lower()
+                if _is_total or _is_sum:
+                    _adv_supp_total = _sr2   # the TOTAL row itself
+                    _adv_supp_end   = _sr2 - 1  # last data row before TOTAL
+                    break
+                # Stop at a new section header (ALL-CAPS, no amount in D)
+                if (_a2 and str(_a2).strip().isupper() and len(str(_a2).strip()) > 3
+                        and "m/s" not in str(_a2).strip().lower()
+                        and _d2 is None):
+                    _adv_supp_end = _sr2 - 1
+                    break
+
         if _adv_supp_start is None:
             _adv_supp_start = recv_end_row + 3  # fallback: just after debtor section
         if _adv_supp_end is None:
@@ -3813,11 +3868,11 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
         for acct in adv_to_supplier:
             placed = False
-            # Name match in the advance to suppliers section
+            # Pass 1: name-match within the advance to suppliers section
             for r in range(_adv_supp_start, _adv_supp_end + 1):
                 b = ws_det.cell(r, 2).value
                 if b and _fuzzy_match_name(acct["name"], str(b)) and r not in recv_written:
-                    # Direct write (same as creditor fix — templates have old values)
+                    # Direct write — template may hold old-year values; always overwrite
                     cell = ws_det.cell(r, 4)
                     from openpyxl.cell.cell import MergedCell
                     if not isinstance(cell, MergedCell):
@@ -3828,15 +3883,54 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         recv_written.add(r); placed = True
                     break
             if not placed:
-                # Find empty row in advance to suppliers section
+                # Pass 2: use first genuinely blank row inside the section
                 for r in range(_adv_supp_start, _adv_supp_end + 1):
-                    if ws_det.cell(r, 4).value is None and (ws_det.cell(r, 2).value is None or str(ws_det.cell(r, 2).value).strip() == "") and r not in recv_written:
+                    _b2 = ws_det.cell(r, 2).value
+                    _d2 = ws_det.cell(r, 4).value
+                    if (_d2 is None and r not in recv_written
+                            and (_b2 is None or str(_b2).strip() in ("", "Nil", "-"))):
+                        ws_det.cell(r, 1).value = "M/s."
                         ws_det.cell(r, 2).value = acct["name"]
                         ws_det.cell(r, 4).value = abs(acct["net"])
-                        injected.append(f"Details!D{r} (adv-to-supplier new: {acct['name']}) = {abs(acct['net']):,.2f}")
+                        injected.append(f"Details!D{r} (adv-to-supplier new slot: {acct['name']}) = {abs(acct['net']):,.2f}")
                         recv_written.add(r)
                         placed = True
                         break
+            if not placed:
+                # Pass 3: section has no blank rows — insert a new row BEFORE the
+                # TOTAL row and update the SUM formula to cover the new row.
+                # (Same pattern used for the trade-receivables overflow path.)
+                _insert_at = (_adv_supp_total) if _adv_supp_total else (_adv_supp_end + 1)
+                try:
+                    ws_det.insert_rows(_insert_at)
+                    ws_det.cell(_insert_at, 1).value = "M/s."
+                    ws_det.cell(_insert_at, 2).value = acct["name"]
+                    ws_det.cell(_insert_at, 4).value = abs(acct["net"])
+                    recv_written.add(_insert_at)
+                    # The inserted row shifts everything below by 1; update references
+                    _new_total_r = _insert_at + 1  # TOTAL row moved down
+                    _new_end     = _insert_at       # new last data row
+                    _total_f = ws_det.cell(_new_total_r, 4).value
+                    if isinstance(_total_f, str) and "SUM" in _total_f.upper():
+                        ws_det.cell(_new_total_r, 4).value = (
+                            f"=SUM(D{_adv_supp_start}:D{_new_end})"
+                        )
+                        injected.append(
+                            f"Details!D{_new_total_r} adv-to-supp TOTAL updated "
+                            f"to =SUM(D{_adv_supp_start}:D{_new_end})"
+                        )
+                    injected.append(
+                        f"Details!D{_insert_at} (adv-to-supplier INSERT ROW: "
+                        f"{acct['name']}) = {abs(acct['net']):,.2f}"
+                    )
+                    _adv_supp_total = _new_total_r  # keep in sync for next party
+                    _adv_supp_end   = _new_end
+                    placed = True
+                except Exception as _adv_ins_exc:
+                    skipped.append(
+                        f"Advance-to-supplier '{acct['name']}' ({abs(acct['net']):,.2f}): "
+                        f"no spare row and insert failed ({_adv_ins_exc}) — not placed"
+                    )
 
         # ── Advance from Customers (credit-balance debtors) → OCL in notes to bs ──
         # These debtors had a credit balance → reclassified to other_cl
