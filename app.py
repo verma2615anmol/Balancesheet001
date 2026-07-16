@@ -6415,7 +6415,7 @@ input[type=text]:focus{border-color:var(--brand)}
 
       <div class="field">
         <label>Sales Summary (Excel)</label>
-        <div class="dropzone" id="dz-sales">
+        <div class="dropzone" id="dz-sales" ondragover="gstDragOver(event,'dz-sales')" ondragleave="gstDragLeave(event,'dz-sales')" ondrop="gstDrop(event,'dz-sales','file-sales','sf-sales')">
           <div class="dz-icon">📊</div>
           <div class="dz-text"><strong>Click or drag</strong> your sales summary .xlsx</div>
           <div class="dz-file" id="sf-sales"></div>
@@ -6425,7 +6425,7 @@ input[type=text]:focus{border-color:var(--brand)}
 
       <div class="field">
         <label>GSTR 3B PDFs (ZIP file)</label>
-        <div class="dropzone" id="dz-gst">
+        <div class="dropzone" id="dz-gst" ondragover="gstDragOver(event,'dz-gst')" ondragleave="gstDragLeave(event,'dz-gst')" ondrop="gstDrop(event,'dz-gst','file-gst','sf-gst')">
           <div class="dz-icon">📁</div>
           <div class="dz-text"><strong>Click or drag</strong> your GSTR 3B ZIP file</div>
           <div class="dz-file" id="sf-gst"></div>
@@ -6549,43 +6549,47 @@ function pickFile(inp, sfId){
 // pointer-events:none on the input passes drags to the .dropzone div.
 // dragleave fires on child-element crossings too, so we use relatedTarget
 // to ignore those false leaves and only clear 'drag' when truly leaving the zone.
+// Drag-drop handler called from HTML ondrop attributes (belt AND suspenders approach)
+function gstDrop(e, dzId, inputId, sfId) {
+  e.preventDefault(); e.stopPropagation();
+  var dz = document.getElementById(dzId);
+  if (dz) dz.classList.remove('drag');
+  var inp = document.getElementById(inputId);
+  if (!inp) return;
+  var files = e.dataTransfer && e.dataTransfer.files;
+  if (!files || !files.length) return;
+  try { var dt = new DataTransfer(); dt.items.add(files[0]); inp.files = dt.files; } catch(_) {}
+  pickFile(inp, sfId);
+}
+function gstDragOver(e, dzId) {
+  e.preventDefault(); e.stopPropagation();
+  e.dataTransfer.dropEffect = 'copy';
+  var dz = document.getElementById(dzId);
+  if (dz) dz.classList.add('drag');
+}
+function gstDragLeave(e, dzId) {
+  var dz = document.getElementById(dzId);
+  if (dz && !dz.contains(e.relatedTarget)) dz.classList.remove('drag');
+}
+
+// Also wire via JS for completeness
 ['file-sales', 'file-gst'].forEach(function(inputId) {
   var inp  = document.getElementById(inputId);
   var dz   = inp ? inp.closest('.dropzone') : null;
   var sfId = inputId.replace('file-', 'sf-');
+  var dzId = inputId.replace('file-', 'dz-');
   if (!inp || !dz) return;
-
-  dz.addEventListener('dragenter', function(e) {
-    e.preventDefault(); e.stopPropagation();
-    dz.classList.add('drag');
-  });
-  dz.addEventListener('dragover', function(e) {
-    e.preventDefault(); e.stopPropagation();
-    dz.classList.add('drag');
-    e.dataTransfer.dropEffect = 'copy';
-  });
-  dz.addEventListener('dragleave', function(e) {
-    e.preventDefault();
-    // Only remove highlight when the drag truly leaves the zone (not a child)
-    if (!dz.contains(e.relatedTarget)) {
-      dz.classList.remove('drag');
-    }
-  });
-  dz.addEventListener('drop', function(e) {
-    e.preventDefault(); e.stopPropagation();
-    dz.classList.remove('drag');
+  dz.addEventListener('dragenter', function(e){ e.preventDefault(); e.stopPropagation(); dz.classList.add('drag'); });
+  dz.addEventListener('dragover',  function(e){ e.preventDefault(); e.stopPropagation(); dz.classList.add('drag'); e.dataTransfer.dropEffect='copy'; });
+  dz.addEventListener('dragleave', function(e){ e.preventDefault(); if(!dz.contains(e.relatedTarget)) dz.classList.remove('drag'); });
+  dz.addEventListener('drop', function(e){
+    e.preventDefault(); e.stopPropagation(); dz.classList.remove('drag');
     var files = e.dataTransfer && e.dataTransfer.files;
     if (!files || !files.length) return;
-    var f = files[0];
-    try {
-      var dt = new DataTransfer();
-      dt.items.add(f);
-      inp.files = dt.files;
-    } catch(_) {}
+    try { var dt = new DataTransfer(); dt.items.add(files[0]); inp.files = dt.files; } catch(_) {}
     pickFile(inp, sfId);
   });
-  // Clicking anywhere on the zone opens the file picker
-  dz.addEventListener('click', function() { inp.click(); });
+  dz.addEventListener('click', function(){ inp.click(); });
 });
 
 // India state name -> GST state code (for ZIP folder detection)
