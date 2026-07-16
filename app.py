@@ -6301,7 +6301,7 @@ GST_RECON_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>GST Reconciliation – CA Toolkit v2.0</title>
+<title>GST Reconciliation – CA Toolkit</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
 <style>
 """ + BASE_CSS + """
@@ -6353,7 +6353,30 @@ input[type=text]:focus{border-color:var(--brand)}
 .mapping-row .remove-btn{background:none;border:none;color:#EF4444;cursor:pointer;font-size:18px;padding:0}
 #add-mapping{background:none;border:1px dashed var(--border);border-radius:8px;padding:8px;font-size:12px;color:var(--muted);cursor:pointer;width:100%;margin-top:4px}
 #add-mapping:hover{border-color:var(--brand);color:var(--brand)}
-</style></head><body>
+</style><script>
+function gstDrop(e,dzId,inputId,sfId){
+  e.preventDefault();e.stopPropagation();
+  var dz=document.getElementById(dzId);if(dz)dz.classList.remove('drag');
+  var inp=document.getElementById(inputId);if(!inp)return;
+  var files=e.dataTransfer&&e.dataTransfer.files;if(!files||!files.length)return;
+  try{var dt=new DataTransfer();dt.items.add(files[0]);inp.files=dt.files;}catch(_){}
+  if(inp.files&&inp.files.length){
+    var sf=document.getElementById(sfId);
+    if(sf){sf.textContent='✓ '+inp.files[0].name;sf.style.display='block';}
+    if(sfId==='sf-gst')setTimeout(function(){if(typeof detectStateCodes==='function')detectStateCodes(inp.files[0]);},0);
+  }
+}
+function gstDragOver(e,dzId){
+  e.preventDefault();e.stopPropagation();
+  if(e.dataTransfer)e.dataTransfer.dropEffect='copy';
+  var dz=document.getElementById(dzId);if(dz)dz.classList.add('drag');
+}
+function gstDragLeave(e,dzId){
+  var dz=document.getElementById(dzId);
+  if(dz&&!dz.contains(e.relatedTarget))dz.classList.remove('drag');
+}
+</script>
+</head><body>
 <nav class="navbar"><div class="nav-inner">
   <a href="/" class="logo">CA Toolkit</a>
   <ul class="nav-links">
@@ -6364,7 +6387,7 @@ input[type=text]:focus{border-color:var(--brand)}
 
 <div class="hero">
   <div class="hero-badge">📊 GST Reconciliation</div>
-  <h1>Sales <em>Books vs GSTR 3B</em> <span style="font-size:11px;background:#16a34a;color:#fff;padding:2px 8px;border-radius:99px;vertical-align:middle;font-weight:600">v2.0</span></h1>
+  <h1>Sales <em>Books vs GSTR 3B</em> <span style="font-size:11px;background:#16a34a;color:#fff;padding:2px 8px;border-radius:99px;vertical-align:middle;font-weight:600">v3.0</span></h1>
   <p>Upload your month-wise sales summary and GSTR 3B PDFs to get an instant reconciliation report showing differences by state and month.</p>
 </div>
 
@@ -6546,29 +6569,6 @@ function pickFile(inp, sfId){
   const sf=document.getElementById(sfId);
   if(inp.files.length){sf.textContent='✓ '+inp.files[0].name;sf.style.display='block';}
   if(sfId==='sf-gst' && inp.files[0]){detectStateCodes(inp.files[0]);}
-}
-
-// Drag-drop handlers — called by HTML ondrop/ondragover attributes
-function gstDrop(e, dzId, inputId, sfId) {
-  e.preventDefault(); e.stopPropagation();
-  var dz = document.getElementById(dzId);
-  if (dz) dz.classList.remove('drag');
-  var inp = document.getElementById(inputId);
-  if (!inp) return;
-  var files = e.dataTransfer && e.dataTransfer.files;
-  if (!files || !files.length) return;
-  try { var dt = new DataTransfer(); dt.items.add(files[0]); inp.files = dt.files; } catch(_) {}
-  pickFile(inp, sfId);
-}
-function gstDragOver(e, dzId) {
-  e.preventDefault(); e.stopPropagation();
-  e.dataTransfer.dropEffect = 'copy';
-  var dz = document.getElementById(dzId);
-  if (dz) dz.classList.add('drag');
-}
-function gstDragLeave(e, dzId) {
-  var dz = document.getElementById(dzId);
-  if (dz && !dz.contains(e.relatedTarget)) dz.classList.remove('drag');
 }
 
 // Drag-and-drop for GST upload zones
