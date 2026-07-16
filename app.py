@@ -6375,7 +6375,7 @@ input[type=text]:focus{border-color:var(--brand)}
 
       <div class="info-box">
         <strong>📊 Sales Summary:</strong> Month in col A, sales value in col B (or separate column per branch/state).<br>
-        <strong>📁 GSTR 3B ZIP:</strong> ZIP with sub-folders named by 2-digit state code (e.g. 05/, 09/). GSTR 3B PDFs inside. Reads Table 3.1 A+B+C+E only (excludes D — reverse charge).
+        <strong>📁 GSTR 3B ZIP:</strong> ZIP with sub-folders — any of: 2-digit state code (<code>07/</code>, <code>09/</code>), state name (<code>DELHI/</code>, <code>Chhattisgarh/</code>), or full folder like <code>GST 3B JANUS DELHI/</code>. PDFs inside. Reads Table 3.1 A+B+C+E only (excludes D — reverse charge).
       </div>
 
       <div style="padding:12px 14px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;margin-bottom:16px">
@@ -6558,19 +6558,57 @@ document.querySelectorAll('.dropzone').forEach(dz => {
   });
 });
 
+// India state name → 2-digit GST state code map (client-side mirror of server dict)
+const _INDIA_SC={
+  'jammu and kashmir':'01','jammu & kashmir':'01','j&k':'01',
+  'himachal pradesh':'02','himachal':'02',
+  'punjab':'03','chandigarh':'04','uttarakhand':'05','uttaranchal':'05',
+  'haryana':'06','delhi':'07','new delhi':'07',
+  'rajasthan':'08','uttar pradesh':'09','u.p':'09','u.p.':'09',
+  'bihar':'10','sikkim':'11','arunachal pradesh':'12','nagaland':'13',
+  'manipur':'14','mizoram':'15','tripura':'16','meghalaya':'17','assam':'18',
+  'west bengal':'19','jharkhand':'20','odisha':'21','orissa':'21',
+  'chhattisgarh':'22','chattisgarh':'22','madhya pradesh':'23','gujarat':'24',
+  'maharashtra':'27','andhra pradesh':'28','karnataka':'29','goa':'30',
+  'lakshadweep':'31','kerala':'32','tamil nadu':'33','tamilnadu':'33',
+  'puducherry':'34','pondicherry':'34','andaman and nicobar':'35',
+  'telangana':'36','ladakh':'38',
+};
+function _folderToSC(seg){
+  // Try numeric 2-digit code first
+  const nm=/(?:^|[\/_\s-])(0[1-9]|[1-3][0-9])(?:$|[\/_\s-])/.exec(seg);
+  if(nm)return nm[1];
+  if(/^(0[1-9]|[1-3][0-9])$/.test(seg.trim()))return seg.trim();
+  // Try state name lookup (longest match first)
+  const sl=seg.toLowerCase();
+  const keys=Object.keys(_INDIA_SC).sort((a,b)=>b.length-a.length);
+  for(const k of keys){if(sl.includes(k))return _INDIA_SC[k];}
+  return null;
+}
+
 async function detectStateCodes(file){
-  // Read ZIP to find state code folders
+  // Read ZIP central directory to find folder names and detect state codes
   const ab=await file.arrayBuffer();
-  const view=new Uint8Array(ab);
-  // Simple ZIP parsing: find folder names like "XX/" or "gst/XX/"
-  const text=new TextDecoder('utf-8',{fatal:false}).decode(view);
-  const codes=new Set();
-  // Match folder patterns in ZIP central directory
-  const re=/(?:^|\/)(0[1-9]|[1-3][0-9])\//gm;
-  let m;while((m=re.exec(text))!==null)codes.add(m[1]);
+  const text=new TextDecoder('utf-8',{fatal:false}).decode(new Uint8Array(ab));
+  const codes=new Map(); // sc → display label
+  // Match all folder segments ending with "/"
+  const re=/([^\x00-\x1f\/\\]{2,80})\//g;
+  let m;
+  while((m=re.exec(text))!==null){
+    const seg=m[1].trim();
+    if(!seg||seg.length<2)continue;
+    const sc=_folderToSC(seg);
+    if(sc&&!codes.has(sc)){
+      // Clean label: strip "GST 3B " / "GST " prefixes
+      const lbl=seg.replace(/^gst\s*3b\s*/i,'').replace(/^gst\s+/i,'').trim()||seg;
+      codes.set(sc,lbl);
+    }
+  }
   if(codes.size>0){
     document.getElementById('mapping-container').innerHTML='';
-    for(const c of [...codes].sort())addMapping(c,'');
+    for(const [sc] of [...codes.entries()].sort((a,b)=>a[0].localeCompare(b[0]))){
+      addMapping(sc,'');
+    }
   }
 }
 
@@ -6698,6 +6736,76 @@ async function doProcess(){
 # ══════════════════════════════════════════════════════════════════════════════
 #  GST RECONCILIATION — PROCESSING LOGIC
 # ══════════════════════════════════════════════════════════════════════════════
+
+# ── India State Name → GST State Code lookup ─────────────────────────────────
+# Used to resolve folder names like "GST 3B JANUS DELHI" → state code "07",
+# or "GST JANUS Chhattisgarh" → "22".  Keys are lower-cased for matching.
+_INDIA_STATE_CODE = {
+    "jammu and kashmir": "01", "jammu & kashmir": "01", "j&k": "01",
+    "himachal pradesh": "02", "himachal": "02", "hp": "02",
+    "punjab": "03",
+    "chandigarh": "04",
+    "uttarakhand": "05", "uttaranchal": "05",
+    "haryana": "06",
+    "delhi": "07", "new delhi": "07",
+    "rajasthan": "08",
+    "uttar pradesh": "09", "u.p": "09", "u.p.": "09", "up": "09",
+    "bihar": "10",
+    "sikkim": "11",
+    "arunachal pradesh": "12",
+    "nagaland": "13",
+    "manipur": "14",
+    "mizoram": "15",
+    "tripura": "16",
+    "meghalaya": "17",
+    "assam": "18",
+    "west bengal": "19", "wb": "19",
+    "jharkhand": "20",
+    "odisha": "21", "orissa": "21",
+    "chhattisgarh": "22", "chattisgarh": "22",
+    "madhya pradesh": "23", "m.p": "23", "mp": "23",
+    "gujarat": "24",
+    "daman and diu": "25", "daman & diu": "25",
+    "dadra and nagar haveli": "26",
+    "maharashtra": "27",
+    "andhra pradesh": "28", "ap": "28",
+    "karnataka": "29",
+    "goa": "30",
+    "lakshadweep": "31",
+    "kerala": "32",
+    "tamil nadu": "33", "tamilnadu": "33", "tn": "33",
+    "puducherry": "34", "pondicherry": "34",
+    "andaman and nicobar": "35",
+    "telangana": "36",
+    "andhra pradesh (new)": "37",
+    "ladakh": "38",
+}
+
+def _folder_to_state_code(folder_name: str) -> str | None:
+    """Try to extract a 2-digit GST state code from a folder name.
+
+    Supports:
+      • Numeric codes directly: "07", "03/", "09/March/"
+      • State names anywhere in the folder: "GST 3B JANUS DELHI", "GST JANUS Chhattisgarh"
+      • "U.P" / "U.P." dot-notation abbreviations
+    Returns None if nothing matches.
+    """
+    import re as _re2
+    s = folder_name.strip()
+    # Numeric 2-digit code at start/end of segment
+    m = _re2.search(r'(?:^|[\/_\s-])(0[1-9]|[1-3][0-9])(?:$|[\/_\s-])', s)
+    if m:
+        return m.group(1)
+    # Exact 2-digit numeric only
+    if _re2.fullmatch(r'(0[1-9]|[1-3][0-9])', s.strip()):
+        return s.strip()
+    # State name lookup — try longest match first
+    sl = s.lower()
+    for name in sorted(_INDIA_STATE_CODE, key=len, reverse=True):
+        if name in sl:
+            return _INDIA_STATE_CODE[name]
+    return None
+
 
 def _parse_gstr3b_pdf(pdf_path):
     """Extract Table 3.1(a) data from a GSTR-3B PDF using pymupdf (fitz).
@@ -6878,10 +6986,16 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
 
     # Read month-wise sales data
     sales_data = {}
+    _MNAMES_SHORT = {1:'January',2:'February',3:'March',4:'April',
+                     5:'May',6:'June',7:'July',8:'August',
+                     9:'September',10:'October',11:'November',12:'December'}
     for row in rows[header_idx + 1:]:
         month_val = row[month_col_idx].value if len(row) > month_col_idx else None
         if month_val is None:
             continue
+        # Convert datetime → "April-26" style string so _norm_month can handle it
+        if hasattr(month_val, 'month') and hasattr(month_val, 'year'):
+            month_val = f"{_MNAMES_SHORT.get(month_val.month, str(month_val.month))}-{str(month_val.year)[2:]}"
         ms = str(month_val).strip()
         if 'total' in ms.lower() or 'grand' in ms.lower():
             continue
@@ -6910,7 +7024,12 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
         # named-city folder like "Ludhiana/" and again under the state-code
         # folder "03/").  Skip any filename already seen.
         pdf_tasks = []
-        _seen_pdf_names: set = set()
+        _seen_paths: set = set()   # full entry path dedup (was fname-only, caused cross-state skip)
+        # Map: folder path → pre-resolved state code (from folder name)
+        # Used as fallback when GSTIN is absent/unparseable from the PDF.
+        _folder_sc_hint: dict = {}
+        # Map: state_code → human-friendly display name (folder name cleaned up)
+        _sc_display_name: dict = {}
         with zf.ZipFile(gst_zip_path, 'r') as _z:
             for entry in _z.infolist():
                 fname = entry.filename.split('/')[-1]
@@ -6918,29 +7037,61 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
                     continue
                 if 'certificate' in entry.filename.lower():
                     continue
-                fname_lower = fname.lower()
-                if fname_lower in _seen_pdf_names:
-                    continue   # duplicate in different sub-folder — skip
-                _seen_pdf_names.add(fname_lower)
+                # Dedup by FULL path — same filename in different state folders
+                # is a DIFFERENT PDF (one per state) and must NOT be skipped.
+                # Old code deduped by fname.lower() which dropped states 2-4
+                # when all folders use "April.pdf", "Mar.pdf", "May.pdf".
+                entry_path_lower = entry.filename.lower()
+                if entry_path_lower in _seen_paths:
+                    continue
+                _seen_paths.add(entry_path_lower)
+                # Derive state code hint from every folder segment in the path
+                parts = entry.filename.rstrip('/').split('/')
+                folder_sc = None
+                folder_display = None
+                for seg in reversed(parts[:-1]):  # skip filename itself
+                    sc = _folder_to_state_code(seg)
+                    if sc:
+                        folder_sc = sc
+                        # Clean up display: strip leading digits/punctuation,
+                        # capitalise words, strip "GST 3B / GST" prefixes
+                        import re as _redisp
+                        disp = _redisp.sub(r'^(gst\s*3b\s*|gst\s+)', '', seg.strip(),
+                                           flags=_redisp.IGNORECASE).strip()
+                        disp = disp if disp else seg.strip()
+                        folder_display = disp
+                        break
+                if folder_sc:
+                    _folder_sc_hint[entry.filename] = folder_sc
+                    if folder_sc not in _sc_display_name and folder_display:
+                        _sc_display_name[folder_sc] = folder_display
                 pdf_bytes = _z.read(entry.filename)
-                pdf_tasks.append((pdf_bytes, fname))
+                pdf_tasks.append((pdf_bytes, fname, entry.filename))
 
         log.append(f"Found {len(pdf_tasks)} GSTR 3B PDFs — parsing...")
+        if _sc_display_name:
+            log.append(f"  Folder→state hints: {_sc_display_name}")
 
         # Parse all PDFs in parallel (4 workers — keeps memory low on free tier)
         from concurrent.futures import ThreadPoolExecutor, as_completed
         def _parse_task(args):
-            pdf_path, fname = args
-            return fname, _parse_gstr3b_pdf(pdf_path)
+            pdf_bytes, fname, entry_path = args
+            return fname, entry_path, _parse_gstr3b_pdf(pdf_bytes)
 
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {pool.submit(_parse_task, t): t for t in pdf_tasks}
             for future in as_completed(futures):
                 try:
-                    fname, result = future.result(timeout=30)
+                    fname, entry_path, result = future.result(timeout=30)
                 except Exception as _e:
                     log.append(f"  ⚠ PDF parse error: {_e}")
                     continue
+
+                if result:
+                    # Fallback: if GSTIN parse didn't give a state code,
+                    # use the folder-name-derived hint.
+                    if not result.get('state_code'):
+                        result['state_code'] = _folder_sc_hint.get(entry_path)
 
                 if result and result['state_code'] and result['period']:
                     sc = result['state_code']
@@ -6988,6 +7139,14 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
 
     if not gst_data:
         return {'status': 'error', 'message': 'No valid GSTR 3B PDFs found in the ZIP.'}
+
+    # Merge folder display names into trade_names for output labelling.
+    # trade_names[sc] is already set from PDF trade name when available;
+    # _sc_display_name[sc] is the folder-derived label (e.g. "JANUS DELHI").
+    # We attach the folder label as a suffix so both appear in the report.
+    for sc, disp in _sc_display_name.items():
+        if sc not in trade_names:
+            trade_names[sc] = disp  # use folder label if no PDF trade name
 
     # ── Normalize month keys so sales & GSTR3B match ─────────────────
     # Sales might have "April","May" or "Dec-25","Jan-26" etc.
