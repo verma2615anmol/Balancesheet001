@@ -6546,37 +6546,76 @@ function pickFile(inp, sfId){
 }
 
 // Drag-and-drop for GST upload zones
-// input has pointer-events:none so drags reach the parent .dropzone div.
-// We listen on the div and assign the file to the hidden input manually.
-['file-sales','file-gst'].forEach(function(inputId) {
-  var inp = document.getElementById(inputId);
-  var dz  = inp ? inp.closest('.dropzone') : null;
+// pointer-events:none on the input passes drags to the .dropzone div.
+// dragleave fires on child-element crossings too, so we use relatedTarget
+// to ignore those false leaves and only clear 'drag' when truly leaving the zone.
+['file-sales', 'file-gst'].forEach(function(inputId) {
+  var inp  = document.getElementById(inputId);
+  var dz   = inp ? inp.closest('.dropzone') : null;
   var sfId = inputId.replace('file-', 'sf-');
   if (!inp || !dz) return;
 
-  dz.addEventListener('dragenter', function(e) { e.preventDefault(); e.stopPropagation(); dz.classList.add('drag'); });
-  dz.addEventListener('dragover',  function(e) { e.preventDefault(); e.stopPropagation(); dz.classList.add('drag'); });
-  dz.addEventListener('dragleave', function(e) { e.preventDefault(); dz.classList.remove('drag'); });
+  dz.addEventListener('dragenter', function(e) {
+    e.preventDefault(); e.stopPropagation();
+    dz.classList.add('drag');
+  });
+  dz.addEventListener('dragover', function(e) {
+    e.preventDefault(); e.stopPropagation();
+    dz.classList.add('drag');
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  dz.addEventListener('dragleave', function(e) {
+    e.preventDefault();
+    // Only remove highlight when the drag truly leaves the zone (not a child)
+    if (!dz.contains(e.relatedTarget)) {
+      dz.classList.remove('drag');
+    }
+  });
   dz.addEventListener('drop', function(e) {
     e.preventDefault(); e.stopPropagation();
     dz.classList.remove('drag');
-    var f = e.dataTransfer && e.dataTransfer.files[0];
-    if (!f) return;
-    try { var dt = new DataTransfer(); dt.items.add(f); inp.files = dt.files; } catch(_) {}
+    var files = e.dataTransfer && e.dataTransfer.files;
+    if (!files || !files.length) return;
+    var f = files[0];
+    try {
+      var dt = new DataTransfer();
+      dt.items.add(f);
+      inp.files = dt.files;
+    } catch(_) {}
     pickFile(inp, sfId);
   });
-  // Click anywhere on zone opens file picker
-  dz.addEventListener('click', function(e) { inp.click(); });
+  // Clicking anywhere on the zone opens the file picker
+  dz.addEventListener('click', function() { inp.click(); });
 });
 
-const _INDIA_SC={'jammu and kashmir':'01','jammu & kashmir':'01','j&k':'01','himachal pradesh':'02','punjab':'03','chandigarh':'04','uttarakhand':'05','haryana':'06','delhi':'07','new delhi':'07','rajasthan':'08','uttar pradesh':'09','u.p':'09','u.p.':'09','bihar':'10','sikkim':'11','arunachal pradesh':'12','nagaland':'13','manipur':'14','mizoram':'15','tripura':'16','meghalaya':'17','assam':'18','west bengal':'19','jharkhand':'20','odisha':'21','orissa':'21','chhattisgarh':'22','chattisgarh':'22','madhya pradesh':'23','gujarat':'24','maharashtra':'27','andhra pradesh':'28','karnataka':'29','goa':'30','lakshadweep':'31','kerala':'32','tamil nadu':'33','tamilnadu':'33','puducherry':'34','pondicherry':'34','andaman and nicobar':'35','telangana':'36','ladakh':'38'};
-function _folderToSC(seg){const nm=/(?:^|[\/_\s-])(0[1-9]|[1-3][0-9])(?:$|[\/_\s-])/.exec(seg);if(nm)return nm[1];if(/^(0[1-9]|[1-3][0-9])$/.test(seg.trim()))return seg.trim();const sl=seg.toLowerCase();const keys=Object.keys(_INDIA_SC).sort((a,b)=>b.length-a.length);for(const k of keys){if(sl.includes(k))return _INDIA_SC[k];}return null;}
-async function detectStateCodes(file){
-  const ab=await file.arrayBuffer();
-  const text=new TextDecoder('utf-8',{fatal:false}).decode(new Uint8Array(ab));
-  const codes=new Map();const re=/([^ -\/\]{2,80})\//g;let m;
-  while((m=re.exec(text))!==null){const seg=m[1].trim();if(!seg||seg.length<2)continue;const sc=_folderToSC(seg);if(sc&&!codes.has(sc))codes.set(sc,seg);}
-  if(codes.size>0){document.getElementById('mapping-container').innerHTML='';for(const [sc] of [...codes.entries()].sort((a,b)=>a[0].localeCompare(b[0]))){addMapping(sc,'');}}
+// India state name -> GST state code (for ZIP folder detection)
+const _INDIA_SC = {'jammu and kashmir':'01','jammu & kashmir':'01','j&k':'01','himachal pradesh':'02','punjab':'03','chandigarh':'04','uttarakhand':'05','haryana':'06','delhi':'07','new delhi':'07','rajasthan':'08','uttar pradesh':'09','u.p':'09','u.p.':'09','bihar':'10','sikkim':'11','arunachal pradesh':'12','nagaland':'13','manipur':'14','mizoram':'15','tripura':'16','meghalaya':'17','assam':'18','west bengal':'19','jharkhand':'20','odisha':'21','orissa':'21','chhattisgarh':'22','chattisgarh':'22','madhya pradesh':'23','gujarat':'24','maharashtra':'27','andhra pradesh':'28','karnataka':'29','goa':'30','lakshadweep':'31','kerala':'32','tamil nadu':'33','tamilnadu':'33','puducherry':'34','pondicherry':'34','andaman and nicobar':'35','telangana':'36','ladakh':'38'};
+function _folderToSC(seg) {
+  var nm = /(?:^|[\/_\s-])(0[1-9]|[1-3][0-9])(?:$|[\/_\s-])/.exec(seg);
+  if (nm) return nm[1];
+  if (/^(0[1-9]|[1-3][0-9])$/.test(seg.trim())) return seg.trim();
+  var sl = seg.toLowerCase();
+  var keys = Object.keys(_INDIA_SC).sort(function(a,b){return b.length-a.length;});
+  for (var i=0; i<keys.length; i++) { if (sl.indexOf(keys[i]) !== -1) return _INDIA_SC[keys[i]]; }
+  return null;
+}
+async function detectStateCodes(file) {
+  var ab   = await file.arrayBuffer();
+  var text = new TextDecoder('utf-8', {fatal: false}).decode(new Uint8Array(ab));
+  var codes = new Map();
+  var re = /([^\x00-\x1f\/\\]{2,80})\//g;
+  var m;
+  while ((m = re.exec(text)) !== null) {
+    var seg = m[1].trim();
+    if (!seg || seg.length < 2) continue;
+    var sc = _folderToSC(seg);
+    if (sc && !codes.has(sc)) codes.set(sc, seg);
+  }
+  if (codes.size > 0) {
+    document.getElementById('mapping-container').innerHTML = '';
+    var sorted = Array.from(codes.entries()).sort(function(a,b){return a[0].localeCompare(b[0]);});
+    sorted.forEach(function(pair) { addMapping(pair[0], ''); });
+  }
 }
 
 function onConsolidatedChange(){
