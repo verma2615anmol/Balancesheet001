@@ -6301,7 +6301,7 @@ GST_RECON_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>GST Reconciliation – CA Toolkit</title>
+<title>GST Reconciliation – CA Toolkit v2.0</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
 <style>
 """ + BASE_CSS + """
@@ -6327,7 +6327,7 @@ label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;lett
 .hint{font-size:11px;color:var(--muted);margin-top:4px}
 .dropzone{border:2px dashed var(--border);border-radius:10px;padding:24px 14px;text-align:center;cursor:pointer;transition:all .2s;position:relative;background:var(--bg)}
 .dropzone:hover,.dropzone.drag{border-color:var(--brand);background:#EFF6FF}
-.dropzone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.dropzone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;pointer-events:none}
 .dz-icon{font-size:26px;margin-bottom:6px}
 .dz-text{font-size:12px;color:var(--muted)}
 .dz-text strong{color:var(--brand)}
@@ -6364,7 +6364,7 @@ input[type=text]:focus{border-color:var(--brand)}
 
 <div class="hero">
   <div class="hero-badge">📊 GST Reconciliation</div>
-  <h1>Sales <em>Books vs GSTR 3B</em></h1>
+  <h1>Sales <em>Books vs GSTR 3B</em> <span style="font-size:11px;background:#16a34a;color:#fff;padding:2px 8px;border-radius:99px;vertical-align:middle;font-weight:600">v2.0</span></h1>
   <p>Upload your month-wise sales summary and GSTR 3B PDFs to get an instant reconciliation report showing differences by state and month.</p>
 </div>
 
@@ -6548,7 +6548,7 @@ function pickFile(inp, sfId){
   if(sfId==='sf-gst' && inp.files[0]){detectStateCodes(inp.files[0]);}
 }
 
-// Drag-drop handlers — called from HTML ondrop/ondragover attributes
+// Drag-drop handlers — called by HTML ondrop/ondragover attributes
 function gstDrop(e, dzId, inputId, sfId) {
   e.preventDefault(); e.stopPropagation();
   var dz = document.getElementById(dzId);
@@ -7449,9 +7449,9 @@ def tool_gst_reconciliation():
     user = get_user_by_id(session["uid"])
     from flask import make_response
     resp = make_response(render_template_string(GST_RECON_T, **user_ctx(user)))
-    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    resp.headers['Pragma'] = 'no-cache'
-    resp.headers['Expires'] = '0'
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
     return resp
 
 
