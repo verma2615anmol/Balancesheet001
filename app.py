@@ -692,7 +692,7 @@ label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;
 .dropzone{border:2px dashed var(--border);border-radius:10px;padding:24px 14px;
           text-align:center;cursor:pointer;transition:all .2s;position:relative;background:var(--bg)}
 .dropzone:hover,.dropzone.drag{border-color:var(--brand);background:#EFF6FF}
-.dropzone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.dropzone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;pointer-events:none}
 .dz-icon{font-size:26px;margin-bottom:6px}
 .dz-text{font-size:12px;color:var(--muted)}
 .dz-text strong{color:var(--brand)}
@@ -6546,38 +6546,27 @@ function pickFile(inp, sfId){
 }
 
 // Drag-and-drop for GST upload zones
-// The input[position:absolute;inset:0] covers the whole dropzone, so drag
-// events land on the INPUT, not the div. Attach listeners to the input itself.
+// input has pointer-events:none so drags reach the parent .dropzone div.
+// We listen on the div and assign the file to the hidden input manually.
 ['file-sales','file-gst'].forEach(function(inputId) {
   var inp = document.getElementById(inputId);
   var dz  = inp ? inp.closest('.dropzone') : null;
   var sfId = inputId.replace('file-', 'sf-');
   if (!inp || !dz) return;
 
-  inp.addEventListener('dragenter', function(e) {
-    e.preventDefault(); e.stopPropagation();
-    dz.classList.add('drag');
-  });
-  inp.addEventListener('dragover', function(e) {
-    e.preventDefault(); e.stopPropagation();
-    dz.classList.add('drag');
-  });
-  inp.addEventListener('dragleave', function(e) {
-    e.preventDefault();
-    dz.classList.remove('drag');
-  });
-  inp.addEventListener('drop', function(e) {
+  dz.addEventListener('dragenter', function(e) { e.preventDefault(); e.stopPropagation(); dz.classList.add('drag'); });
+  dz.addEventListener('dragover',  function(e) { e.preventDefault(); e.stopPropagation(); dz.classList.add('drag'); });
+  dz.addEventListener('dragleave', function(e) { e.preventDefault(); dz.classList.remove('drag'); });
+  dz.addEventListener('drop', function(e) {
     e.preventDefault(); e.stopPropagation();
     dz.classList.remove('drag');
     var f = e.dataTransfer && e.dataTransfer.files[0];
     if (!f) return;
-    try {
-      var dt = new DataTransfer();
-      dt.items.add(f);
-      inp.files = dt.files;
-    } catch(_) {}
+    try { var dt = new DataTransfer(); dt.items.add(f); inp.files = dt.files; } catch(_) {}
     pickFile(inp, sfId);
   });
+  // Click anywhere on zone opens file picker
+  dz.addEventListener('click', function(e) { inp.click(); });
 });
 
 const _INDIA_SC={'jammu and kashmir':'01','jammu & kashmir':'01','j&k':'01','himachal pradesh':'02','punjab':'03','chandigarh':'04','uttarakhand':'05','haryana':'06','delhi':'07','new delhi':'07','rajasthan':'08','uttar pradesh':'09','u.p':'09','u.p.':'09','bihar':'10','sikkim':'11','arunachal pradesh':'12','nagaland':'13','manipur':'14','mizoram':'15','tripura':'16','meghalaya':'17','assam':'18','west bengal':'19','jharkhand':'20','odisha':'21','orissa':'21','chhattisgarh':'22','chattisgarh':'22','madhya pradesh':'23','gujarat':'24','maharashtra':'27','andhra pradesh':'28','karnataka':'29','goa':'30','lakshadweep':'31','kerala':'32','tamil nadu':'33','tamilnadu':'33','puducherry':'34','pondicherry':'34','andaman and nicobar':'35','telangana':'36','ladakh':'38'};
