@@ -6298,6 +6298,9 @@ def tool_cg_calculator():
 
 GST_RECON_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>GST Reconciliation – CA Toolkit</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
 <style>
@@ -6545,11 +6548,7 @@ function pickFile(inp, sfId){
   if(sfId==='sf-gst' && inp.files[0]){detectStateCodes(inp.files[0]);}
 }
 
-// Drag-and-drop for GST upload zones
-// pointer-events:none on the input passes drags to the .dropzone div.
-// dragleave fires on child-element crossings too, so we use relatedTarget
-// to ignore those false leaves and only clear 'drag' when truly leaving the zone.
-// Drag-drop handler called from HTML ondrop attributes (belt AND suspenders approach)
+// Drag-drop handlers — called from HTML ondrop/ondragover attributes
 function gstDrop(e, dzId, inputId, sfId) {
   e.preventDefault(); e.stopPropagation();
   var dz = document.getElementById(dzId);
@@ -6572,24 +6571,47 @@ function gstDragLeave(e, dzId) {
   if (dz && !dz.contains(e.relatedTarget)) dz.classList.remove('drag');
 }
 
-// Also wire via JS for completeness
+// Drag-and-drop for GST upload zones
+// pointer-events:none on the input passes drags to the .dropzone div.
+// dragleave fires on child-element crossings too, so we use relatedTarget
+// to ignore those false leaves and only clear 'drag' when truly leaving the zone.
 ['file-sales', 'file-gst'].forEach(function(inputId) {
   var inp  = document.getElementById(inputId);
   var dz   = inp ? inp.closest('.dropzone') : null;
   var sfId = inputId.replace('file-', 'sf-');
-  var dzId = inputId.replace('file-', 'dz-');
   if (!inp || !dz) return;
-  dz.addEventListener('dragenter', function(e){ e.preventDefault(); e.stopPropagation(); dz.classList.add('drag'); });
-  dz.addEventListener('dragover',  function(e){ e.preventDefault(); e.stopPropagation(); dz.classList.add('drag'); e.dataTransfer.dropEffect='copy'; });
-  dz.addEventListener('dragleave', function(e){ e.preventDefault(); if(!dz.contains(e.relatedTarget)) dz.classList.remove('drag'); });
-  dz.addEventListener('drop', function(e){
-    e.preventDefault(); e.stopPropagation(); dz.classList.remove('drag');
+
+  dz.addEventListener('dragenter', function(e) {
+    e.preventDefault(); e.stopPropagation();
+    dz.classList.add('drag');
+  });
+  dz.addEventListener('dragover', function(e) {
+    e.preventDefault(); e.stopPropagation();
+    dz.classList.add('drag');
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  dz.addEventListener('dragleave', function(e) {
+    e.preventDefault();
+    // Only remove highlight when the drag truly leaves the zone (not a child)
+    if (!dz.contains(e.relatedTarget)) {
+      dz.classList.remove('drag');
+    }
+  });
+  dz.addEventListener('drop', function(e) {
+    e.preventDefault(); e.stopPropagation();
+    dz.classList.remove('drag');
     var files = e.dataTransfer && e.dataTransfer.files;
     if (!files || !files.length) return;
-    try { var dt = new DataTransfer(); dt.items.add(files[0]); inp.files = dt.files; } catch(_) {}
+    var f = files[0];
+    try {
+      var dt = new DataTransfer();
+      dt.items.add(f);
+      inp.files = dt.files;
+    } catch(_) {}
     pickFile(inp, sfId);
   });
-  dz.addEventListener('click', function(){ inp.click(); });
+  // Clicking anywhere on the zone opens the file picker
+  dz.addEventListener('click', function() { inp.click(); });
 });
 
 // India state name -> GST state code (for ZIP folder detection)
@@ -7425,7 +7447,12 @@ def gst_template_download(ttype):
 @login_required
 def tool_gst_reconciliation():
     user = get_user_by_id(session["uid"])
-    return render_template_string(GST_RECON_T, **user_ctx(user))
+    from flask import make_response
+    resp = make_response(render_template_string(GST_RECON_T, **user_ctx(user)))
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
 
 
 # NOTE: gunicorn timeout should be >= 180s for large ZIPs.
