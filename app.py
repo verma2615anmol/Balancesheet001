@@ -6375,7 +6375,7 @@ input[type=text]:focus{border-color:var(--brand)}
 
       <div class="info-box">
         <strong>📊 Sales Summary:</strong> Month in col A, sales value in col B (or separate column per branch/state).<br>
-        <strong>📁 GSTR 3B ZIP:</strong> ZIP with sub-folders named by 2-digit state code (e.g. 05/, 09/). GSTR 3B PDFs inside. Reads Table 3.1 A+B+C+E only (excludes D — reverse charge).
+        <strong>📁 GSTR 3B ZIP:</strong> ZIP with sub-folders — any format: 2-digit state code (<code>07/</code>), state name (<code>DELHI/</code>, <code>Chhattisgarh/</code>), or full label (<code>GST 3B JANUS DELHI/</code>). PDFs inside each folder. Reads Table 3.1 A+B+C+E only (excludes D — reverse charge).
       </div>
 
       <div style="padding:12px 14px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;margin-bottom:16px">
@@ -6545,64 +6545,69 @@ function pickFile(inp, sfId){
   if(sfId==='sf-gst' && inp.files[0]){detectStateCodes(inp.files[0]);}
 }
 
-// Drag-and-drop + click-to-upload for GST dropzones
-// Wrapped in DOMContentLoaded so elements are guaranteed present.
+// Drag-and-drop + click-to-upload — wrapped in DOMContentLoaded so elements exist
 document.addEventListener('DOMContentLoaded', function(){
   document.querySelectorAll('.dropzone').forEach(function(dz){
     const inp = dz.querySelector('input[type=file]');
     const sfId = inp ? inp.id.replace('file-','sf-') : null;
-
-    // Highlight on drag-over
-    dz.addEventListener('dragover', function(e){
-      e.preventDefault(); e.stopPropagation();
-      dz.classList.add('drag');
-    });
-    dz.addEventListener('dragleave', function(e){
-      e.preventDefault();
-      dz.classList.remove('drag');
-    });
-    dz.addEventListener('dragenter', function(e){
-      e.preventDefault(); e.stopPropagation();
-      dz.classList.add('drag');
-    });
-
-    // Drop: assign file directly then call pickFile
+    dz.addEventListener('dragover',  function(e){ e.preventDefault(); e.stopPropagation(); dz.classList.add('drag'); });
+    dz.addEventListener('dragenter', function(e){ e.preventDefault(); e.stopPropagation(); dz.classList.add('drag'); });
+    dz.addEventListener('dragleave', function(e){ e.preventDefault(); dz.classList.remove('drag'); });
     dz.addEventListener('drop', function(e){
-      e.preventDefault(); e.stopPropagation();
-      dz.classList.remove('drag');
+      e.preventDefault(); e.stopPropagation(); dz.classList.remove('drag');
       if(!inp) return;
-      const f = e.dataTransfer.files[0];
-      if(!f) return;
-      try {
-        const dt = new DataTransfer();
-        dt.items.add(f);
-        inp.files = dt.files;
-      } catch(_){}
-      // Call pickFile directly — don't rely on event dispatch
-      if(sfId) pickFile(inp, sfId);
+      const f = e.dataTransfer.files[0]; if(!f) return;
+      try{ const dt=new DataTransfer(); dt.items.add(f); inp.files=dt.files; }catch(_){}
+      if(sfId) pickFile(inp, sfId);  // call directly — don't rely on event dispatch
     });
-
-    // Click on the zone triggers the hidden file input
     dz.addEventListener('click', function(e){
-      if(e.target === inp) return; // already clicking the input itself
+      if(e.target===inp) return;
       inp && inp.click();
     });
   });
 });
 
+// India state name → GST code (client-side mirror)
+const _INDIA_SC={
+  'jammu and kashmir':'01','jammu & kashmir':'01','j&k':'01',
+  'himachal pradesh':'02','punjab':'03','chandigarh':'04','uttarakhand':'05',
+  'haryana':'06','delhi':'07','new delhi':'07','rajasthan':'08',
+  'uttar pradesh':'09','u.p':'09','u.p.':'09','bihar':'10','sikkim':'11',
+  'arunachal pradesh':'12','nagaland':'13','manipur':'14','mizoram':'15',
+  'tripura':'16','meghalaya':'17','assam':'18','west bengal':'19',
+  'jharkhand':'20','odisha':'21','orissa':'21','chhattisgarh':'22',
+  'chattisgarh':'22','madhya pradesh':'23','gujarat':'24','maharashtra':'27',
+  'andhra pradesh':'28','karnataka':'29','goa':'30','lakshadweep':'31',
+  'kerala':'32','tamil nadu':'33','tamilnadu':'33','puducherry':'34',
+  'pondicherry':'34','andaman and nicobar':'35','telangana':'36','ladakh':'38',
+};
+function _folderToSC(seg){
+  const nm=/(?:^|[\/_\s-])(0[1-9]|[1-3][0-9])(?:$|[\/_\s-])/.exec(seg);
+  if(nm)return nm[1];
+  if(/^(0[1-9]|[1-3][0-9])$/.test(seg.trim()))return seg.trim();
+  const sl=seg.toLowerCase();
+  const keys=Object.keys(_INDIA_SC).sort((a,b)=>b.length-a.length);
+  for(const k of keys){if(sl.includes(k))return _INDIA_SC[k];}
+  return null;
+}
+
 async function detectStateCodes(file){
-  // Read ZIP to find state code folders
   const ab=await file.arrayBuffer();
-  const view=new Uint8Array(ab);
-  // Simple ZIP parsing: find folder names like "XX/" or "gst/XX/"
-  const text=new TextDecoder('utf-8',{fatal:false}).decode(view);
-  const codes=new Set();
-  // Match folder patterns in ZIP central directory
-  const re=/(?:^|\/)(0[1-9]|[1-3][0-9])\//gm;
-  let m;while((m=re.exec(text))!==null)codes.add(m[1]);
+  const text=new TextDecoder('utf-8',{fatal:false}).decode(new Uint8Array(ab));
+  const codes=new Map();
+  const re=/([^\x00-\x1f\/\\]{2,80})\//g;
+  let m;
+  while((m=re.exec(text))!==null){
+    const seg=m[1].trim();
+    if(!seg||seg.length<2)continue;
+    const sc=_folderToSC(seg);
+    if(sc&&!codes.has(sc))codes.set(sc,seg);
+  }
   if(codes.size>0){
     document.getElementById('mapping-container').innerHTML='';
-    for(const c of [...codes].sort())addMapping(c,'');
+    for(const [sc] of [...codes.entries()].sort((a,b)=>a[0].localeCompare(b[0]))){
+      addMapping(sc,'');
+    }
   }
 }
 
@@ -6730,6 +6735,40 @@ async function doProcess(){
 # ══════════════════════════════════════════════════════════════════════════════
 #  GST RECONCILIATION — PROCESSING LOGIC
 # ══════════════════════════════════════════════════════════════════════════════
+
+# ── India State Name → GST State Code ────────────────────────────────────────
+_INDIA_STATE_CODE = {
+    "jammu and kashmir":"01","jammu & kashmir":"01","j&k":"01",
+    "himachal pradesh":"02","himachal":"02",
+    "punjab":"03","chandigarh":"04","uttarakhand":"05","uttaranchal":"05",
+    "haryana":"06","delhi":"07","new delhi":"07",
+    "rajasthan":"08","uttar pradesh":"09","u.p":"09","u.p.":"09","up":"09",
+    "bihar":"10","sikkim":"11","arunachal pradesh":"12","nagaland":"13",
+    "manipur":"14","mizoram":"15","tripura":"16","meghalaya":"17","assam":"18",
+    "west bengal":"19","wb":"19","jharkhand":"20","odisha":"21","orissa":"21",
+    "chhattisgarh":"22","chattisgarh":"22","madhya pradesh":"23","m.p":"23","mp":"23",
+    "gujarat":"24","daman and diu":"25","dadra and nagar haveli":"26",
+    "maharashtra":"27","andhra pradesh":"28","ap":"28","karnataka":"29","goa":"30",
+    "lakshadweep":"31","kerala":"32","tamil nadu":"33","tamilnadu":"33","tn":"33",
+    "puducherry":"34","pondicherry":"34","andaman and nicobar":"35",
+    "telangana":"36","andhra pradesh (new)":"37","ladakh":"38",
+}
+
+def _folder_to_state_code(folder_name):
+    """Resolve folder name to 2-digit GST state code.
+    Supports numeric codes ('07'), state names ('DELHI', 'Chhattisgarh'),
+    dot-abbreviations ('U.P'), and compound names ('GST 3B JANUS DELHI').
+    """
+    import re as _r
+    s = folder_name.strip()
+    m = _r.search(r'(?:^|[\/_\s-])(0[1-9]|[1-3][0-9])(?:$|[\/_\s-])', s)
+    if m: return m.group(1)
+    if _r.fullmatch(r'(0[1-9]|[1-3][0-9])', s): return s
+    sl = s.lower()
+    for name in sorted(_INDIA_STATE_CODE, key=len, reverse=True):
+        if name in sl: return _INDIA_STATE_CODE[name]
+    return None
+
 
 def _parse_gstr3b_pdf(pdf_path):
     """Extract Table 3.1(a) data from a GSTR-3B PDF using pymupdf (fitz).
@@ -6910,10 +6949,15 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
 
     # Read month-wise sales data
     sales_data = {}
+    _MNAMES_DT = {1:'January',2:'February',3:'March',4:'April',5:'May',6:'June',
+                  7:'July',8:'August',9:'September',10:'October',11:'November',12:'December'}
     for row in rows[header_idx + 1:]:
         month_val = row[month_col_idx].value if len(row) > month_col_idx else None
         if month_val is None:
             continue
+        # Convert datetime cells (Excel date stored as Python datetime) → "April-26"
+        if hasattr(month_val, 'month') and hasattr(month_val, 'year'):
+            month_val = f"{_MNAMES_DT.get(month_val.month, str(month_val.month))}-{str(month_val.year)[2:]}"
         ms = str(month_val).strip()
         if 'total' in ms.lower() or 'grand' in ms.lower():
             continue
@@ -6942,7 +6986,9 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
         # named-city folder like "Ludhiana/" and again under the state-code
         # folder "03/").  Skip any filename already seen.
         pdf_tasks = []
-        _seen_pdf_names: set = set()
+        _seen_paths: set = set()         # dedup by FULL path — not just filename
+        _folder_sc_hint: dict = {}       # entry_path → state_code from folder name
+        _sc_display_name: dict = {}      # state_code → clean folder display label
         with zf.ZipFile(gst_zip_path, 'r') as _z:
             for entry in _z.infolist():
                 fname = entry.filename.split('/')[-1]
@@ -6950,29 +6996,51 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
                     continue
                 if 'certificate' in entry.filename.lower():
                     continue
-                fname_lower = fname.lower()
-                if fname_lower in _seen_pdf_names:
-                    continue   # duplicate in different sub-folder — skip
-                _seen_pdf_names.add(fname_lower)
+                # Dedup by full path — same filename in different state folders
+                # are DIFFERENT PDFs (one per state), must NOT be skipped
+                ep_lower = entry.filename.lower()
+                if ep_lower in _seen_paths:
+                    continue
+                _seen_paths.add(ep_lower)
+                # Derive state code hint from folder segments
+                import re as _rdir
+                parts = entry.filename.rstrip('/').split('/')
+                for seg in reversed(parts[:-1]):
+                    sc = _folder_to_state_code(seg)
+                    if sc:
+                        _folder_sc_hint[entry.filename] = sc
+                        if sc not in _sc_display_name:
+                            disp = _rdir.sub(r'^(gst\s*3b\s*|gst\s+)', '', seg.strip(),
+                                             flags=_rdir.IGNORECASE).strip() or seg.strip()
+                            _sc_display_name[sc] = disp
+                        break
                 pdf_bytes = _z.read(entry.filename)
-                pdf_tasks.append((pdf_bytes, fname))
+                pdf_tasks.append((pdf_bytes, fname, entry.filename))
 
         log.append(f"Found {len(pdf_tasks)} GSTR 3B PDFs — parsing...")
+        if _sc_display_name:
+            log.append(f"  State hints from folders: {_sc_display_name}")
 
         # Parse all PDFs in parallel (4 workers — keeps memory low on free tier)
         from concurrent.futures import ThreadPoolExecutor, as_completed
         def _parse_task(args):
-            pdf_path, fname = args
-            return fname, _parse_gstr3b_pdf(pdf_path)
+            pdf_bytes, fname, entry_path = args
+            return fname, entry_path, _parse_gstr3b_pdf(pdf_bytes)
 
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {pool.submit(_parse_task, t): t for t in pdf_tasks}
             for future in as_completed(futures):
                 try:
-                    fname, result = future.result(timeout=30)
+                    fname, entry_path, result = future.result(timeout=30)
                 except Exception as _e:
                     log.append(f"  ⚠ PDF parse error: {_e}")
                     continue
+
+                if result:
+                    # Fallback: if GSTIN parse didn't yield a state code,
+                    # use the folder-name-derived hint
+                    if not result.get('state_code'):
+                        result['state_code'] = _folder_sc_hint.get(entry_path)
 
                 if result and result['state_code'] and result['period']:
                     sc = result['state_code']
@@ -7020,6 +7088,12 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
 
     if not gst_data:
         return {'status': 'error', 'message': 'No valid GSTR 3B PDFs found in the ZIP.'}
+
+    # Supplement trade_names with folder display labels for states
+    # that didn't yield a trade name from the PDF itself
+    for sc, disp in _sc_display_name.items():
+        if sc not in trade_names:
+            trade_names[sc] = disp
 
     # ── Normalize month keys so sales & GSTR3B match ─────────────────
     # Sales might have "April","May" or "Dec-25","Jan-26" etc.
@@ -7136,16 +7210,7 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
         cell.alignment = center
         cell.border = border
 
-    # Data rows
-    row_num = 5
-    # Union of sales months AND GSTR3B months — so months with only GSTR3B data show too
-    gstr_months = {mk for sc_d in gst_data.values() for mk in sc_d.keys()}
-    all_months_set = set(sales_data.keys()) | gstr_months
-    all_months = sorted(all_months_set, key=lambda x: _month_sort_key(x))
-    all_state_codes = sorted(gst_data.keys())
-
     # ── Detect consolidated vs split-by-location mode ───────────────────────
-    # Handle explicit consolidated flag from frontend checkbox
     forced_consolidated = "__consolidated__" in mappings
     consolidated_hint   = mappings.pop("__consolidated__", "") if forced_consolidated else ""
 
@@ -7156,16 +7221,13 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
     # Resolve consolidated column name
     consolidated_col = None
     if is_consolidated:
-        # Use explicit column name from checkbox field if provided
         if forced_consolidated and consolidated_hint and consolidated_hint != "__auto__":
             matched = next((h for h in col_headers if h.lower()==consolidated_hint.lower()), consolidated_hint)
             non_empty_cols = [matched]
         if non_empty_cols:
-            # Case-insensitive match against actual headers
             raw = non_empty_cols[0]
             consolidated_col = next((h for h in col_headers if h.lower()==raw.lower()), raw)
         else:
-            # Auto-detect: first non-month column that has any data
             for hdr in col_headers:
                 if hdr.lower() in ('month','months','period'):
                     continue
@@ -7179,6 +7241,7 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
 
     # Build valid_mappings
     valid_mappings = {}
+    all_state_codes = sorted(gst_data.keys())
     if is_consolidated:
         for sc in all_state_codes:
             valid_mappings[sc] = consolidated_col
@@ -7197,112 +7260,158 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
     log.append(f"Mode: {'Consolidated' if is_consolidated else 'Split'} · "
                f"States: {', '.join(sorted(valid_mappings.keys()))}")
 
+    # ── MASTER MONTH LIST: GSTR3B months ONLY ────────────────────────────────
+    # Do NOT include sales-only months — if a month has no GSTR3B filing,
+    # it doesn't belong in the reconciliation output.  Sales months that
+    # exist in the Excel but have no corresponding GSTR3B entry are simply
+    # not shown (client can see the difference in the grand-total row).
+    gstr_months_set = {mk for sc_d in gst_data.values() for mk in sc_d.keys()}
+    all_months = sorted(gstr_months_set, key=lambda x: _month_sort_key(x))
+
+    # Build a pretty label map: "apr-26" → "Apr-26", "mar-26" → "Mar-26"
+    def _pretty_month(mk):
+        parts = mk.split('-')
+        if len(parts) == 2:
+            return f"{parts[0].capitalize()}-{parts[1]}"
+        return mk.capitalize()
+
+    # Build a sales-lookup that resolves both "apr-26" AND bare "apr" to the
+    # same sales figure (handles Excel files that have full-year rows + dated rows).
+    def _sales_lookup(month_key, col):
+        """Look up sales for a month key, trying year-suffixed then bare."""
+        v = sales_data.get(month_key, {}).get(col, 0.0)
+        if not v:
+            bare = month_key.split('-')[0]   # "apr-26" → "apr"
+            v = sales_data.get(bare, {}).get(col, 0.0)
+        return v or 0.0
+
+    # ── State display label: "07 — JANUS DELHI" or just "07" ────────────────
+    def _sc_label(sc):
+        disp = trade_names.get(sc, '')
+        return f"{sc} — {disp}" if disp else sc
+
+    # Data rows
+    row_num = 5
     month_totals = {}
 
     for month in all_months:
+        pretty = _pretty_month(month)   # display label e.g. "Apr-26"
         first_in_month = True
 
         if is_consolidated:
-            # ── Consolidated: compare total books vs sum of all GSTR3B states ──
-            books_total = sales_data.get(month, {}).get(consolidated_col, 0.0)
+            # ── Consolidated: one sub-row per state (ALWAYS, even if 0),
+            #    then a total row comparing books vs sum of all GSTR3B ──────
             gstr_t = tax_t = igst_t = cgst_t = sgst_t = 0.0
-            state_rows = []
+
             for sc in all_state_codes:
                 ge = gst_data.get(sc, {}).get(month)
-                if not ge:
-                    continue
-                gstr_t += ge['taxable_value']; tax_t  += ge['total_tax']
-                igst_t += ge['igst'];          cgst_t += ge['cgst']; sgst_t += ge['sgst']
-                state_rows.append((sc, ge))
+                # Always show the state row — even if taxable = 0
+                gstr_val = ge['taxable_value'] if ge else 0.0
+                tax_val  = ge['total_tax']      if ge else 0.0
+                igst_v   = ge['igst']            if ge else 0.0
+                cgst_v   = ge['cgst']            if ge else 0.0
+                sgst_v   = ge['sgst']            if ge else 0.0
 
-            if not state_rows and books_total == 0:
-                continue
+                gstr_t += gstr_val; tax_t  += tax_val
+                igst_t += igst_v;   cgst_t += cgst_v; sgst_t += sgst_v
 
-            # Write individual GSTR3B state rows (no books column per state)
-            for sc, ge in state_rows:
-                vals = [month if first_in_month else '', sc,
-                        '', ge['taxable_value'], ge['total_tax'],
-                        '', '', ge['igst'], ge['cgst'], ge['sgst']]
+                zero_note = '  ← Nil Return' if gstr_val == 0 else ''
+                sc_disp = _sc_label(sc) + zero_note
+
+                vals = [pretty if first_in_month else '', sc_disp,
+                        '',     # Sale in Books — shown only on totals row
+                        gstr_val, tax_val,
+                        '',     # Difference — shown only on totals row
+                        '',
+                        igst_v, cgst_v, sgst_v]
                 for c, v in enumerate(vals, 1):
                     cell = ws_out.cell(row=row_num, column=c, value=v)
                     cell.font = data_font; cell.border = border
-                    if c >= 3 and v != '':
+                    if c >= 4 and isinstance(v, (int, float)):
                         cell.number_format = num_fmt
                         cell.alignment = Alignment(horizontal='right')
                     if c <= 2: cell.alignment = center
-                first_in_month = False; row_num += 1
+                    # Dim zero-value rows slightly
+                    if gstr_val == 0 and c >= 4:
+                        cell.font = Font(name='Arial', size=10, color='999999')
+                first_in_month = False
+                row_num += 1
 
-            # Consolidated totals row with difference
+            # Totals row: books (from sales Excel) vs all-state GSTR3B sum
+            books_total = _sales_lookup(month, consolidated_col)
             d1 = books_total - gstr_t
             d2 = books_total - (gstr_t + tax_t)
-            sub_vals = [f'{month} Total (Books vs All GSTR3B)', '',
+
+            sub_vals = [f'{pretty} — Books vs GSTR3B Total', '',
                         books_total, gstr_t, tax_t, d1, d2, igst_t, cgst_t, sgst_t]
             for c, v in enumerate(sub_vals, 1):
                 cell = ws_out.cell(row=row_num, column=c, value=v)
                 cell.font = Font(name='Arial', bold=True, size=10)
                 cell.fill = sub_fill; cell.border = border
-                if c >= 3:
+                if c >= 3 and isinstance(v, (int, float)):
                     cell.number_format = num_fmt
                     cell.alignment = Alignment(horizontal='right')
                 if c in (6, 7) and isinstance(v, (int, float)):
                     col_c = 'CC0000' if v < -0.5 else ('006600' if v > 0.5 else '000000')
                     cell.font = Font(name='Arial', bold=True, size=10, color=col_c)
                     cell.fill = sub_fill
-            month_totals[month] = {'books':books_total,'gstr':gstr_t,'tax':tax_t,
-                                    'igst':igst_t,'cgst':cgst_t,'sgst':sgst_t}
-            row_num += 2
+
+            month_totals[month] = {'books': books_total, 'gstr': gstr_t, 'tax': tax_t,
+                                   'igst': igst_t, 'cgst': cgst_t, 'sgst': sgst_t}
+            row_num += 2   # one blank row between months
             continue
 
-        # ── Split mode: per-state ─────────────────────────────────────────────
+        # ── Split mode: per-state with per-state books column ────────────────
         for sc in all_state_codes:
             if sc not in valid_mappings:
                 continue
             col_name  = valid_mappings[sc]
-            books_val = sales_data.get(month, {}).get(col_name, 0.0)
+            books_val = _sales_lookup(month, col_name)
             ge        = gst_data.get(sc, {}).get(month)
-            if ge is None and books_val == 0:
-                continue
-            gstr_val = ge['taxable_value'] if ge else 0.0
-            tax_val  = ge['total_tax']      if ge else 0.0
-            igst     = ge['igst']            if ge else 0.0
-            cgst     = ge['cgst']            if ge else 0.0
-            sgst     = ge['sgst']            if ge else 0.0
+            gstr_val  = ge['taxable_value'] if ge else 0.0
+            tax_val   = ge['total_tax']      if ge else 0.0
+            igst      = ge['igst']            if ge else 0.0
+            cgst      = ge['cgst']            if ge else 0.0
+            sgst      = ge['sgst']            if ge else 0.0
             diff1 = books_val - gstr_val
             diff2 = books_val - (gstr_val + tax_val)
+
             if month not in month_totals:
                 month_totals[month] = {'books':0,'gstr':0,'tax':0,'igst':0,'cgst':0,'sgst':0}
             month_totals[month]['books'] += books_val; month_totals[month]['gstr'] += gstr_val
             month_totals[month]['tax']   += tax_val;   month_totals[month]['igst'] += igst
             month_totals[month]['cgst']  += cgst;      month_totals[month]['sgst'] += sgst
-            vals = [month if first_in_month else '', sc, books_val,
-                    gstr_val, tax_val, diff1, diff2, igst, cgst, sgst]
+
+            vals = [pretty if first_in_month else '', _sc_label(sc),
+                    books_val, gstr_val, tax_val, diff1, diff2, igst, cgst, sgst]
             for c, v in enumerate(vals, 1):
                 cell = ws_out.cell(row=row_num, column=c, value=v)
                 cell.font = data_font; cell.border = border
-                if c >= 3:
+                if c >= 3 and isinstance(v, (int, float)):
                     cell.number_format = num_fmt
                     cell.alignment = Alignment(horizontal='right')
                 if c in (6, 7) and isinstance(v, (int, float)):
                     cell.font = diff_neg_font if v < -0.5 else (diff_pos_font if v > 0.5 else data_font)
                 if c <= 2: cell.alignment = center
-            first_in_month = False; row_num += 1
+            first_in_month = False
+            row_num += 1
 
-        # Month subtotal
+        # Month subtotal (split mode)
         if month in month_totals:
             mt = month_totals[month]
-            sub_vals = [f'{month} Total', '', mt['books'], mt['gstr'], mt['tax'],
+            sub_vals = [f'{pretty} Total', '', mt['books'], mt['gstr'], mt['tax'],
                         mt['books'] - mt['gstr'], mt['books'] - mt['gstr'] - mt['tax'],
                         mt['igst'], mt['cgst'], mt['sgst']]
             for c, v in enumerate(sub_vals, 1):
                 cell = ws_out.cell(row=row_num, column=c, value=v)
                 cell.font = Font(name='Arial', bold=True, size=10)
-                cell.fill = sub_fill
-                cell.border = border
-                if c >= 3:
+                cell.fill = sub_fill; cell.border = border
+                if c >= 3 and isinstance(v, (int, float)):
                     cell.number_format = num_fmt
                     cell.alignment = Alignment(horizontal='right')
                 if c in (6, 7) and isinstance(v, (int, float)):
-                    cell.font = Font(name='Arial', bold=True, size=10, color='CC0000' if v < -0.5 else ('006600' if v > 0.5 else '000000'))
+                    col_c = 'CC0000' if v < -0.5 else ('006600' if v > 0.5 else '000000')
+                    cell.font = Font(name='Arial', bold=True, size=10, color=col_c)
                     cell.fill = sub_fill
             row_num += 1
         row_num += 1  # blank row between months
@@ -7314,27 +7423,29 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
             grand[k] += mt[k]
 
     gt_vals = ['GRAND TOTAL', '', grand['books'], grand['gstr'], grand['tax'],
-               grand['books'] - grand['gstr'], grand['books'] - grand['gstr'] - grand['tax'],
+               grand['books'] - grand['gstr'],
+               grand['books'] - grand['gstr'] - grand['tax'],
                grand['igst'], grand['cgst'], grand['sgst']]
     for c, v in enumerate(gt_vals, 1):
         cell = ws_out.cell(row=row_num, column=c, value=v)
         cell.font = Font(name='Arial', bold=True, size=11, color='FFFFFF')
         cell.fill = PatternFill('solid', fgColor='1F4E79')
         cell.border = border
-        if c >= 3:
+        if c >= 3 and isinstance(v, (int, float)):
             cell.number_format = num_fmt
             cell.alignment = Alignment(horizontal='right')
+        if c in (6, 7) and isinstance(v, (int, float)):
+            diff_c = 'FFFF00' if v < -0.5 else ('90EE90' if v > 0.5 else 'FFFFFF')
+            cell.font = Font(name='Arial', bold=True, size=11, color=diff_c)
 
     # Column widths
-    widths = [12, 16, 18, 22, 22, 22, 24, 16, 14, 14]
+    widths = [22, 26, 18, 20, 20, 20, 22, 15, 13, 13]
     for i, w in enumerate(widths, 1):
         ws_out.column_dimensions[get_column_letter(i)].width = w
 
-    # Freeze panes
     ws_out.freeze_panes = 'A5'
-
     wb.save(output_path)
-    log.append(f"Output: {len(month_totals)} months × {len(valid_mappings)} states reconciled")
+    log.append(f"Output: {len(month_totals)} months (GSTR3B) × {len(all_state_codes)} states")
     return {'status': 'success', 'log': log}
 
 
