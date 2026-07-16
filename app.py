@@ -6580,20 +6580,14 @@ function pickFile(inp, sfId){
   });
 });
 
+const _INDIA_SC={'jammu and kashmir':'01','jammu & kashmir':'01','j&k':'01','himachal pradesh':'02','punjab':'03','chandigarh':'04','uttarakhand':'05','haryana':'06','delhi':'07','new delhi':'07','rajasthan':'08','uttar pradesh':'09','u.p':'09','u.p.':'09','bihar':'10','sikkim':'11','arunachal pradesh':'12','nagaland':'13','manipur':'14','mizoram':'15','tripura':'16','meghalaya':'17','assam':'18','west bengal':'19','jharkhand':'20','odisha':'21','orissa':'21','chhattisgarh':'22','chattisgarh':'22','madhya pradesh':'23','gujarat':'24','maharashtra':'27','andhra pradesh':'28','karnataka':'29','goa':'30','lakshadweep':'31','kerala':'32','tamil nadu':'33','tamilnadu':'33','puducherry':'34','pondicherry':'34','andaman and nicobar':'35','telangana':'36','ladakh':'38'};
+function _folderToSC(seg){const nm=/(?:^|[\/_\s-])(0[1-9]|[1-3][0-9])(?:$|[\/_\s-])/.exec(seg);if(nm)return nm[1];if(/^(0[1-9]|[1-3][0-9])$/.test(seg.trim()))return seg.trim();const sl=seg.toLowerCase();const keys=Object.keys(_INDIA_SC).sort((a,b)=>b.length-a.length);for(const k of keys){if(sl.includes(k))return _INDIA_SC[k];}return null;}
 async function detectStateCodes(file){
-  // Read ZIP to find state code folders
   const ab=await file.arrayBuffer();
-  const view=new Uint8Array(ab);
-  // Simple ZIP parsing: find folder names like "XX/" or "gst/XX/"
-  const text=new TextDecoder('utf-8',{fatal:false}).decode(view);
-  const codes=new Set();
-  // Match folder patterns in ZIP central directory
-  const re=/(?:^|\/)(0[1-9]|[1-3][0-9])\//gm;
-  let m;while((m=re.exec(text))!==null)codes.add(m[1]);
-  if(codes.size>0){
-    document.getElementById('mapping-container').innerHTML='';
-    for(const c of [...codes].sort())addMapping(c,'');
-  }
+  const text=new TextDecoder('utf-8',{fatal:false}).decode(new Uint8Array(ab));
+  const codes=new Map();const re=/([^ -\/\]{2,80})\//g;let m;
+  while((m=re.exec(text))!==null){const seg=m[1].trim();if(!seg||seg.length<2)continue;const sc=_folderToSC(seg);if(sc&&!codes.has(sc))codes.set(sc,seg);}
+  if(codes.size>0){document.getElementById('mapping-container').innerHTML='';for(const [sc] of [...codes.entries()].sort((a,b)=>a[0].localeCompare(b[0]))){addMapping(sc,'');}}
 }
 
 function onConsolidatedChange(){
@@ -6803,34 +6797,59 @@ def _parse_gstr3b_pdf(pdf_path):
         elif 'Trade name, if any' in line:
             result['trade_name'] = nxt or result['trade_name']
 
-    # ── Table 3.1(a): Outward taxable supplies ───────────────────────────────
-    # Label: "(a) Outward taxable supplies (other than zero rated, nil rated
-    #          and exempted)"  — may span 1-2 lines.
-    # Values: next 5 non-empty tokens = taxable, igst, cgst, sgst, cess.
+    # ── Table 3.1 rows A, B, C, E — sum all four, exclude D (reverse charge) ─
+    # Structure per row: label line(s), then 5 values: taxable, igst, cgst, sgst, cess
+    # Row markers (as they appear in PDF text):
+    #   (a) Outward taxable supplies (other than zero rated, nil rated and exempted)
+    #   (b) Outward taxable supplies (zero rated)
+    #   (c ) Other outward supplies (nil rated, exempted)
+    #   (d) Inward supplies (liable to reverse charge)   ← EXCLUDED
+    #   (e) Non-GST outward supplies
+
+    def _extract_row_values(lines, start_idx, end_label_substr):
+        """From start_idx, skip past the label (until end_label_substr found),
+        then collect the next 5 numeric/dash tokens as [taxable, igst, cgst, sgst, cess]."""
+        j = start_idx
+        # advance until we hit the end of the label text
+        while j < len(lines) and end_label_substr not in lines[j].lower():
+            j += 1
+        nums = []
+        k = j + 1
+        while k < len(lines) and len(nums) < 5:
+            v = lines[k].replace(',', '').strip()
+            if re.match(r'^-?\d+\.?\d*$', v):
+                nums.append(float(v))
+            elif v in ('-', '\u2013', '\u2014', ''):
+                nums.append(0.0)
+            elif v.startswith('('):
+                break   # hit the next row label — stop
+            k += 1
+        return nums if len(nums) >= 5 else None
+
+    row_a = row_b = row_c = row_e = None
     for i, line in enumerate(lines):
-        if line.startswith('(a)') and 'Outward taxable' in line:
-            # Advance past the label (ends at the line containing "exempted)")
-            j = i
-            while j < len(lines) and 'exempted' not in lines[j].lower():
-                j += 1
-            # Collect up to 5 numeric values starting from j+1
-            nums = []
-            k = j + 1
-            while k < len(lines) and len(nums) < 5:
-                v = lines[k].replace(',', '').strip()
-                if re.match(r'^-?\d+\.?\d*$', v):
-                    nums.append(float(v))
-                elif v in ('-', '\u2013', '\u2014', ''):
-                    nums.append(0.0)
-                k += 1
-            if len(nums) >= 5:
-                result['taxable_value'] = nums[0]
-                result['igst']          = nums[1]
-                result['cgst']          = nums[2]
-                result['sgst']          = nums[3]
-                result['cess']          = nums[4]
-                result['total_tax']     = nums[1] + nums[2] + nums[3] + nums[4]
-            break
+        stripped = line.strip()
+        if stripped.startswith('(a)') and 'Outward taxable' in stripped and row_a is None:
+            row_a = _extract_row_values(lines, i, 'exempted')
+        elif stripped.startswith('(b)') and 'zero rated' in stripped.lower() and row_b is None:
+            row_b = _extract_row_values(lines, i, 'zero rated')
+        elif stripped.startswith('(c') and 'nil rated' in stripped.lower() and row_c is None:
+            row_c = _extract_row_values(lines, i, 'exempted')
+        elif stripped.startswith('(e)') and 'Non-GST' in stripped and row_e is None:
+            row_e = _extract_row_values(lines, i, 'supplies')
+
+    # Sum A + B + C + E for each column
+    def _col(rows, idx):
+        return sum(r[idx] for r in rows if r is not None)
+
+    rows_abce = [r for r in [row_a, row_b, row_c, row_e] if r is not None]
+    if rows_abce:
+        result['taxable_value'] = _col(rows_abce, 0)
+        result['igst']          = _col(rows_abce, 1)
+        result['cgst']          = _col(rows_abce, 2)
+        result['sgst']          = _col(rows_abce, 3)
+        result['cess']          = _col(rows_abce, 4)
+        result['total_tax']     = result['igst'] + result['cgst'] + result['sgst'] + result['cess']
 
     return result
 
