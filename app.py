@@ -6632,10 +6632,7 @@ async function detectStateCodes(file) {
   // Split on forward-slash to get ZIP path segments. No regex = no escape issues.
   var parts = text.split('/');
   for (var i = 0; i < parts.length; i++) {
-    var seg = parts[i];
-    var bsIdx = seg.lastIndexOf('\\');
-    if (bsIdx >= 0) seg = seg.slice(bsIdx + 1);
-    seg = seg.trim();
+    var seg = parts[i].trim();
     if (!seg || seg.length < 2 || seg.length > 80) continue;
     var sc = _folderToSC(seg);
     if (sc && !codes.has(sc)) codes.set(sc, seg);
