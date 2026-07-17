@@ -6641,6 +6641,21 @@ async function detectStateCodes(file) {
     document.getElementById('mapping-container').innerHTML = '';
     var sorted = Array.from(codes.entries()).sort(function(a,b){return a[0].localeCompare(b[0]);});
     sorted.forEach(function(pair) { addMapping(pair[0], ''); });
+
+    // FIX Bug 1: Show a visible banner prompting the user to fill in column headers.
+    // Without this, the user has no idea the mapping rows need input — the button
+    // silently rejects because code is set but col is blank.
+    var mf = document.getElementById('mapping-field');
+    var existingBanner = document.getElementById('autodetect-banner');
+    if (!existingBanner) {
+      var banner = document.createElement('div');
+      banner.id = 'autodetect-banner';
+      banner.style.cssText = 'margin-top:10px;padding:10px 14px;background:#FEF9C3;border:1.5px solid #FDE047;border-radius:8px;font-size:12px;color:#713F12;font-weight:600';
+      banner.innerHTML = '⚠️ ' + codes.size + ' state codes detected from your ZIP. <strong>Please fill in the matching column header</strong> from your Excel sales file for each row below, then click Process & Download.';
+      mf.appendChild(banner);
+    }
+    // Scroll the mapping section into view
+    mf.scrollIntoView({behavior: 'smooth', block: 'center'});
   }
 }
 
@@ -6655,8 +6670,13 @@ function onConsolidatedChange(){
 function addMapping(code,col){
   const container=document.getElementById('mapping-container');
   const div=document.createElement('div');div.className='mapping-row';
+  // FIX Bug 3: When auto-detected (code set, col blank), highlight the column
+  // input in amber so the user immediately sees what needs to be filled.
+  const colStyle = (code && !col) ? 'border:2px solid #F59E0B;background:#FFFBEB;' : '';
+  const colPlaceholder = (code && !col) ? '⚠ Enter your Excel column header here' : 'Column header (e.g. DRH/LDH)';
   div.innerHTML=`<input type="text" class="map-code" value="${code||''}" placeholder="03">
-    <input type="text" class="map-col" value="${col||''}" placeholder="Column header (e.g. DRH/LDH)">
+    <input type="text" class="map-col" value="${col||''}" placeholder="${colPlaceholder}" style="${colStyle}"
+      oninput="this.style.border='';this.style.background='';this.placeholder='Column header (e.g. DRH/LDH)'">
     <button class="remove-btn" onclick="this.parentElement.remove()">✕</button>`;
   container.appendChild(div);
 }
@@ -6686,7 +6706,16 @@ async function doProcess(){
       if(code&&col)mappings[code]=col;
     }
     if(Object.keys(mappings).length===0){
-      showStatus('error','✗ Please add at least one State Code → Column mapping, or tick Consolidated Sales.');
+      // FIX Bug 2: Check if rows exist but have empty column values (auto-detect case).
+      const allRows = document.querySelectorAll('.mapping-row');
+      const hasIncomplete = Array.from(allRows).some(r => r.querySelector('.map-code').value.trim() && !r.querySelector('.map-col').value.trim());
+      const msg = hasIncomplete
+        ? '✗ Please fill in the <strong>Column Header</strong> field for each state row (the second input box, e.g. "DRH/LDH", "Total Sales").'
+        : '✗ Please add at least one State Code → Column mapping, or tick Consolidated Sales.';
+      showStatus('error', msg);
+      // Scroll the error message into view so user can see it
+      const statusEl = document.getElementById('status');
+      if(statusEl) statusEl.scrollIntoView({behavior:'smooth', block:'center'});
       return;
     }
   }
