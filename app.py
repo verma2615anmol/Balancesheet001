@@ -6629,7 +6629,7 @@ async function detectStateCodes(file) {
   var ab   = await file.arrayBuffer();
   var text = new TextDecoder('utf-8', {fatal: false}).decode(new Uint8Array(ab));
   var codes = new Map();
-  var re = /([^\x00-\x1f\/\\]{2,80})\//g;
+  var re = /([^\/\\\r\n\t]{2,80})\//g;
   var m;
   while ((m = re.exec(text)) !== null) {
     var seg = m[1].trim();
