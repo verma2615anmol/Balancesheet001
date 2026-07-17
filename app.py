@@ -6629,11 +6629,14 @@ async function detectStateCodes(file) {
   var ab   = await file.arrayBuffer();
   var text = new TextDecoder('utf-8', {fatal: false}).decode(new Uint8Array(ab));
   var codes = new Map();
-  var re = /([^\/\\\r\n\t]{2,80})\//g;
-  var m;
-  while ((m = re.exec(text)) !== null) {
-    var seg = m[1].trim();
-    if (!seg || seg.length < 2) continue;
+  // Split on forward-slash to get ZIP path segments. No regex = no escape issues.
+  var parts = text.split('/');
+  for (var i = 0; i < parts.length; i++) {
+    var seg = parts[i];
+    var bsIdx = seg.lastIndexOf('\\');
+    if (bsIdx >= 0) seg = seg.slice(bsIdx + 1);
+    seg = seg.trim();
+    if (!seg || seg.length < 2 || seg.length > 80) continue;
     var sc = _folderToSC(seg);
     if (sc && !codes.has(sc)) codes.set(sc, seg);
   }
