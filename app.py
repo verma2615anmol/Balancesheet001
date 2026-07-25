@@ -244,74 +244,134 @@ def admin_required(f):
 # ══════════════════════════════════════════════════════════════════════════════
 
 BASE_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{--brand:#1D4ED8;--brand-d:#1e40af;--accent:#F59E0B;--green:#10B981;--red:#EF4444;
-      --ink:#111827;--muted:#6B7280;--border:#E5E7EB;--bg:#F9FAFB;--white:#fff;
-      --radius:12px;--shadow:0 4px 24px rgba(0,0,0,.08)}
-body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
-nav{background:var(--white);border-bottom:1px solid var(--border);padding:0 24px;
-    display:flex;align-items:center;justify-content:space-between;height:60px;
-    position:sticky;top:0;z-index:100;box-shadow:0 1px 4px rgba(0,0,0,.06)}
-.logo{font-size:20px;font-weight:800;color:var(--brand);letter-spacing:-.5px;text-decoration:none}
+:root{
+  --brand:#4F46E5;--brand-d:#4338CA;--brand-l:#EEF2FF;
+  --accent:#F97316;--accent-l:#FFF7ED;
+  --green:#059669;--green-l:#ECFDF5;
+  --red:#DC2626;--red-l:#FEF2F2;
+  --amber:#D97706;--amber-l:#FFFBEB;
+  --ink:#0F172A;--ink2:#334155;--muted:#64748B;
+  --border:#E2E8F0;--border2:#CBD5E1;
+  --bg:#F8FAFC;--bg2:#F1F5F9;--white:#fff;
+  --radius:14px;--radius-sm:8px;
+  --shadow:0 1px 3px rgba(0,0,0,.06),0 4px 16px rgba(0,0,0,.06);
+  --shadow-md:0 4px 6px rgba(0,0,0,.05),0 10px 40px rgba(0,0,0,.10);
+  --font-head:'Plus Jakarta Sans',sans-serif;
+  --font-body:'Inter',sans-serif;
+}
+body{font-family:var(--font-body);background:var(--bg);color:var(--ink);min-height:100vh;-webkit-font-smoothing:antialiased}
+
+/* ── NAV ─────────────────────────────────────────────────────────── */
+nav{background:rgba(255,255,255,.97);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--border);padding:0 28px;
+    display:flex;align-items:center;justify-content:space-between;height:64px;
+    position:sticky;top:0;z-index:200;box-shadow:0 1px 0 var(--border)}
+.logo{font-family:var(--font-head);font-size:21px;font-weight:800;
+      color:var(--brand);letter-spacing:-.6px;text-decoration:none;display:flex;align-items:center;gap:2px}
+.logo-dot{width:7px;height:7px;background:var(--accent);border-radius:50%;margin-bottom:2px;flex-shrink:0}
 .logo span{color:var(--accent)}
-.nav-right{display:flex;align-items:center;gap:14px}
-.nav-user{font-size:13px;color:var(--muted)}
-.nav-user strong{color:var(--ink)}
-.nav-btn{background:var(--brand);color:#fff;padding:7px 16px;border-radius:8px;
-         font-size:13px;font-weight:600;text-decoration:none;transition:background .2s}
-.nav-btn:hover{background:var(--brand-d)}
-.nav-link{font-size:13px;color:var(--muted);text-decoration:none;font-weight:500}
-.nav-link:hover{color:var(--red)}
-.badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;
-       border-radius:99px;text-transform:uppercase;letter-spacing:.04em}
-.b-free{background:#F3F4F6;color:var(--muted)}
-.b-starter{background:#ECFDF5;color:#065F46}
-.b-standard{background:#EFF6FF;color:var(--brand)}
-.b-pro{background:#FFFBEB;color:#92400E}
+.nav-right{display:flex;align-items:center;gap:10px}
+.nav-user{font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.nav-user strong{color:var(--ink);font-weight:600}
+.nav-avatar{width:28px;height:28px;background:var(--brand-l);border-radius:50%;
+            display:inline-flex;align-items:center;justify-content:center;
+            font-size:12px;font-weight:700;color:var(--brand)}
+.nav-btn{background:var(--brand);color:#fff;padding:7px 15px;border-radius:var(--radius-sm);
+         font-size:12.5px;font-weight:600;text-decoration:none;
+         transition:background .18s,transform .1s;white-space:nowrap;
+         font-family:var(--font-body);display:inline-flex;align-items:center;gap:5px}
+.nav-btn:hover{background:var(--brand-d);transform:translateY(-1px)}
+.nav-btn.ghost{background:transparent;color:var(--ink2);border:1.5px solid var(--border2)}
+.nav-btn.ghost:hover{background:var(--bg2);border-color:var(--brand);color:var(--brand)}
+.nav-btn.dash{background:var(--bg2);color:var(--ink2);border:1.5px solid var(--border);font-weight:600}
+.nav-btn.dash:hover{background:var(--brand-l);color:var(--brand);border-color:var(--brand);transform:translateY(-1px)}
+.nav-link{font-size:12.5px;color:var(--muted);text-decoration:none;font-weight:500;padding:4px 2px}
+.nav-link:hover{color:var(--brand)}
+.nav-sep{width:1px;height:20px;background:var(--border);margin:0 2px}
+
+/* ── BADGES ────────────────────────────────────────────────────────── */
+.badge{display:inline-flex;align-items:center;font-size:10px;font-weight:700;
+       padding:2px 8px;border-radius:99px;text-transform:uppercase;letter-spacing:.05em}
+.b-free{background:#F1F5F9;color:var(--muted)}
+.b-starter{background:var(--green-l);color:#065F46}
+.b-standard{background:var(--brand-l);color:var(--brand)}
+.b-pro{background:var(--amber-l);color:#92400E}
 .b-firm{background:#F5F3FF;color:#5B21B6}
-footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
-.ft-main{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:40px;padding:40px 48px;max-width:1200px;margin:0 auto}
-.ft-brand-name{color:#fff;font-size:18px;font-weight:800;margin-bottom:12px}
-.ft-brand-desc{font-size:12.5px;line-height:1.75;color:#9CA3AF;max-width:340px;text-align:justify}
-.ft-col-title{color:#fff;font-size:14px;font-weight:700;margin-bottom:14px}
+.b-ca{background:#FDF2F8;color:#9D174D}
+
+/* ── FOOTER ─────────────────────────────────────────────────────────── */
+footer{background:#0A0F1E;color:#94A3B8;font-size:12px;padding:0}
+.ft-main{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:40px;
+         padding:44px 52px;max-width:1280px;margin:0 auto}
+.ft-brand-name{color:#fff;font-family:var(--font-head);font-size:19px;font-weight:800;
+               margin-bottom:12px;letter-spacing:-.3px}
+.ft-brand-name span{color:var(--accent)}
+.ft-brand-desc{font-size:12.5px;line-height:1.8;color:#94A3B8;max-width:340px}
+.ft-col-title{color:#fff;font-size:13px;font-weight:700;margin-bottom:14px;letter-spacing:.02em}
 .ft-links{list-style:none;padding:0;margin:0}
-.ft-links li{margin-bottom:8px}
-.ft-links a{color:#9CA3AF;text-decoration:none;font-size:13px;transition:color .2s}
+.ft-links li{margin-bottom:9px}
+.ft-links a{color:#94A3B8;text-decoration:none;font-size:12.5px;transition:color .18s}
 .ft-links a:hover{color:#fff}
 .ft-contact-name{color:#fff;font-weight:700;font-size:13px;margin-bottom:6px}
-.ft-contact-addr{color:#9CA3AF;font-size:12px;line-height:1.7;margin-bottom:10px}
-.ft-contact-line{color:#9CA3AF;font-size:12px;margin-bottom:4px}
-.ft-socials{display:flex;gap:14px;margin-top:12px}
-.ft-socials a{color:#9CA3AF;transition:color .2s}
-.ft-socials a:hover{color:#fff}
-.ft-socials svg{width:20px;height:20px;fill:currentColor}
-.ft-bottom{background:#0a1422;border-top:1px solid #1e2d42;padding:12px 48px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
-.ft-bottom-left{font-size:11px;color:#6B7280}
-.ft-bottom-right{font-size:11px;color:#6B7280}
-@media(max-width:768px){.ft-main{grid-template-columns:1fr;padding:28px 20px;gap:24px}.ft-bottom{padding:12px 20px;flex-direction:column;text-align:center}}
-/* WhatsApp floating button */
-.wa-float{position:fixed;bottom:24px;left:24px;width:52px;height:52px;background:#25D366;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:999;text-decoration:none;transition:transform .2s,box-shadow .2s}
-.wa-float:hover{transform:scale(1.1);box-shadow:0 6px 24px rgba(0,0,0,.25)}
-.wa-float svg{width:28px;height:28px;fill:#fff}
-/* How-to-use help modal */
-.help-btn{position:fixed;bottom:86px;right:20px;width:44px;height:44px;background:var(--brand);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;cursor:pointer;box-shadow:0 4px 14px rgba(29,78,216,.35);z-index:998;border:none;transition:transform .2s,box-shadow .2s;text-decoration:none}
-.help-btn:hover{transform:scale(1.1);box-shadow:0 6px 20px rgba(29,78,216,.45)}
-.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1001;align-items:center;justify-content:center;padding:16px}
+.ft-contact-addr{color:#94A3B8;font-size:12px;line-height:1.8;margin-bottom:10px}
+.ft-contact-line{color:#94A3B8;font-size:12px;margin-bottom:4px}
+.ft-socials{display:flex;gap:12px;margin-top:14px}
+.ft-socials a{width:34px;height:34px;background:#1E293B;border-radius:8px;
+              display:flex;align-items:center;justify-content:center;
+              color:#94A3B8;transition:background .18s,color .18s}
+.ft-socials a:hover{background:var(--brand);color:#fff}
+.ft-socials svg{width:16px;height:16px;fill:currentColor}
+.ft-bottom{background:#070C18;border-top:1px solid #1E293B;
+           padding:13px 52px;display:flex;justify-content:space-between;
+           align-items:center;flex-wrap:wrap;gap:8px}
+.ft-bottom-left{font-size:11px;color:#475569}
+.ft-bottom-right{font-size:11px;color:#475569}
+@media(max-width:768px){
+  .ft-main{grid-template-columns:1fr;padding:32px 24px;gap:28px}
+  .ft-bottom{padding:12px 24px;flex-direction:column;text-align:center}
+}
+
+/* ── WA FLOAT ─────────────────────────────────────────────────────────── */
+.wa-float{position:fixed;bottom:24px;left:24px;width:50px;height:50px;
+          background:#25D366;border-radius:50%;display:flex;align-items:center;
+          justify-content:center;box-shadow:0 4px 16px rgba(37,211,102,.4);
+          z-index:999;text-decoration:none;transition:transform .2s,box-shadow .2s}
+.wa-float:hover{transform:scale(1.1);box-shadow:0 6px 24px rgba(37,211,102,.5)}
+.wa-float svg{width:22px;height:22px;fill:#fff}
+
+/* ── HELP MODAL ─────────────────────────────────────────────────────────── */
+.help-btn{position:fixed;bottom:86px;right:20px;width:42px;height:42px;
+          background:var(--brand);color:#fff;border-radius:50%;
+          display:flex;align-items:center;justify-content:center;
+          font-size:18px;font-weight:800;cursor:pointer;
+          box-shadow:0 4px 14px rgba(79,70,229,.4);z-index:998;border:none;
+          transition:transform .2s,box-shadow .2s;text-decoration:none}
+.help-btn:hover{transform:scale(1.1);box-shadow:0 6px 20px rgba(79,70,229,.5)}
+.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);
+              z-index:1001;align-items:center;justify-content:center;padding:16px}
 .help-overlay.open{display:flex}
-.help-modal{background:#fff;border-radius:16px;max-width:540px;width:100%;max-height:82vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.2)}
-.help-modal-head{padding:20px 24px 16px;border-bottom:1px solid #E5E7EB;display:flex;justify-content:space-between;align-items:center}
-.help-modal-head h3{font-size:16px;font-weight:800;color:#111827}
-.help-close{background:none;border:none;font-size:22px;cursor:pointer;color:#6B7280;line-height:1}
+.help-modal{background:#fff;border-radius:18px;max-width:540px;width:100%;
+            max-height:82vh;overflow-y:auto;box-shadow:0 24px 72px rgba(0,0,0,.22)}
+.help-modal-head{padding:22px 24px 16px;border-bottom:1px solid var(--border);
+                 display:flex;justify-content:space-between;align-items:center}
+.help-modal-head h3{font-size:16px;font-weight:800;color:var(--ink);font-family:var(--font-head)}
+.help-close{background:none;border:none;font-size:22px;cursor:pointer;color:var(--muted);line-height:1}
 .help-modal-body{padding:20px 24px}
 .help-step{display:flex;gap:14px;margin-bottom:18px;align-items:flex-start}
-.help-step-num{min-width:28px;height:28px;background:var(--brand);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0;margin-top:1px}
-.help-step-body h4{font-size:13px;font-weight:700;margin-bottom:3px;color:#111827}
-.help-step-body p{font-size:12px;color:#6B7280;line-height:1.6;margin:0}
-.help-tip{background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:10px 14px;font-size:12px;color:#1E40AF;margin-top:4px;line-height:1.6}
-/* Animations */
-@keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+.help-step-num{min-width:28px;height:28px;background:var(--brand);color:#fff;
+               border-radius:50%;display:flex;align-items:center;justify-content:center;
+               font-size:12px;font-weight:800;flex-shrink:0;margin-top:1px}
+.help-step-body h4{font-size:13px;font-weight:700;margin-bottom:3px;color:var(--ink)}
+.help-step-body p{font-size:12px;color:var(--muted);line-height:1.6;margin:0}
+.help-tip{background:var(--brand-l);border:1px solid #C7D2FE;border-radius:8px;
+          padding:10px 14px;font-size:12px;color:var(--brand-d);margin-top:4px;line-height:1.6}
+
+/* ── ANIMATIONS ─────────────────────────────────────────────────────────── */
+@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes slideIn{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:translateX(0)}}
 .anim-up{animation:fadeUp .4s ease-out both}
 .anim-in{animation:fadeIn .3s ease-out both}
 """
@@ -332,7 +392,7 @@ PRIVACY_TEMPLATE = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"
 .pp-wrap ul{padding-left:20px;margin-bottom:12px}
 .pp-date{font-size:11px;color:var(--muted);margin-bottom:24px}
 </style></head><body>
-<nav class="nav"><a href="/" class="nav-brand">CA Toolkit</a></nav>
+<nav><a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a><div class="nav-right"><a href="/" class="nav-btn dash">⬅ Dashboard</a></div></nav>
 <div class="pp-wrap">
   <h1>Privacy Policy</h1>
   <p class="pp-date">Last updated: June 2026</p>
@@ -413,211 +473,327 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <title>Dashboard – CA Toolkit</title>
 <style>
 """ + BASE_CSS + """
-.hero{text-align:center;padding:56px 24px 40px;max-width:680px;margin:0 auto}
-.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#EFF6FF;
-            color:var(--brand);border:1px solid #BFDBFE;border-radius:99px;
-            padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:18px}
-.hero h1{font-size:clamp(24px,4vw,38px);font-weight:800;line-height:1.2;
-         letter-spacing:-.5px;margin-bottom:12px}
-.hero h1 em{font-style:normal;color:var(--brand)}
-.hero p{font-size:15px;color:var(--muted);line-height:1.7}
+/* ── DASHBOARD HERO ─────────────────────────────────────────────── */
+.dash-hero{
+  background:linear-gradient(135deg,#312E81 0%,#4F46E5 45%,#7C3AED 100%);
+  padding:52px 24px 48px;text-align:center;position:relative;overflow:hidden}
+.dash-hero::before{content:'';position:absolute;inset:0;
+  background:url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.04'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+  pointer-events:none}
+.dash-hero-inner{position:relative;max-width:720px;margin:0 auto}
+.dash-hero-badge{display:inline-flex;align-items:center;gap:6px;
+  background:rgba(255,255,255,.15);backdrop-filter:blur(4px);
+  color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:99px;
+  padding:5px 16px;font-size:11.5px;font-weight:600;margin-bottom:20px;letter-spacing:.02em}
+.dash-hero h1{font-family:var(--font-head);font-size:clamp(26px,5vw,42px);
+  font-weight:800;line-height:1.15;letter-spacing:-.8px;color:#fff;margin-bottom:14px}
+.dash-hero h1 em{font-style:normal;color:#FCA5A5}
+.dash-hero p{font-size:15px;color:rgba(255,255,255,.8);line-height:1.7;max-width:500px;margin:0 auto}
 
-.tools-grid{max-width:1320px;margin:0 auto;padding:0 24px 56px;
-            display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+/* ── USAGE STRIP ─────────────────────────────────────────────────── */
+.usage-strip{max-width:1080px;margin:-20px auto 0;padding:0 24px;position:relative;z-index:10}
+.usage-box{background:var(--white);border:1px solid var(--border);
+  border-radius:var(--radius);padding:16px 22px;
+  display:flex;align-items:center;justify-content:space-between;
+  flex-wrap:wrap;gap:14px;box-shadow:var(--shadow-md)}
+.usage-left{display:flex;align-items:center;gap:16px;flex:1;min-width:0}
+.usage-icon{width:38px;height:38px;background:var(--brand-l);border-radius:10px;
+  display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.usage-text{min-width:0}
+.usage-text strong{display:block;font-size:14px;font-weight:700;color:var(--ink)}
+.usage-text span{font-size:12px;color:var(--muted)}
+.usage-bar-wrap{flex:1;max-width:180px}
+.usage-bar-bg{background:var(--bg2);border-radius:99px;height:7px;overflow:hidden}
+.usage-bar-fill{height:100%;border-radius:99px}
+.usage-validity{font-size:11px;color:var(--muted);margin-top:3px}
+.upgrade-btn{display:inline-flex;align-items:center;gap:6px;background:linear-gradient(135deg,var(--brand),#7C3AED);
+  color:#fff;padding:8px 18px;border-radius:var(--radius-sm);
+  font-size:12.5px;font-weight:600;text-decoration:none;white-space:nowrap;
+  transition:opacity .18s,transform .1s}
+.upgrade-btn:hover{opacity:.9;transform:translateY(-1px)}
+
+/* ── SECTION HEADER ─────────────────────────────────────────────── */
+.section-wrap{max-width:1320px;margin:0 auto;padding:36px 24px 0}
+.section-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.section-hd h2{font-family:var(--font-head);font-size:18px;font-weight:800;
+  color:var(--ink);letter-spacing:-.3px}
+.section-hd-badge{display:inline-flex;align-items:center;gap:5px;
+  background:var(--brand-l);color:var(--brand);
+  padding:4px 12px;border-radius:99px;font-size:11px;font-weight:700}
+
+/* ── TOOL CARDS ─────────────────────────────────────────────────── */
+.tools-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-bottom:48px}
 @media(max-width:1100px){.tools-grid{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:768px){.tools-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:480px){.tools-grid{grid-template-columns:1fr}}
 
 .tool-card{background:var(--white);border:1.5px solid var(--border);
-           border-radius:var(--radius);padding:22px 20px;
-           text-decoration:none;color:var(--ink);
-           transition:all .25s cubic-bezier(.4,0,.2,1);position:relative;overflow:hidden;display:block;
-           animation:fadeUp .5s ease-out both}
-.tool-card:nth-child(1){animation-delay:.05s}.tool-card:nth-child(2){animation-delay:.1s}
-.tool-card:nth-child(3){animation-delay:.15s}.tool-card:nth-child(4){animation-delay:.2s}
-.tool-card:nth-child(5){animation-delay:.25s}.tool-card:nth-child(6){animation-delay:.3s}
-.tool-card:nth-child(7){animation-delay:.35s}.tool-card:nth-child(8){animation-delay:.4s}
-.tool-card:hover{border-color:var(--brand);box-shadow:0 8px 32px rgba(29,78,216,.12);transform:translateY(-3px)}
-.tool-card.disabled{cursor:default;opacity:.7}
+  border-radius:var(--radius);padding:22px 20px 18px;
+  text-decoration:none;color:var(--ink);
+  transition:border-color .2s,box-shadow .2s,transform .18s;
+  position:relative;overflow:hidden;display:flex;flex-direction:column}
+.tool-card:hover{border-color:var(--brand);
+  box-shadow:0 0 0 3px rgba(79,70,229,.08),0 8px 32px rgba(79,70,229,.14);
+  transform:translateY(-3px)}
+.tool-card.disabled{cursor:default;opacity:.65}
 .tool-card.disabled:hover{border-color:var(--border);box-shadow:none;transform:none}
+/* Premium card accent line */
+.tool-card.premium-card::before{content:'';position:absolute;top:0;left:0;right:0;
+  height:3px;background:linear-gradient(90deg,var(--brand),#7C3AED)}
+.tool-card.free-card::before{content:'';position:absolute;top:0;left:0;right:0;
+  height:3px;background:linear-gradient(90deg,var(--green),#34D399)}
 
-.tool-icon{width:44px;height:44px;border-radius:10px;display:flex;
-           align-items:center;justify-content:center;font-size:22px;
-           margin-bottom:12px}
-.tool-card h2{font-size:14px;font-weight:700;margin-bottom:5px}
-.tool-card p{font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:14px}
+.tool-icon{width:46px;height:46px;border-radius:12px;display:flex;
+  align-items:center;justify-content:center;font-size:22px;margin-bottom:14px;flex-shrink:0}
+.tool-card h2{font-family:var(--font-head);font-size:14.5px;font-weight:700;
+  margin-bottom:6px;color:var(--ink)}
+.tool-card p{font-size:12px;color:var(--muted);line-height:1.65;
+  margin-bottom:16px;flex:1}
+.tool-footer{display:flex;align-items:center;justify-content:space-between;margin-top:auto}
+.tool-tag{display:inline-flex;align-items:center;gap:4px;
+  font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:99px;letter-spacing:.02em}
+.tag-live-prem{background:var(--brand-l);color:var(--brand)}
+.tag-live-free{background:var(--green-l);color:var(--green)}
+.tag-soon{background:var(--bg2);color:var(--muted)}
+.tool-arrow{width:28px;height:28px;background:var(--bg2);border-radius:8px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:13px;color:var(--muted);
+  transition:background .18s,color .18s,transform .18s}
+.tool-card:not(.disabled):hover .tool-arrow{background:var(--brand);color:#fff;transform:translateX(3px)}
 
-.tool-tag{display:inline-flex;align-items:center;gap:5px;font-size:11px;
-          font-weight:600;padding:3px 10px;border-radius:99px}
-.tag-live{background:#ECFDF5;color:#065F46}
-.tag-soon{background:#F3F4F6;color:var(--muted)}
+/* Corner badge */
+.corner-badge{position:absolute;top:14px;right:14px;
+  font-size:9.5px;font-weight:700;padding:3px 8px;border-radius:6px;letter-spacing:.04em}
+.cb-prem{background:#EDE9FE;color:#5B21B6}
+.cb-free{background:var(--green-l);color:#065F46}
+.cb-lock{background:var(--amber-l);color:#92400E}
 
-.tool-card .arrow{position:absolute;right:20px;top:50%;transform:translateY(-50%);
-                  font-size:20px;color:var(--brand);opacity:0;transition:opacity .2s}
-.tool-card:not(.disabled):hover .arrow{opacity:1}
+/* ── COMING SOON ROW ─────────────────────────────────────────────── */
+.tool-card.coming{border-style:dashed}
 
-.usage-strip{max-width:960px;margin:0 auto 8px;padding:0 24px}
-.usage-box{background:var(--white);border:1px solid var(--border);border-radius:var(--radius);
-           padding:14px 20px;display:flex;align-items:center;justify-content:space-between;
-           flex-wrap:wrap;gap:12px}
-.usage-info{font-size:13px}
-.usage-info strong{color:var(--ink)}
-.usage-info span{color:var(--muted)}
-.usage-bar-bg{flex:1;max-width:200px;background:#F3F4F6;border-radius:99px;height:6px;overflow:hidden}
-.usage-bar-fill{height:100%;border-radius:99px;transition:width .4s}
-.upgrade-link{font-size:12px;font-weight:600;color:var(--brand);text-decoration:none}
-.upgrade-link:hover{text-decoration:underline}
+/* ── STATS ROW ──────────────────────────────────────────────────── */
+.stats-row{background:linear-gradient(135deg,#0A0F1E,#1E1B4B);
+  padding:28px 24px;margin:0}
+.stats-inner{max-width:900px;margin:0 auto;
+  display:grid;grid-template-columns:repeat(4,1fr);gap:0;text-align:center}
+.stat-item{padding:8px 0;border-right:1px solid rgba(255,255,255,.1)}
+.stat-item:last-child{border:none}
+.stat-n{font-family:var(--font-head);font-size:22px;font-weight:800;color:#fff;margin-bottom:2px}
+.stat-n em{font-style:normal;color:#A5B4FC}
+.stat-l{font-size:11px;color:#94A3B8}
+@media(max-width:640px){.stats-inner{grid-template-columns:repeat(2,1fr)}.stat-item:nth-child(2){border-right:none}.stat-item{border-bottom:1px solid rgba(255,255,255,.1);padding:12px 0}}
 </style></head><body>
 
+<!-- ── NAV ─────────────────────────────────────────────────────── -->
 <nav>
-  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a>
   <div class="nav-right">
-    <span class="nav-user">👤 <strong>{{ username }}</strong>
-      <span class="badge b-{{ plan }}">{{ plan_label }}</span>
-      {% if is_admin %}<span class="badge" style="background:#EFF6FF;color:var(--brand);margin-left:4px">Admin</span>{% endif %}
-    </span>
     {% if username %}
-    {% if is_admin %}<a href="/admin" class="nav-btn">Admin Panel</a>{% endif %}
+    <div class="nav-user">
+      <span class="nav-avatar">{{ username[0].upper() }}</span>
+      <strong>{{ username }}</strong>
+      <span class="badge b-{{ plan }}">{{ plan_label }}</span>
+      {% if is_admin %}<span class="badge" style="background:#EDE9FE;color:#5B21B6">Admin</span>{% endif %}
+    </div>
+    <div class="nav-sep"></div>
+    {% if is_admin %}<a href="/admin" class="nav-btn ghost">⚙ Admin</a>{% endif %}
     <a href="/logout" class="nav-link">Sign out</a>
     {% else %}
-    <a href="/login" class="nav-btn">Sign In</a>
+    <a href="/login" class="nav-btn">Sign In →</a>
     {% endif %}
   </div>
 </nav>
 
-<div class="hero" style="animation:fadeUp .5s ease-out both">
-  <div class="hero-badge">🇮🇳 Made for Indian CAs &amp; Accountants</div>
-  <h1>Your Complete <em>CA Toolkit</em></h1>
-  <p>Professional tools built by CA Article — designed to save hours of manual work every year.</p>
+<!-- ── HERO ─────────────────────────────────────────────────────── -->
+<div class="dash-hero">
+  <div class="dash-hero-inner">
+    <div class="dash-hero-badge">🇮🇳 Made for Indian CAs &amp; Accountants</div>
+    <h1>Your Complete <em>CA Toolkit</em></h1>
+    <p>Professional tools built by CA Article — designed to save hours of manual work every year.</p>
+  </div>
 </div>
 
+<!-- ── USAGE STRIP ────────────────────────────────────────────── -->
 {% if username %}
-<!-- Upload usage strip -->
 <div class="usage-strip">
   <div class="usage-box">
-    <div class="usage-info">
-      <strong>{{ uploads_remaining }} uploads</strong>
-      <span> remaining ({{ uploads_used }} / {{ uploads_total }} used)</span>
-      {% if validity_end %}<span style="margin-left:8px;color:#9CA3AF">· Valid till {{ validity_end[:10] }}</span>{% endif %}
-    </div>
-    <div class="usage-bar-bg">
-      <div class="usage-bar-fill"
-           style="width:{{ bar_pct }}%;background:{{ '#EF4444' if uploads_remaining==0 else '#F59E0B' if uploads_remaining<=3 else '#10B981' }}">
+    <div class="usage-left">
+      <div class="usage-icon">⚡</div>
+      <div class="usage-text">
+        <strong>{{ uploads_remaining }} uploads remaining</strong>
+        <span>{{ uploads_used }} / {{ uploads_total }} used
+          {% if validity_end %}&nbsp;· Valid till {{ validity_end[:10] }}{% endif %}
+        </span>
       </div>
     </div>
-    <a href="/tool/converter#pricing" class="upgrade-link">Upgrade plan →</a>
+    <div class="usage-bar-wrap">
+      <div class="usage-bar-bg">
+        <div class="usage-bar-fill"
+             style="width:{{ bar_pct }}%;background:{{ '#DC2626' if uploads_remaining==0 else '#D97706' if uploads_remaining<=3 else '#059669' }}">
+        </div>
+      </div>
+    </div>
+    <a href="/tool/converter#pricing" class="upgrade-btn">⬆ Upgrade Plan</a>
   </div>
 </div>
 {% endif %}
 
-<!-- Tools grid -->
-<div class="tools-grid">
+<!-- ── PREMIUM TOOLS ───────────────────────────────────────────── -->
+<div class="section-wrap">
+  <div class="section-hd">
+    <h2>🔒 Premium Tools</h2>
+    <span class="section-hd-badge">Shared upload quota</span>
+  </div>
+  <div class="tools-grid">
 
-  <!-- PREMIUM: Balance Sheet Year-Shift -->
-  {% if username %}
-  <a href="/tool/converter" class="tool-card">
-  {% else %}
-  <a href="/login" class="tool-card">
-  {% endif %}
-    {% if not username %}<div style="position:absolute;top:12px;right:12px;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🔒 Login Required</div>{% endif %}
-    <div class="tool-icon" style="background:#EFF6FF">📊</div>
-    <h2>Balance Sheet Year-Shift</h2>
-    <p>Roll over your comparative Excel balance sheet to any new financial year in seconds. Shifts CY→PY, clears CY, restores all formulas and updates every date.</p>
-    <span class="tool-tag tag-live">✓ Live · Premium</span>
-    <div class="arrow">→</div>
-  </a>
+    {% if username %}
+    <a href="/tool/converter" class="tool-card premium-card">
+    {% else %}
+    <a href="/login" class="tool-card premium-card">
+    {% endif %}
+      {% if not username %}
+      <span class="corner-badge cb-lock">🔒 Login</span>
+      {% else %}
+      <span class="corner-badge cb-prem">⭐ Premium</span>
+      {% endif %}
+      <div class="tool-icon" style="background:#EEF2FF">📊</div>
+      <h2>Balance Sheet Year-Shift</h2>
+      <p>Roll over your comparative Excel balance sheet to any financial year. Shifts CY→PY, clears CY, restores all formulas and updates every date — in seconds.</p>
+      <div class="tool-footer">
+        <span class="tool-tag tag-live-prem">✓ Live · Premium</span>
+        <span class="tool-arrow">→</span>
+      </div>
+    </a>
 
-  <!-- PREMIUM: GST Reconciliation -->
-  {% if username %}
-  <a href="/tool/gst-reconciliation" class="tool-card" style="position:relative">
-  {% else %}
-  <a href="/login" class="tool-card" style="position:relative">
-  {% endif %}
-    {% if not username %}<div style="position:absolute;top:12px;right:12px;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🔒 Login Required</div>{% else %}<div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">Premium</div>{% endif %}
-    <div class="tool-icon" style="background:#FEF3C7">📊</div>
-    <h2>GST Reconciliation</h2>
-    <p>Compare Sales as per Books vs GSTR 3B returns. Upload your sales summary and GSTR 3B PDFs (ZIP) — get month-wise, state-wise difference report instantly.</p>
-    <span class="tool-tag tag-live">✓ Live · Premium</span>
-    <div class="arrow">→</div>
-  </a>
+    {% if username %}
+    <a href="/tool/gst-reconciliation" class="tool-card premium-card">
+    {% else %}
+    <a href="/login" class="tool-card premium-card">
+    {% endif %}
+      {% if not username %}
+      <span class="corner-badge cb-lock">🔒 Login</span>
+      {% else %}
+      <span class="corner-badge cb-prem">⭐ Premium</span>
+      {% endif %}
+      <div class="tool-icon" style="background:#FFFBEB">📋</div>
+      <h2>GST Reconciliation</h2>
+      <p>Compare Sales as per Books vs GSTR 3B returns. Upload your sales summary and GSTR 3B PDFs (ZIP) — month-wise, state-wise difference report instantly.</p>
+      <div class="tool-footer">
+        <span class="tool-tag tag-live-prem">✓ Live · Premium</span>
+        <span class="tool-arrow">→</span>
+      </div>
+    </a>
 
-  <!-- PREMIUM: Balance Sheet from Trial Balance - NOW LIVE -->
-  <a href="/tool/tb-to-bs" class="tool-card" style="position:relative">
-    <div style="position:absolute;top:12px;right:12px;background:#FEF3C7;color:#92400E;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🔒 Premium</div>
-    <div class="tool-icon" style="background:#F0FDF4">📋</div>
-    <h2>Balance Sheet from Trial Balance</h2>
-    <p>Upload your trial balance and BS template — tool auto-maps accounts and fills CY figures. Zero formatting change.</p>
-    <span class="tool-tag tag-live">✓ Live · Premium</span>
-    <div class="arrow">→</div>
-  </a>
+    <a href="/tool/tb-to-bs" class="tool-card premium-card">
+      <span class="corner-badge cb-prem">⭐ Premium</span>
+      <div class="tool-icon" style="background:#F0FDF4">🗂️</div>
+      <h2>Balance Sheet from Trial Balance</h2>
+      <p>Upload your trial balance and BS template — tool auto-maps accounts and fills CY figures. Zero formatting change in your template.</p>
+      <div class="tool-footer">
+        <span class="tool-tag tag-live-prem">✓ Live · Premium</span>
+        <span class="tool-arrow">→</span>
+      </div>
+    </a>
 
-  <!-- FREE TOOLS -->
-  <a href="/tool/tax-calculator" class="tool-card">
-    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
-    <div class="tool-icon" style="background:#FFFBEB">🧮</div>
-    <h2>Income Tax Calculator</h2>
-    <p>Calculate income tax under old and new regime for PY 2025-26. Income under 5 heads, TDS/TCS, surcharge &amp; cess — all built in.</p>
-    <span class="tool-tag tag-live">✓ Live · Free</span>
-    <div class="arrow">→</div>
-  </a>
-
-  <a href="/tool/tds-calculator" class="tool-card">
-    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
-    <div class="tool-icon" style="background:#EFF6FF">📑</div>
-    <h2>TDS / TCS Calculator</h2>
-    <p>Calculate TDS or TCS as per IT Act 2025 (Sec 393/394). New payment codes, rates, late deposit interest — all in one tool.</p>
-    <span class="tool-tag tag-live">✓ Live · Free</span>
-    <div class="arrow">→</div>
-  </a>
-
-  <a href="/tool/depreciation-calculator" class="tool-card">
-    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
-    <div class="tool-icon" style="background:#F5F3FF">🏭</div>
-    <h2>Depreciation Calculator</h2>
-    <p>Calculate depreciation under Companies Act 2013 (WDV/SLM) and Income Tax Act. Get full schedule with opening/closing WDV.</p>
-    <span class="tool-tag tag-live">✓ Live · Free</span>
-    <div class="arrow">→</div>
-  </a>
-
-  <a href="/tool/msme-calculator" class="tool-card" style="position:relative">
-    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
-    <div class="tool-icon" style="background:#FEF2F2">📄</div>
-    <h2>MSME Disallowance Calculator</h2>
-    <p>Upload creditors list and check MSME payment compliance under Sec 43B(h). Overdue payments highlighted with total disallowance amount.</p>
-    <span class="tool-tag tag-live">✓ Live · Free</span>
-    <div class="arrow">→</div>
-  </a>
-
-  <a href="/tool/capital-gains-calculator" class="tool-card" style="position:relative">
-    <div style="position:absolute;top:12px;right:12px;background:#ECFDF5;color:#065F46;font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px">🆓 Free</div>
-    <div class="tool-icon" style="background:#F5F3FF">💰</div>
-    <h2>Capital Gains Calculator</h2>
-    <p>Calculate LTCG/STCG on property, shares, MF and more. Compare old vs new regime, indexation benefit, and find zero-tax sale price with reverse calculator.</p>
-    <span class="tool-tag tag-live">✓ Live · Free</span>
-    <div class="arrow">→</div>
-  </a>
-
-  <div class="tool-card disabled">
-    <div class="tool-icon" style="background:#FEF2F2">🚀</div>
-    <h2>More Tools Coming Soon</h2>
-    <p>We're building more tools for Indian CAs. Stay tuned — new utilities added regularly based on your feedback.</p>
-    <span class="tool-tag tag-soon">Stay Tuned</span>
   </div>
 
+  <!-- ── FREE TOOLS ──────────────────────────────────────────────── -->
+  <div class="section-hd" style="margin-top:8px">
+    <h2>🆓 Free Tools</h2>
+    <span class="section-hd-badge" style="background:var(--green-l);color:var(--green)">No login needed</span>
+  </div>
+  <div class="tools-grid">
+
+    <a href="/tool/tax-calculator" class="tool-card free-card">
+      <span class="corner-badge cb-free">Free</span>
+      <div class="tool-icon" style="background:#FFFBEB">🧮</div>
+      <h2>Income Tax Calculator</h2>
+      <p>Calculate tax under old and new regime for PY 2025-26. Income under 5 heads, TDS/TCS, surcharge &amp; cess — all built in.</p>
+      <div class="tool-footer">
+        <span class="tool-tag tag-live-free">✓ Live · Free</span>
+        <span class="tool-arrow">→</span>
+      </div>
+    </a>
+
+    <a href="/tool/tds-calculator" class="tool-card free-card">
+      <span class="corner-badge cb-free">Free</span>
+      <div class="tool-icon" style="background:#EEF2FF">📑</div>
+      <h2>TDS / TCS Calculator</h2>
+      <p>Calculate TDS or TCS as per IT Act 2025 (Sec 393/394). New payment codes, rates, late deposit interest — all in one tool.</p>
+      <div class="tool-footer">
+        <span class="tool-tag tag-live-free">✓ Live · Free</span>
+        <span class="tool-arrow">→</span>
+      </div>
+    </a>
+
+    <a href="/tool/depreciation-calculator" class="tool-card free-card">
+      <span class="corner-badge cb-free">Free</span>
+      <div class="tool-icon" style="background:#F5F3FF">🏭</div>
+      <h2>Depreciation Calculator</h2>
+      <p>Calculate depreciation under Companies Act 2013 (WDV/SLM) and Income Tax Act. Full schedule with opening/closing WDV.</p>
+      <div class="tool-footer">
+        <span class="tool-tag tag-live-free">✓ Live · Free</span>
+        <span class="tool-arrow">→</span>
+      </div>
+    </a>
+
+    <a href="/tool/msme-calculator" class="tool-card free-card">
+      <span class="corner-badge cb-free">Free</span>
+      <div class="tool-icon" style="background:#FEF2F2">📄</div>
+      <h2>MSME Disallowance Calculator</h2>
+      <p>Upload creditors list and check MSME payment compliance under Sec 43B(h). Overdue payments highlighted with total disallowance.</p>
+      <div class="tool-footer">
+        <span class="tool-tag tag-live-free">✓ Live · Free</span>
+        <span class="tool-arrow">→</span>
+      </div>
+    </a>
+
+    <a href="/tool/capital-gains-calculator" class="tool-card free-card">
+      <span class="corner-badge cb-free">Free</span>
+      <div class="tool-icon" style="background:#F5F3FF">💰</div>
+      <h2>Capital Gains Calculator</h2>
+      <p>Calculate LTCG/STCG on property, shares, MF and more. Compare old vs new regime, indexation benefit, and find zero-tax sale price.</p>
+      <div class="tool-footer">
+        <span class="tool-tag tag-live-free">✓ Live · Free</span>
+        <span class="tool-arrow">→</span>
+      </div>
+    </a>
+
+    <div class="tool-card coming disabled">
+      <div class="tool-icon" style="background:#FEF2F2">🚀</div>
+      <h2>More Tools Coming Soon</h2>
+      <p>We're building more tools for Indian CAs. Stay tuned — new utilities added regularly based on your feedback.</p>
+      <div class="tool-footer">
+        <span class="tool-tag tag-soon">Stay Tuned</span>
+        <span></span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── STATS BAR ──────────────────────────────────────────────── -->
+<div class="stats-row">
+  <div class="stats-inner">
+    <div class="stat-item"><div class="stat-n"><em>9</em>+</div><div class="stat-l">CA Tools Live</div></div>
+    <div class="stat-item"><div class="stat-n">100%</div><div class="stat-l">Formatting Preserved</div></div>
+    <div class="stat-item"><div class="stat-n">&lt;<em>10s</em></div><div class="stat-l">Processing Time</div></div>
+    <div class="stat-item"><div class="stat-n"><em>∞</em></div><div class="stat-l">CA Templates Supported</div></div>
+  </div>
 </div>
 
 <footer>
   <div class="ft-main">
     <div>
-      <div class="ft-brand-name">CA Toolkit</div>
-      <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
+      <div class="ft-brand-name">CA<span>Toolkit</span></div>
+      <p class="ft-brand-desc">A comprehensive utility platform built by a CA Article from Ludhiana, Punjab — providing automation tools for Indian Chartered Accountants. Saving hours of manual work every year.</p>
     </div>
     <div>
-      <div class="ft-col-title">Know More</div>
+      <div class="ft-col-title">Tools</div>
       <ul class="ft-links">
-        <li><a href="/">Home</a></li>
-        <li><a href="/">BS Year Shift</a></li>
+        <li><a href="/tool/converter">BS Year Shift</a></li>
         <li><a href="/tool/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tool/gst-reconciliation">GST Reconciliation</a></li>
         <li><a href="/tool/tax-calculator">Tax Calculator</a></li>
         <li><a href="/privacy">Privacy Policy</a></li>
       </ul>
@@ -626,21 +802,20 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       <div class="ft-col-title">Contact Us</div>
       <div class="ft-contact-name">CA Toolkit</div>
       <div class="ft-contact-addr">Built for Indian Chartered Accountants<br/>Created by CA Article · Ludhiana, Punjab</div>
-      <div class="ft-contact-line">Support · <a href="https://wa.me/918427651580" style="color:#9CA3AF">WhatsApp Chat</a></div>
+      <div class="ft-contact-line">Support · <a href="https://wa.me/918427651580" style="color:#94A3B8">WhatsApp Chat</a></div>
       <div class="ft-socials">
         <a href="https://wa.me/918427651580" target="_blank" title="WhatsApp"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
       </div>
     </div>
   </div>
   <div class="ft-bottom">
-    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved · <a href="/privacy" style="color:#6B7280;text-decoration:none">Privacy Policy</a> · <span style="color:#EF4444">No refund after first upload is used</span></span>
+    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved · <a href="/privacy" style="color:#475569;text-decoration:none">Privacy Policy</a> · <span style="color:#EF4444">No refund after first upload is used</span></span>
     <span class="ft-bottom-right">Built for Indian CAs · Ludhiana, Punjab</span>
   </div>
 </footer>
 <a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support">
   <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
 </a>
-<a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
 </body></html>"""
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -650,19 +825,19 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 CONVERTER_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Balance Sheet Year-Shift – CA Toolkit</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+
 <style>
 """ + BASE_CSS + """
 .nav-links{display:flex;gap:20px;list-style:none}
 .nav-links a{text-decoration:none;color:var(--muted);font-size:13px;font-weight:500;transition:color .2s}
 .nav-links a:hover{color:var(--brand)}
 .hero{text-align:center;padding:56px 24px 40px;max-width:700px;margin:0 auto}
-.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#EFF6FF;
-            color:var(--brand);border:1px solid #BFDBFE;border-radius:99px;
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:var(--brand-l);
+            color:var(--brand);border:1px solid #C7D2FE;border-radius:99px;
             padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:18px}
 h1{font-size:clamp(24px,4vw,40px);font-weight:800;line-height:1.15;
    letter-spacing:-.5px;margin-bottom:14px}
-h1 em{font-style:normal;color:var(--brand)}
+h1 em{font-style:normal;color:var(--accent)}
 .hero p{font-size:15px;color:var(--muted);line-height:1.7;max-width:520px;margin:0 auto 28px}
 .stats{display:flex;justify-content:center;gap:36px;flex-wrap:wrap;
        padding:16px 24px;background:var(--white);
@@ -792,7 +967,7 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
 </style></head><body>
 
 <nav>
-  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a>
   <ul class="nav-links">
     <li><a href="#tool">Tool</a></li>
     <li><a href="#pricing">Pricing</a></li>
@@ -800,14 +975,19 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
     <li><a href="#contact">Contact</a></li>
   </ul>
   <div class="nav-right">
-    <span class="nav-user">👤 <strong>{{ username }}</strong>
+    {% if username %}
+    <div class="nav-user">
+      <span class="nav-avatar">{{ username[0].upper() }}</span>
+      <strong>{{ username }}</strong>
       <span class="badge b-{{ plan }}">{{ plan_label }}</span>
-      {% if is_admin %}<span class="badge" style="background:#EFF6FF;color:var(--brand);margin-left:4px">Admin</span>{% endif %}
-    </span>
-    {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
-    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
+      {% if is_admin %}<span class="badge" style="background:#EDE9FE;color:#5B21B6">Admin</span>{% endif %}
+    </div>
+    <div class="nav-sep"></div>
+    {% if is_admin %}<a href="/admin" class="nav-btn ghost">⚙ Admin</a>{% endif %}
+    {% endif %}
+    <a href="/" class="nav-btn dash">⬅ Dashboard</a>
     {% if username %}<a href="/logout" class="nav-link">Sign out</a>
-    {% else %}<a href="/login" class="nav-btn">Sign In</a>{% endif %}
+    {% else %}<a href="/login" class="nav-btn">Sign In →</a>{% endif %}
   </div>
 </nav>
 
@@ -1034,7 +1214,7 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
 <footer>
   <div class="ft-main">
     <div>
-      <div class="ft-brand-name">CA Toolkit</div>
+      <div class="ft-brand-name">CA<span>Toolkit</span></div>
       <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
     </div>
     <div>
@@ -1132,7 +1312,7 @@ function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t
 TAX_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Income Tax Calculator – CA Toolkit</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+
 <style>
 """ + BASE_CSS + r"""
 .nav-links{display:flex;gap:20px;list-style:none}
@@ -1144,7 +1324,7 @@ TAX_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
             color:#92400E;border:1px solid #FDE68A;border-radius:99px;
             padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:18px}
 h1{font-size:clamp(22px,3.5vw,34px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:12px}
-h1 em{font-style:normal;color:var(--brand)}
+h1 em{font-style:normal;color:var(--accent)}
 .hero p{font-size:14px;color:var(--muted);line-height:1.7;max-width:520px;margin:0 auto}
 
 .main-wrap{max-width:1200px;margin:0 auto;padding:0 24px 48px}
@@ -1393,19 +1573,15 @@ nav.scrolled{box-shadow:0 4px 24px rgba(0,0,0,.10)}
 
 <div id="calcProgress"></div>
 <nav>
-  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a>
   <ul class="nav-links">
     <li><a href="#input">Calculator</a></li>
     <li><a href="#result-section">Results</a></li>
   </ul>
   <div class="nav-right">
-    <span class="nav-user">👤 <strong>{{ username }}</strong>
-      <span class="badge b-{{ plan }}">{{ plan_label }}</span>
-      {% if is_admin %}<span class="badge" style="background:#EFF6FF;color:var(--brand);margin-left:4px">Admin</span>{% endif %}
-    </span>
-    {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
-    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
-    <a href="/logout" class="nav-link">Sign out</a>
+    {% if username %}<div class="nav-user"><span class="nav-avatar">{{ username[0].upper() }}</span><strong>{{ username }}</strong><span class="badge b-{{ plan }}">{{ plan_label }}</span>{% if is_admin %}<span class="badge" style="background:#EDE9FE;color:#5B21B6">Admin</span>{% endif %}</div><div class="nav-sep"></div>{% if is_admin %}<a href="/admin" class="nav-btn ghost">⚙ Admin</a>{% endif %}{% endif %}
+    <a href="/" class="nav-btn dash">⬅ Dashboard</a>
+    {% if username %}<a href="/logout" class="nav-link">Sign out</a>{% else %}<a href="/login" class="nav-btn">Sign In →</a>{% endif %}
   </div>
 </nav>
 
@@ -2098,7 +2274,7 @@ nav.scrolled{box-shadow:0 4px 24px rgba(0,0,0,.10)}
 <footer>
   <div class="ft-main">
     <div>
-      <div class="ft-brand-name">CA Toolkit</div>
+      <div class="ft-brand-name">CA<span>Toolkit</span></div>
       <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
     </div>
     <div>
@@ -3630,7 +3806,7 @@ const _origCalculateTaxInner = window.calculateTax;
 TDS_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TDS / TCS Calculator (IT Act 2025) – CA Toolkit</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+
 <style>
 """ + BASE_CSS + """
 .nav-links{display:flex;gap:20px;list-style:none}
@@ -3640,7 +3816,7 @@ TDS_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .hero-badge{display:inline-flex;align-items:center;gap:6px;background:#ECFDF5;color:#065F46;
             border:1px solid #A7F3D0;border-radius:99px;padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:12px}
 h1{font-size:clamp(20px,4vw,32px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:8px}
-h1 em{font-style:normal;color:var(--brand)}
+h1 em{font-style:normal;color:var(--accent)}
 .hero p{font-size:13px;color:var(--muted);line-height:1.7;max-width:520px;margin:0 auto}
 .act-note{max-width:1100px;margin:0 auto;padding:0 24px 10px}
 .act-box{background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:9px 14px;
@@ -3734,13 +3910,12 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
 </style></head><body>
 
 <nav>
-  <a href="/" class="logo">CA<span>Toolkit</span></a>
-  <ul class="nav-links"><li><a href="/">← All Tools</a></li></ul>
+  <a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a>
+  
   <div class="nav-right">
-    {% if username %}<span class="nav-user">👤 <strong>{{ username }}</strong></span>
-    {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
-    <a href="/logout" class="nav-link">Sign out</a>
-    {% else %}<a href="/login" class="nav-btn">Sign In</a>{% endif %}
+    {% if username %}<div class="nav-user"><span class="nav-avatar">{{ username[0].upper() }}</span><strong>{{ username }}</strong></div><div class="nav-sep"></div>{% if is_admin %}<a href="/admin" class="nav-btn ghost">⚙ Admin</a>{% endif %}{% endif %}
+    <a href="/" class="nav-btn dash">⬅ Dashboard</a>
+    {% if username %}<a href="/logout" class="nav-link">Sign out</a>{% else %}<a href="/login" class="nav-btn">Sign In →</a>{% endif %}
   </div>
 </nav>
 
@@ -3976,7 +4151,7 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
 <footer>
   <div class="ft-main">
     <div>
-      <div class="ft-brand-name">CA Toolkit</div>
+      <div class="ft-brand-name">CA<span>Toolkit</span></div>
       <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
     </div>
     <div>
@@ -4322,7 +4497,7 @@ document.getElementById("mainSection").innerHTML = buildTDSOptions();
 DEP_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Depreciation Calculator – CA Toolkit</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+
 <style>
 """ + BASE_CSS + """
 .hero{text-align:center;padding:40px 24px 28px;max-width:700px;margin:0 auto}
@@ -4330,7 +4505,7 @@ DEP_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
             color:#065F46;border:1px solid #A7F3D0;border-radius:99px;
             padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:14px}
 h1{font-size:clamp(22px,4vw,34px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:10px}
-h1 em{font-style:normal;color:var(--brand)}
+h1 em{font-style:normal;color:var(--accent)}
 .hero p{font-size:14px;color:var(--muted);line-height:1.7;max-width:500px;margin:0 auto}
 .main{max-width:1000px;margin:0 auto;padding:28px 24px 48px}
 .card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
@@ -4393,7 +4568,7 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
 </style></head><body>
 
 <nav>
-  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a>
   <div class="nav-right">
     {% if username %}
     <span class="nav-user">👤 <strong>{{ username }}</strong></span>
@@ -4402,7 +4577,7 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
     {% else %}
     <a href="/login" class="nav-btn">Sign In</a>
     {% endif %}
-    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
+    <a href="/" class="nav-btn dash">⬅ Dashboard</a>
   </div>
 </nav>
 
@@ -4520,7 +4695,7 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
 <footer>
   <div class="ft-main">
     <div>
-      <div class="ft-brand-name">CA Toolkit</div>
+      <div class="ft-brand-name">CA<span>Toolkit</span></div>
       <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
     </div>
     <div>
@@ -4646,14 +4821,14 @@ function calcDep(){
 MSME_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MSME Disallowance Calculator – CA Toolkit</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+
 <style>
 """ + BASE_CSS + """
 .hero{text-align:center;padding:32px 24px 16px;max-width:760px;margin:0 auto}
 .hero-badge{display:inline-flex;align-items:center;gap:6px;background:#ECFDF5;color:#065F46;
             border:1px solid #A7F3D0;border-radius:99px;padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:12px}
 h1{font-size:clamp(20px,4vw,32px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:8px}
-h1 em{font-style:normal;color:var(--brand)}
+h1 em{font-style:normal;color:var(--accent)}
 .hero p{font-size:13px;color:var(--muted);line-height:1.7;max-width:560px;margin:0 auto}
 .wrap{max-width:1100px;margin:0 auto;padding:16px 24px 48px}
 .card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
@@ -4738,13 +4913,13 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
 </style></head><body>
 
 <nav>
-  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a>
   <div class="nav-right">
     {% if username %}<span class="nav-user">👤 <strong>{{ username }}</strong></span>
     {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
     <a href="/logout" class="nav-link">Sign out</a>
     {% else %}<a href="/login" class="nav-btn">Sign In</a>{% endif %}
-    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
+    <a href="/" class="nav-btn dash">⬅ Dashboard</a>
   </div>
 </nav>
 
@@ -4845,7 +5020,7 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
 <footer>
   <div class="ft-main">
     <div>
-      <div class="ft-brand-name">CA Toolkit</div>
+      <div class="ft-brand-name">CA<span>Toolkit</span></div>
       <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
     </div>
     <div>
@@ -5053,14 +5228,14 @@ function exportResults(){
 CG_CALC_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Capital Gains Calculator – CA Toolkit</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+
 <style>
 """ + BASE_CSS + """
 .hero{text-align:center;padding:32px 24px 16px;max-width:760px;margin:0 auto}
 .hero-badge{display:inline-flex;align-items:center;gap:6px;background:#ECFDF5;color:#065F46;
             border:1px solid #A7F3D0;border-radius:99px;padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:12px}
 h1{font-size:clamp(20px,4vw,32px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:8px}
-h1 em{font-style:normal;color:var(--brand)}
+h1 em{font-style:normal;color:var(--accent)}
 .hero p{font-size:13px;color:var(--muted);line-height:1.7;max-width:520px;margin:0 auto}
 .wrap{max-width:1100px;margin:0 auto;padding:16px 24px 48px;display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
 @media(max-width:800px){.wrap{grid-template-columns:1fr}}
@@ -5155,13 +5330,13 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
 </style></head><body>
 
 <nav>
-  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a>
   <div class="nav-right">
     {% if username %}<span class="nav-user">👤 <strong>{{ username }}</strong></span>
     {% if is_admin %}<a href="/admin" class="nav-btn">Admin</a>{% endif %}
     <a href="/logout" class="nav-link">Sign out</a>
     {% else %}<a href="/login" class="nav-btn">Sign In</a>{% endif %}
-    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
+    <a href="/" class="nav-btn dash">⬅ Dashboard</a>
   </div>
 </nav>
 
@@ -5369,7 +5544,7 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
 <footer>
   <div class="ft-main">
     <div>
-      <div class="ft-brand-name">CA Toolkit</div>
+      <div class="ft-brand-name">CA<span>Toolkit</span></div>
       <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
     </div>
     <div>
@@ -5664,9 +5839,9 @@ tr:hover td{background:#F9FAFB}
 .progress-fill{height:100%;border-radius:99px}
 </style></head><body>
 <nav>
-  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a>
   <div class="nav-right">
-    <a href="/" class="nav-link">Dashboard</a>
+    <a href="/" class="nav-btn dash">⬅ Dashboard</a>
     <a href="/logout" class="nav-link">Sign out</a>
   </div>
 </nav>
@@ -6302,7 +6477,7 @@ GST_RECON_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>GST Reconciliation – CA Toolkit</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"/>
+
 <style>
 """ + BASE_CSS + """
 .nav-links{display:flex;gap:20px;list-style:none}
@@ -6313,7 +6488,7 @@ GST_RECON_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
             color:#92400E;border:1px solid #FDE68A;border-radius:99px;
             padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:18px}
 h1{font-size:clamp(22px,3.5vw,34px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:10px}
-h1 em{font-style:normal;color:var(--brand)}
+h1 em{font-style:normal;color:var(--accent)}
 .hero p{font-size:14px;color:var(--muted);line-height:1.7;max-width:520px;margin:0 auto}
 .main{max-width:900px;margin:0 auto;padding:30px 24px}
 .card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
@@ -6377,13 +6552,14 @@ function gstDragLeave(e,dzId){
 }
 </script>
 </head><body>
-<nav class="navbar"><div class="nav-inner">
-  <a href="/" class="logo">CA Toolkit</a>
-  <ul class="nav-links">
-    <li><a href="/">← All Tools</a></li>
-    {% if username %}<li><a href="/logout">Logout</a></li>{% endif %}
-  </ul>
-</div></nav>
+<nav>
+  <a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a>
+  <div class="nav-right">
+    {% if username %}<div class="nav-user"><span class="nav-avatar">{{ username[0].upper() }}</span><strong>{{ username }}</strong></div><div class="nav-sep"></div>{% if is_admin %}<a href="/admin" class="nav-btn ghost">⚙ Admin</a>{% endif %}{% endif %}
+    <a href="/" class="nav-btn dash">⬅ Dashboard</a>
+    {% if username %}<a href="/logout" class="nav-link">Sign out</a>{% else %}<a href="/login" class="nav-btn">Sign In →</a>{% endif %}
+  </div>
+</nav>
 
 <div class="hero">
   <div class="hero-badge">📊 GST Reconciliation</div>
@@ -9067,11 +9243,11 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
 @media(max-width:600px){.row2{grid-template-columns:1fr}.steps{flex-direction:column}}
 </style></head><body>
 <nav>
-  <a href="/" class="logo">CA<span>Toolkit</span></a>
+  <a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a>
   <div class="nav-right">
     <span class="nav-user">👤 <strong>{{ username }}</strong>
       <span class="badge b-{{ plan }}">{{ plan_label }}</span></span>
-    <a href="/" class="nav-btn" style="background:#F3F4F6;color:var(--ink)">← Dashboard</a>
+    <a href="/" class="nav-btn dash">⬅ Dashboard</a>
     <a href="/logout" class="nav-link">Sign out</a>
   </div>
 </nav>
@@ -9280,7 +9456,7 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
 <footer>
   <div class="ft-main">
     <div>
-      <div class="ft-brand-name">CA Toolkit</div>
+      <div class="ft-brand-name">CA<span>Toolkit</span></div>
       <p class="ft-brand-desc">CA Toolkit is a comprehensive utility platform built by a CA Article from Ludhiana, Punjab, providing automation tools for Indian Chartered Accountants. The platform saves hours of manual work every year — from Balance Sheet year-shift to GST reconciliation, tax calculations, and more.</p>
     </div>
     <div>
