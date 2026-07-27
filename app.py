@@ -619,6 +619,88 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .stat-n em{font-style:normal;color:#6EE7B7}
 .stat-l{font-size:11.5px;color:rgba(255,255,255,.6);letter-spacing:.02em}
 @media(max-width:640px){.stats-inner{grid-template-columns:repeat(2,1fr)}.stat-item:nth-child(2){border-right:none}.stat-item{border-bottom:1px solid rgba(255,255,255,.1);padding:14px 0}}
+
+/* ── ABOUT / HOW IT WORKS SECTION ───────────────────────────────── */
+.about-section{background:var(--white);padding:60px 24px;border-top:1px solid var(--border)}
+.about-inner{max-width:1100px;margin:0 auto}
+.about-eyebrow{display:inline-flex;align-items:center;gap:6px;
+  background:var(--brand-l);color:var(--brand-d);border:1px solid var(--brand-m);
+  padding:5px 14px;border-radius:99px;font-size:11px;font-weight:700;
+  letter-spacing:.06em;text-transform:uppercase;margin-bottom:14px}
+.about-title{font-family:var(--font-head);font-size:clamp(22px,3.5vw,34px);font-weight:800;
+  color:var(--ink);letter-spacing:-.5px;line-height:1.2;margin-bottom:10px}
+.about-title em{font-style:italic;color:var(--brand)}
+.about-sub{font-size:15px;color:var(--muted);line-height:1.75;max-width:620px;margin-bottom:52px}
+
+/* Story strip */
+.story-strip{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:center;margin-bottom:60px}
+@media(max-width:768px){.story-strip{grid-template-columns:1fr;gap:28px}}
+.story-text h3{font-family:var(--font-head);font-size:20px;font-weight:800;color:var(--ink);
+  margin-bottom:12px;letter-spacing:-.3px}
+.story-text p{font-size:13.5px;color:var(--muted);line-height:1.85;margin-bottom:12px}
+.story-text p strong{color:var(--ink);font-weight:600}
+.story-quote{background:linear-gradient(135deg,var(--brand-l),#E0F2FE);
+  border-left:4px solid var(--brand);border-radius:0 12px 12px 0;
+  padding:18px 22px;font-size:14px;font-style:italic;color:var(--ink2);line-height:1.7;
+  margin-top:16px}
+.story-quote cite{display:block;margin-top:8px;font-size:12px;font-style:normal;
+  color:var(--muted);font-weight:600}
+.story-visual{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.sv-card{background:var(--bg);border:1.5px solid var(--border);border-radius:14px;
+  padding:18px 16px;text-align:center}
+.sv-card .sv-icon{font-size:28px;margin-bottom:8px}
+.sv-card .sv-num{font-family:var(--font-head);font-size:22px;font-weight:800;color:var(--brand);margin-bottom:3px}
+.sv-card .sv-lbl{font-size:11px;color:var(--muted);line-height:1.4}
+
+/* Tool deep-dives */
+.tool-deep-wrap{display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;margin-bottom:60px}
+@media(max-width:900px){.tool-deep-wrap{grid-template-columns:1fr 1fr}}
+@media(max-width:560px){.tool-deep-wrap{grid-template-columns:1fr}}
+.tool-deep{background:var(--bg);border:1.5px solid var(--border);border-radius:16px;
+  padding:24px 22px;position:relative;overflow:hidden}
+.tool-deep::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;
+  background:var(--td-color,var(--brand))}
+.tool-deep-icon{font-size:30px;margin-bottom:14px}
+.tool-deep h3{font-family:var(--font-head);font-size:16px;font-weight:800;color:var(--ink);
+  margin-bottom:8px;letter-spacing:-.2px}
+.tool-deep-tag{display:inline-flex;align-items:center;font-size:10px;font-weight:700;
+  padding:2px 9px;border-radius:99px;margin-bottom:12px;letter-spacing:.04em;
+  background:var(--td-bg,var(--brand-l));color:var(--td-c,var(--brand-d))}
+.tool-deep p{font-size:12.5px;color:var(--muted);line-height:1.75;margin-bottom:14px}
+.tool-deep-steps{list-style:none;padding:0;counter-reset:step}
+.tool-deep-steps li{display:flex;gap:9px;align-items:flex-start;
+  font-size:12px;color:var(--ink2);margin-bottom:8px;line-height:1.5}
+.tool-deep-steps li::before{counter-increment:step;content:counter(step);
+  min-width:20px;height:20px;background:var(--td-color,var(--brand));color:#fff;
+  border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:10px;font-weight:700;flex-shrink:0;margin-top:1px}
+.tool-deep-link{display:inline-flex;align-items:center;gap:6px;
+  font-size:12.5px;font-weight:700;color:var(--brand-d);text-decoration:none;
+  padding:8px 16px;border-radius:99px;border:1.5px solid var(--brand-m);
+  background:var(--brand-l);transition:background .18s,border-color .18s}
+.tool-deep-link:hover{background:var(--brand-m);border-color:var(--brand)}
+
+/* How to use steps */
+.howto-section{background:linear-gradient(135deg,#042F2E,#0D4F47);
+  padding:56px 24px;border-radius:20px;margin-bottom:48px;position:relative;overflow:hidden}
+.howto-section::before{content:'';position:absolute;inset:0;
+  background:radial-gradient(ellipse 60% 50% at 80% 50%,rgba(245,158,11,.12),transparent);
+  pointer-events:none}
+.howto-inner{max-width:900px;margin:0 auto;position:relative}
+.howto-title{font-family:var(--font-head);font-size:clamp(20px,3vw,28px);font-weight:800;
+  color:#fff;letter-spacing:-.4px;margin-bottom:8px}
+.howto-sub{font-size:13.5px;color:rgba(255,255,255,.65);margin-bottom:36px;line-height:1.7}
+.howto-steps{display:grid;grid-template-columns:repeat(4,1fr);gap:20px}
+@media(max-width:768px){.howto-steps{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:420px){.howto-steps{grid-template-columns:1fr}}
+.hs-item{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);
+  border-radius:14px;padding:20px 16px;position:relative}
+.hs-num{width:32px;height:32px;background:linear-gradient(135deg,var(--accent),var(--accent-d));
+  border-radius:10px;display:flex;align-items:center;justify-content:center;
+  font-size:13px;font-weight:800;color:#fff;margin-bottom:12px;
+  box-shadow:0 3px 10px rgba(245,158,11,.4)}
+.hs-title{font-size:13px;font-weight:700;color:#fff;margin-bottom:5px}
+.hs-desc{font-size:11.5px;color:rgba(255,255,255,.6);line-height:1.6}
 </style></head><body>
 
 <!-- ── NAV ─────────────────────────────────────────────────────── -->
@@ -650,10 +732,10 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <div class="hero-cta-row">
       {% if not username %}
       <a href="/login" class="hero-cta primary">Sign In &amp; Get Started →</a>
-      <a href="#premium" class="hero-cta secondary">Explore Tools ↓</a>
+      <a href="#premium" class="hero-cta secondary">Explore All Tools ↓</a>
       {% else %}
-      <a href="/tool/converter" class="hero-cta primary">Open Year-Shift Tool →</a>
-      <a href="/tool/tb-to-bs" class="hero-cta secondary">TB → Balance Sheet</a>
+      <a href="#premium" class="hero-cta primary">Explore All Tools ↓</a>
+      <a href="#howit" class="hero-cta secondary">How It Works</a>
       {% endif %}
     </div>
   </div>
@@ -827,6 +909,101 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <div class="stat-item anim-up anim-d2"><div class="stat-n">100%</div><div class="stat-l">Formatting Preserved</div></div>
     <div class="stat-item anim-up anim-d3"><div class="stat-n">&lt;<em>10s</em></div><div class="stat-l">Processing Time</div></div>
     <div class="stat-item anim-up anim-d4"><div class="stat-n"><em>∞</em></div><div class="stat-l">CA Templates Supported</div></div>
+  </div>
+</div>
+
+<!-- ── ABOUT + TOOL DEEP-DIVES ─────────────────────────────────── -->
+<div class="about-section" id="howit">
+  <div class="about-inner">
+
+    <!-- ── Story / Why We Built This ── -->
+    <div class="story-strip anim-up">
+      <div class="story-text">
+        <div class="about-eyebrow">✦ Our Story</div>
+        <h3>Built out of frustration — and necessity</h3>
+        <p>Every March, Chartered Accountants and their articles across India spend <strong>days manually rolling over balance sheets</strong> — copying PY figures, clearing CY cells, hunting down every date reference that says "31st March 2024" and changing it to "2025". For hundreds of clients. Every single year.</p>
+        <p>CA Toolkit was built by a CA Article from Ludhiana, Punjab who lived through exactly that. These tools <strong>automate the repetitive, error-prone parts</strong> of CA work so you can focus on what actually requires professional judgment.</p>
+        <div class="story-quote">
+          "I built the year-shift tool after spending 3 hours manually rolling over one client's balance sheet — and realising I had 40 more to go."
+          <cite>— Anmol Verma, CA Article &amp; Creator of CA Toolkit</cite>
+        </div>
+      </div>
+      <div class="story-visual">
+        <div class="sv-card anim-up anim-d1"><div class="sv-icon">⏱️</div><div class="sv-num">3 hrs</div><div class="sv-lbl">saved per client on year-shift</div></div>
+        <div class="sv-card anim-up anim-d2"><div class="sv-icon">📂</div><div class="sv-num">∞</div><div class="sv-lbl">CA templates supported</div></div>
+        <div class="sv-card anim-up anim-d3"><div class="sv-icon">✅</div><div class="sv-num">100%</div><div class="sv-lbl">formatting preserved</div></div>
+        <div class="sv-card anim-up anim-d4"><div class="sv-icon">⚡</div><div class="sv-num">&lt;10s</div><div class="sv-lbl">processing time per file</div></div>
+      </div>
+    </div>
+
+    <!-- ── Tool deep-dives ── -->
+    <div class="about-eyebrow">📖 Tool Guide</div>
+    <h2 class="about-title">What each tool does — <em>and how to use it</em></h2>
+    <p class="about-sub">Each tool solves one specific problem every CA firm faces. Here's exactly what they do and how to use them.</p>
+
+    <div class="tool-deep-wrap">
+
+      <div class="tool-deep anim-up anim-d1" style="--td-color:#0D9488;--td-bg:#F0FDFA;--td-c:#0F766E">
+        <div class="tool-deep-icon">📊</div>
+        <div class="tool-deep-tag">⭐ Balance Sheet Year-Shift</div>
+        <h3>Roll over any comparative BS in seconds</h3>
+        <p>Every financial year, a comparative balance sheet needs to be "rolled over" — the current year (CY) figures become previous year (PY), CY cells are cleared, and every date in the file is updated. This tool does all of that automatically in under 10 seconds, without touching a single formula or changing any formatting.</p>
+        <p><strong>What it handles:</strong> CY→PY column copy, CY cell clearing, all date text formats, formula preservation, external link removal.</p>
+        <ul class="tool-deep-steps">
+          <li>Upload your comparative balance sheet (.xlsx)</li>
+          <li>Enter the closing year (e.g. 2025) and new year (2026)</li>
+          <li>Click Process — download the rolled-over file instantly</li>
+          <li>Open in Excel — CY blank, PY filled, all dates updated ✓</li>
+        </ul>
+        <br/><a href="/tool/converter" class="tool-deep-link">Open Year-Shift Tool →</a>
+      </div>
+
+      <div class="tool-deep anim-up anim-d2" style="--td-color:#D97706;--td-bg:#FFFBEB;--td-c:#92400E">
+        <div class="tool-deep-icon">🗂️</div>
+        <div class="tool-deep-tag">⭐ Trial Balance → Balance Sheet</div>
+        <h3>Auto-fill your BS template from a Trial Balance</h3>
+        <p>After closing books in Tally or any accounting software, you have a Trial Balance. Manually picking figures from the TB and filling them into your CA-format balance sheet is slow and error-prone. This tool reads your TB, auto-classifies every account, and injects aggregated values into your template — <strong>without changing any formatting or formula</strong>.</p>
+        <p><strong>What it handles:</strong> Account classification, manual override for ambiguous accounts, fixed asset additions, capital movements, P&amp;L summary.</p>
+        <ul class="tool-deep-steps">
+          <li>Upload Trial Balance (.xlsx or .pdf) and your BS template</li>
+          <li>Review auto-mapped accounts — override any misclassifications</li>
+          <li>Enter fixed asset additions and capital movements if needed</li>
+          <li>Click Generate — download your filled Balance Sheet ✓</li>
+        </ul>
+        <br/><a href="/tool/tb-to-bs" class="tool-deep-link">Open TB → BS Tool →</a>
+      </div>
+
+      <div class="tool-deep anim-up anim-d3" style="--td-color:#7C3AED;--td-bg:#EDE9FE;--td-c:#5B21B6">
+        <div class="tool-deep-icon">📋</div>
+        <div class="tool-deep-tag">⭐ GST Reconciliation</div>
+        <h3>Books vs GSTR 3B — find differences instantly</h3>
+        <p>GST reconciliation is mandatory for every registered business during audit and ITR filing. Comparing sales as per books with GSTR 3B returns across 12 months and multiple states takes hours manually. This tool compares your sales summary with GSTR 3B PDFs and gives a month-wise, state-wise difference report in seconds.</p>
+        <p><strong>What it handles:</strong> Multi-state IGST/CGST/SGST breakup, month-wise variance, automatic PDF parsing, downloadable Excel report.</p>
+        <ul class="tool-deep-steps">
+          <li>Upload your sales summary Excel (month-wise, state-wise)</li>
+          <li>Upload a ZIP of your GSTR 3B PDFs (one per month)</li>
+          <li>Tool auto-parses and matches each month's figures</li>
+          <li>Download the reconciliation report with differences ✓</li>
+        </ul>
+        <br/><a href="/tool/gst-reconciliation" class="tool-deep-link">Open GST Recon Tool →</a>
+      </div>
+
+    </div>
+
+    <!-- ── Universal How It Works ── -->
+    <div class="howto-section anim-up">
+      <div class="howto-inner">
+        <h2 class="howto-title">How CA Toolkit works — in 4 steps</h2>
+        <p class="howto-sub">Every tool follows the same simple pattern. No installation, no setup, no learning curve.</p>
+        <div class="howto-steps">
+          <div class="hs-item"><div class="hs-num">1</div><div class="hs-title">Create a free account</div><div class="hs-desc">Sign up in 30 seconds. No credit card required. Free plan gives 2 uploads to try any premium tool.</div></div>
+          <div class="hs-item"><div class="hs-num">2</div><div class="hs-title">Upload your file</div><div class="hs-desc">Drag and drop your Excel or PDF. Files are processed on our server and never stored permanently.</div></div>
+          <div class="hs-item"><div class="hs-num">3</div><div class="hs-title">Review &amp; confirm</div><div class="hs-desc">For TB→BS, review auto-mapped accounts and correct any that need a different classification.</div></div>
+          <div class="hs-item"><div class="hs-num">4</div><div class="hs-title">Download instantly</div><div class="hs-desc">Your processed file downloads in seconds. Formatting, formulas, and print layout all intact.</div></div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
