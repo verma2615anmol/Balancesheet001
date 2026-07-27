@@ -247,30 +247,33 @@ BASE_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,700&family=Inter:wght@400;500;600&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  /* ── New palette: deep teal + electric amber ── */
-  --brand:#0D9488;--brand-d:#0F766E;--brand-l:#F0FDFA;--brand-m:#CCFBF1;
-  --accent:#F59E0B;--accent-d:#D97706;--accent-l:#FFFBEB;--accent-vl:#FEF3C7;
+  /* ── Option 1: Professional Premium — Teal + Amber ── */
+  --brand:#14B8A6;--brand-d:#0F766E;--brand-dk:#0D5C55;--brand-l:#F0FDFB;--brand-m:#99F6E4;
+  --accent:#F59E0B;--accent-d:#EFA600;--accent-l:#FFFBEB;--accent-vl:#FEF3C7;
   --purple:#6D28D9;--purple-l:#EDE9FE;
   --green:#059669;--green-l:#ECFDF5;
   --red:#DC2626;--red-l:#FEF2F2;
-  --ink:#0C1A29;--ink2:#1E3A4A;--muted:#5B7A8A;
-  --border:#D1E8E4;--border2:#A7D5CE;
-  --bg:#F0FAFA;--bg2:#E6F4F1;--white:#fff;
-  --radius:16px;--radius-sm:10px;
-  --shadow:0 1px 3px rgba(13,148,136,.07),0 4px 16px rgba(13,148,136,.07);
-  --shadow-md:0 4px 8px rgba(13,148,136,.08),0 12px 40px rgba(13,148,136,.13);
+  --ink:#0F172A;--ink2:#1E3A4A;--muted:#4B6A72;
+  /* Subtle green-tinted borders instead of grey */
+  --border:#E0F2EE;--border2:#99D6CB;
+  /* Very slightly tinted card backgrounds */
+  --bg:#F8FAFC;--bg2:#EEF9F7;--card:#FAFCFB;--white:#fff;
+  --radius:18px;--radius-sm:11px;
+  --shadow:0 1px 4px rgba(15,118,110,.06),0 4px 18px rgba(15,118,110,.08);
+  --shadow-md:0 4px 10px rgba(15,118,110,.08),0 14px 44px rgba(15,118,110,.14);
+  --shadow-lg:0 8px 24px rgba(15,118,110,.10),0 24px 64px rgba(15,118,110,.18);
   --font-head:'Plus Jakarta Sans',sans-serif;
   --font-body:'Inter',sans-serif;
 }
 body{font-family:var(--font-body);background:var(--bg);color:var(--ink);min-height:100vh;-webkit-font-smoothing:antialiased}
 
 /* ── NAV ─────────────────────────────────────────────────────────── */
-nav{background:rgba(255,255,255,.96);backdrop-filter:blur(12px);
+nav{background:rgba(255,255,255,.97);backdrop-filter:blur(14px);
     border-bottom:1px solid var(--border);padding:0 28px;
     display:flex;align-items:center;justify-content:space-between;height:62px;
     position:sticky;top:0;z-index:200;box-shadow:0 1px 0 var(--border)}
 .logo{font-family:var(--font-head);font-size:21px;font-weight:800;
-      color:var(--brand);letter-spacing:-.6px;text-decoration:none;display:flex;align-items:center;gap:2px}
+      color:var(--brand-d);letter-spacing:-.6px;text-decoration:none;display:flex;align-items:center;gap:2px}
 .logo-dot{width:7px;height:7px;background:var(--accent);border-radius:50%;margin-bottom:2px;flex-shrink:0}
 .logo span{color:var(--accent)}
 .nav-right{display:flex;align-items:center;gap:10px}
@@ -278,19 +281,20 @@ nav{background:rgba(255,255,255,.96);backdrop-filter:blur(12px);
 .nav-user strong{color:var(--ink);font-weight:600}
 .nav-avatar{width:30px;height:30px;background:linear-gradient(135deg,var(--brand),var(--brand-d));border-radius:50%;
             display:inline-flex;align-items:center;justify-content:center;
-            font-size:12px;font-weight:700;color:#fff;box-shadow:0 2px 8px rgba(13,148,136,.35)}
+            font-size:12px;font-weight:700;color:#fff;box-shadow:0 2px 8px rgba(15,118,110,.35)}
 .nav-btn{background:linear-gradient(135deg,var(--brand),var(--brand-d));color:#fff;padding:8px 18px;border-radius:var(--radius-sm);
          font-size:12.5px;font-weight:700;text-decoration:none;letter-spacing:.01em;
          transition:opacity .18s,transform .15s,box-shadow .18s;white-space:nowrap;
          font-family:var(--font-body);display:inline-flex;align-items:center;gap:5px;
-         box-shadow:0 2px 10px rgba(13,148,136,.3)}
-.nav-btn:hover{opacity:.92;transform:translateY(-1px);box-shadow:0 4px 18px rgba(13,148,136,.4)}
+         box-shadow:0 2px 12px rgba(15,118,110,.28)}
+.nav-btn:hover{opacity:.93;transform:translateY(-1px);box-shadow:0 5px 20px rgba(15,118,110,.38)}
 .nav-btn.ghost{background:transparent;color:var(--ink2);border:1.5px solid var(--border2);box-shadow:none}
-.nav-btn.ghost:hover{background:var(--bg2);border-color:var(--brand);color:var(--brand)}
+.nav-btn.ghost:hover{background:var(--bg2);border-color:var(--brand-d);color:var(--brand-d)}
 .nav-btn.dash{background:var(--bg2);color:var(--ink2);border:1.5px solid var(--border);font-weight:600;box-shadow:none}
-.nav-btn.dash:hover{background:var(--brand-l);color:var(--brand);border-color:var(--brand);transform:translateY(-1px)}
-.nav-link{font-size:12.5px;color:var(--muted);text-decoration:none;font-weight:500;padding:4px 2px}
-.nav-link:hover{color:var(--brand)}
+.nav-btn.dash:hover{background:var(--brand-l);color:var(--brand-d);border-color:var(--brand);transform:translateY(-1px)}
+.nav-link{font-size:12.5px;color:var(--muted);text-decoration:none;font-weight:500;padding:4px 2px;
+          transition:color .18s}
+.nav-link:hover{color:var(--brand-d)}
 .nav-sep{width:1px;height:20px;background:var(--border);margin:0 2px}
 
 /* ── BADGES ────────────────────────────────────────────────────────── */
@@ -304,29 +308,33 @@ nav{background:rgba(255,255,255,.96);backdrop-filter:blur(12px);
 .b-ca{background:#FDF2F8;color:#9D174D}
 
 /* ── FOOTER ─────────────────────────────────────────────────────────── */
-footer{background:#071C22;color:#94A3B8;font-size:12px;padding:0}
-.ft-main{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:40px;
-         padding:44px 52px;max-width:1280px;margin:0 auto}
-.ft-brand-name{color:#fff;font-family:var(--font-head);font-size:19px;font-weight:800;
+footer{background:#071812;color:#94A3B8;font-size:12px;padding:0}
+.ft-main{display:grid;grid-template-columns:2fr 1fr 1.5fr;gap:44px;
+         padding:48px 56px;max-width:1280px;margin:0 auto}
+.ft-brand-name{color:#fff;font-family:var(--font-head);font-size:20px;font-weight:800;
                margin-bottom:12px;letter-spacing:-.3px}
 .ft-brand-name span{color:var(--accent)}
-.ft-brand-desc{font-size:12.5px;line-height:1.8;color:#94A3B8;max-width:340px}
-.ft-col-title{color:#fff;font-size:13px;font-weight:700;margin-bottom:14px;letter-spacing:.02em}
+.ft-brand-desc{font-size:12.5px;line-height:1.85;color:#94A3B8;max-width:340px;margin-bottom:14px}
+.ft-col-title{color:#fff;font-size:13px;font-weight:700;margin-bottom:15px;letter-spacing:.03em;
+              text-transform:uppercase;font-size:11px}
 .ft-links{list-style:none;padding:0;margin:0}
-.ft-links li{margin-bottom:9px}
-.ft-links a{color:#94A3B8;text-decoration:none;font-size:12.5px;transition:color .18s}
-.ft-links a:hover{color:var(--accent)}
-.ft-contact-name{color:#fff;font-weight:700;font-size:13px;margin-bottom:6px}
-.ft-contact-addr{color:#94A3B8;font-size:12px;line-height:1.8;margin-bottom:10px}
-.ft-contact-line{color:#94A3B8;font-size:12px;margin-bottom:4px}
-.ft-socials{display:flex;gap:12px;margin-top:14px}
-.ft-socials a{width:34px;height:34px;background:#0F2D35;border-radius:8px;
+.ft-links li{margin-bottom:10px}
+.ft-links a{color:#94A3B8;text-decoration:none;font-size:12.5px;
+            transition:color .18s,padding-left .18s}
+.ft-links a:hover{color:var(--accent);padding-left:4px}
+.ft-contact-name{color:#fff;font-weight:700;font-size:13.5px;margin-bottom:8px}
+.ft-contact-addr{color:#94A3B8;font-size:12px;line-height:1.9;margin-bottom:10px}
+.ft-contact-line{color:#94A3B8;font-size:12px;margin-bottom:6px}
+.ft-contact-line a{color:#6EE7B7;text-decoration:none;transition:color .18s}
+.ft-contact-line a:hover{color:var(--accent)}
+.ft-socials{display:flex;gap:10px;margin-top:16px}
+.ft-socials a{width:36px;height:36px;background:#0D2E24;border-radius:10px;
               display:flex;align-items:center;justify-content:center;
-              color:#94A3B8;transition:background .18s,color .18s}
-.ft-socials a:hover{background:var(--brand);color:#fff}
+              color:#94A3B8;transition:background .2s,color .2s,transform .2s}
+.ft-socials a:hover{background:var(--brand-d);color:#fff;transform:translateY(-2px)}
 .ft-socials svg{width:16px;height:16px;fill:currentColor}
-.ft-bottom{background:#040E12;border-top:1px solid #0F2D35;
-           padding:13px 52px;display:flex;justify-content:space-between;
+.ft-bottom{background:#030D09;border-top:1px solid #0D2E24;
+           padding:14px 56px;display:flex;justify-content:space-between;
            align-items:center;flex-wrap:wrap;gap:8px}
 .ft-bottom-left{font-size:11px;color:#475569}
 .ft-bottom-right{font-size:11px;color:#475569}
@@ -348,10 +356,10 @@ footer{background:#071C22;color:#94A3B8;font-size:12px;padding:0}
           background:linear-gradient(135deg,var(--brand),var(--brand-d));color:#fff;border-radius:50%;
           display:flex;align-items:center;justify-content:center;
           font-size:18px;font-weight:800;cursor:pointer;
-          box-shadow:0 4px 14px rgba(13,148,136,.4);z-index:998;border:none;
+          box-shadow:0 4px 14px rgba(15,118,110,.4);z-index:998;border:none;
           transition:transform .2s,box-shadow .2s;text-decoration:none}
-.help-btn:hover{transform:scale(1.1);box-shadow:0 6px 20px rgba(13,148,136,.5)}
-.help-overlay{display:none;position:fixed;inset:0;background:rgba(7,28,34,.55);
+.help-btn:hover{transform:scale(1.1);box-shadow:0 6px 20px rgba(15,118,110,.5)}
+.help-overlay{display:none;position:fixed;inset:0;background:rgba(7,24,18,.6);
               z-index:1001;align-items:center;justify-content:center;padding:16px}
 .help-overlay.open{display:flex}
 .help-modal{background:#fff;border-radius:20px;max-width:540px;width:100%;
@@ -376,12 +384,37 @@ footer{background:#071C22;color:#94A3B8;font-size:12px;padding:0}
 @keyframes slideIn{from{opacity:0;transform:translateX(-12px)}to{opacity:1;transform:translateX(0)}}
 @keyframes meshShift{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
 @keyframes pulseRing{0%,100%{opacity:.6;transform:scale(1)}50%{opacity:.25;transform:scale(1.08)}}
-@keyframes countUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
 .anim-up{animation:fadeUp .45s cubic-bezier(.22,.68,0,1.2) both}
 .anim-in{animation:fadeIn .35s ease-out both}
 .anim-d1{animation-delay:.08s}.anim-d2{animation-delay:.16s}.anim-d3{animation-delay:.24s}
 .anim-d4{animation-delay:.32s}.anim-d5{animation-delay:.40s}.anim-d6{animation-delay:.48s}
 @media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+/* ── SHARED PAGE WRAPPER (privacy / story / how-to-use) ─────────────── */
+.page-wrap{max-width:820px;margin:48px auto;padding:0 28px 80px}
+.page-hero{margin-bottom:36px}
+.page-eyebrow{display:inline-flex;align-items:center;gap:6px;
+  background:var(--brand-l);color:var(--brand-d);border:1px solid var(--brand-m);
+  padding:5px 14px;border-radius:99px;font-size:11px;font-weight:700;
+  letter-spacing:.06em;text-transform:uppercase;margin-bottom:12px}
+.page-title{font-family:var(--font-head);font-size:clamp(24px,4vw,38px);font-weight:800;
+  color:var(--ink);letter-spacing:-.6px;line-height:1.15;margin-bottom:10px}
+.page-title em{font-style:italic;color:var(--brand-d)}
+.page-sub{font-size:14.5px;color:var(--muted);line-height:1.8;max-width:580px}
+.page-date{font-size:11.5px;color:var(--muted);margin-top:6px}
+.page-divider{height:1px;background:linear-gradient(90deg,var(--border),transparent);
+  margin:32px 0}
+.page-section{margin-bottom:36px}
+.page-section h2{font-family:var(--font-head);font-size:16px;font-weight:800;
+  color:var(--brand-d);margin-bottom:10px;letter-spacing:-.2px}
+.page-section p,.page-section li{font-size:13.5px;line-height:1.85;color:#374151}
+.page-section ul{padding-left:20px;margin-bottom:12px}
+.page-section ul li{margin-bottom:6px}
+.page-section .warn{color:#B91C1C;font-weight:600;background:#FEF2F2;
+  padding:10px 14px;border-radius:8px;border-left:4px solid #EF4444;
+  font-size:13px;line-height:1.7}
+.page-section a{color:var(--brand-d);text-decoration:underline}
 """
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -391,42 +424,347 @@ footer{background:#071C22;color:#94A3B8;font-size:12px;padding:0}
 PRIVACY_TEMPLATE = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Privacy Policy – CA Toolkit</title>
-<style>
-""" + BASE_CSS + """
-.pp-wrap{max-width:760px;margin:40px auto;padding:0 24px 60px}
-.pp-wrap h1{font-size:22px;font-weight:800;margin-bottom:6px}
-.pp-wrap h2{font-size:15px;font-weight:700;margin:28px 0 8px;color:var(--brand)}
-.pp-wrap p,.pp-wrap li{font-size:13px;line-height:1.8;color:#374151}
-.pp-wrap ul{padding-left:20px;margin-bottom:12px}
-.pp-date{font-size:11px;color:var(--muted);margin-bottom:24px}
-</style></head><body>
-<nav><a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a><div class="nav-right"><a href="/" class="nav-btn dash">⬅ Dashboard</a></div></nav>
-<div class="pp-wrap">
-  <h1>Privacy Policy</h1>
-  <p class="pp-date">Last updated: June 2026</p>
-  <h2>1. Data We Collect</h2>
-  <p>We collect only the minimum information necessary to operate the platform: your email/username for account creation, and uploaded Excel files solely for processing your request.</p>
-  <h2>2. File Handling</h2>
-  <ul>
-    <li>Uploaded files are processed in memory on our servers.</li>
-    <li>Files are automatically deleted within minutes of processing — we do not store them permanently.</li>
-    <li>We never read, analyse, or share the contents of your financial files with any third party.</li>
-  </ul>
-  <h2>3. No Ads · No Tracking</h2>
-  <p>CA Toolkit does not serve advertisements and does not use third-party tracking or analytics cookies. We do not sell your data.</p>
-  <h2>4. Account Data</h2>
-  <p>Your username and plan information are stored securely in our database. We do not store any payment card details — all payments are handled via UPI or direct bank transfer.</p>
-  <h2>5. Refund Policy</h2>
-  <p style="color:#B91C1C;font-weight:600">No refund is issued once the first upload of a paid plan has been used. Unused credits on free plans are non-transferable.</p>
-  <h2>6. Contact</h2>
-  <p>For any privacy concerns, contact us on <a href="https://wa.me/918427651580">WhatsApp</a>.</p>
+<style>""" + BASE_CSS + """</style></head><body>
+<nav>
+  <a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a>
+  <div class="nav-right"><a href="/" class="nav-btn dash">← Back to Dashboard</a></div>
+</nav>
+<div class="page-wrap anim-up">
+  <div class="page-hero">
+    <div class="page-eyebrow">🔒 Legal</div>
+    <h1 class="page-title">Privacy <em>Policy</em></h1>
+    <p class="page-sub">We built CA Toolkit to save your time — not to sell your data. Here's exactly what we collect and why.</p>
+    <p class="page-date">Last updated: June 2026</p>
+  </div>
+  <div class="page-divider"></div>
+  <div class="page-section">
+    <h2>1. Data We Collect</h2>
+    <p>We collect only the minimum information needed to run the platform: your username for account creation, and uploaded Excel or PDF files solely to process your request. We do not collect your email unless you contact us directly.</p>
+  </div>
+  <div class="page-section">
+    <h2>2. File Handling</h2>
+    <ul>
+      <li>Uploaded files are processed entirely in memory on our servers — they are never written to permanent storage.</li>
+      <li>Files are automatically deleted within minutes of processing.</li>
+      <li>We never read, analyse, or share the contents of your financial files with any third party.</li>
+    </ul>
+  </div>
+  <div class="page-section">
+    <h2>3. No Ads · No Tracking</h2>
+    <p>CA Toolkit does not serve advertisements and does not use third-party tracking or analytics cookies. We do not sell your data — full stop.</p>
+  </div>
+  <div class="page-section">
+    <h2>4. Account Data</h2>
+    <p>Your username and plan information are stored securely in our database (Supabase/PostgreSQL). We do not store any payment card details — all payments are handled via UPI or direct bank transfer.</p>
+  </div>
+  <div class="page-section">
+    <h2>5. Account Creation</h2>
+    <p>Accounts on CA Toolkit are <strong>created only by the administrator</strong>. There is no self-registration. If you need access, contact us on WhatsApp or email and we will set up your account manually.</p>
+  </div>
+  <div class="page-section">
+    <h2>6. Refund Policy</h2>
+    <div class="warn">No refund is issued once the first upload of a paid plan has been used. Unused credits on free plans are non-transferable. Please verify the tool works for your use case using your 2 free uploads before purchasing a plan.</div>
+  </div>
+  <div class="page-section">
+    <h2>7. Contact</h2>
+    <p>For any privacy concerns or access requests, reach us at:</p>
+    <ul>
+      <li>Email: <a href="mailto:sumitverma2880@gmail.com">sumitverma2880@gmail.com</a></li>
+      <li>WhatsApp: <a href="https://wa.me/918427651580">+91 84276 51580</a></li>
+    </ul>
+  </div>
 </div>
 <footer>
-  <div class="ft-bottom" style="justify-content:center">
-    <span class="ft-bottom-left">&copy;2026 CA Toolkit &middot; All Rights Reserved &middot; <a href="/privacy" style="color:#6B7280;text-decoration:none">Privacy Policy</a></span>
+  <div class="ft-bottom" style="justify-content:center;background:#071812;border-top:1px solid #0D2E24;padding:14px 24px">
+    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved · <a href="/privacy" style="color:#6B7280;text-decoration:none">Privacy Policy</a></span>
   </div>
 </footer>
+<a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
 </body></html>"""
+
+WA_SVG = """<svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>"""
+
+_PAGE_NAV = """<nav>
+  <a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a>
+  <div class="nav-right">
+    <a href="/story" class="nav-link">Our Story</a>
+    <a href="/how-to-use" class="nav-link">How to Use</a>
+    <div class="nav-sep"></div>
+    <a href="/" class="nav-btn dash">← Dashboard</a>
+  </div>
+</nav>"""
+
+_PAGE_FOOTER = """<footer>
+  <div class="ft-bottom" style="justify-content:center;background:#071812;border-top:1px solid #0D2E24;padding:14px 24px">
+    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved ·
+      <a href="/privacy" style="color:#6B7280;text-decoration:none">Privacy Policy</a> ·
+      <a href="/story" style="color:#6B7280;text-decoration:none">Our Story</a> ·
+      <a href="/how-to-use" style="color:#6B7280;text-decoration:none">How to Use</a>
+    </span>
+  </div>
+</footer>
+<a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support">""" + WA_SVG + """</a>"""
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  STORY PAGE  — /story
+# ══════════════════════════════════════════════════════════════════════════════
+
+STORY_TEMPLATE = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Our Story – CA Toolkit</title>
+<style>""" + BASE_CSS + """
+/* Story-specific extras */
+.story-grid{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:start;margin-bottom:48px}
+@media(max-width:768px){.story-grid{grid-template-columns:1fr;gap:28px}}
+.story-quote-block{background:linear-gradient(135deg,var(--brand-l),#E0F7F4);
+  border-left:4px solid var(--brand-d);border-radius:0 14px 14px 0;
+  padding:20px 24px;font-size:14.5px;font-style:italic;color:var(--ink2);line-height:1.8;margin:20px 0}
+.story-quote-block cite{display:block;margin-top:10px;font-size:12px;font-style:normal;
+  color:var(--muted);font-weight:700}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.stat-tile{background:var(--card);border:1.5px solid var(--border);border-radius:14px;
+  padding:20px 16px;text-align:center;transition:border-color .2s,box-shadow .2s,transform .2s}
+.stat-tile:hover{border-color:var(--brand);box-shadow:var(--shadow-md);transform:translateY(-3px)}
+.stat-tile .si{font-size:28px;margin-bottom:8px}
+.stat-tile .sn{font-family:var(--font-head);font-size:24px;font-weight:800;color:var(--brand-d);margin-bottom:3px}
+.stat-tile .sl{font-size:11.5px;color:var(--muted);line-height:1.4}
+.timeline{list-style:none;padding:0;border-left:2px solid var(--border);margin-left:12px}
+.tl-item{position:relative;padding:0 0 28px 28px}
+.tl-item:last-child{padding-bottom:0}
+.tl-dot{position:absolute;left:-9px;top:4px;width:16px;height:16px;
+  background:linear-gradient(135deg,var(--brand),var(--brand-d));border-radius:50%;
+  border:2px solid white;box-shadow:0 0 0 2px var(--brand-m)}
+.tl-label{font-size:10.5px;font-weight:700;color:var(--accent-d);text-transform:uppercase;
+  letter-spacing:.06em;margin-bottom:4px}
+.tl-text{font-size:13px;color:var(--ink2);line-height:1.7}
+</style></head><body>
+""" + _PAGE_NAV + """
+<div class="page-wrap anim-up">
+  <div class="page-hero">
+    <div class="page-eyebrow">✦ Our Story</div>
+    <h1 class="page-title">Built out of frustration — <em>and necessity</em></h1>
+    <p class="page-sub">Why a CA Article from Ludhiana spent weekends building automation tools that every CA firm in India needed.</p>
+  </div>
+  <div class="page-divider"></div>
+
+  <div class="story-grid">
+    <div>
+      <div class="page-section">
+        <h2>The Problem</h2>
+        <p>Every financial year-end, CA firms across India face the same grind. A comparative balance sheet needs to be "rolled over" — current year figures become previous year, CY cells are cleared, and every single date reference in the file gets updated. For a typical CA firm handling 50–100 clients, this means days of repetitive, error-prone manual work. One wrong cell, one missed date, and the entire BS is wrong.</p>
+        <p>Then there's the Trial Balance. After closing books in Tally, someone has to manually pick every figure and paste it into the CA-format balance sheet. Account by account. For every client. Every year.</p>
+      </div>
+      <div class="story-quote-block">
+        "I spent 3 hours rolling over one client's balance sheet manually — updating dates, copying PY figures, clearing CY cells. Then I looked at my list and saw 47 more clients waiting. That's when I decided to build the tool."
+        <cite>— Sumit Verma (Anmol), CA Article &amp; Founder of CA Toolkit</cite>
+      </div>
+      <div class="page-section">
+        <h2>The Solution</h2>
+        <p>CA Toolkit automates the repetitive, mechanical parts of CA work — the parts that don't require professional judgment, just time and patience. The year-shift tool does in 8 seconds what used to take 2–3 hours. The TB→BS tool does in minutes what used to take half a day.</p>
+        <p>Every tool is built from real experience in a CA office, not from theory. If you've sat through a year-end close in a CA firm, you know exactly why these tools exist.</p>
+      </div>
+    </div>
+    <div>
+      <div class="stat-grid" style="margin-bottom:28px">
+        <div class="stat-tile anim-up anim-d1"><div class="si">⏱️</div><div class="sn">3 hrs</div><div class="sl">saved per client on year-shift alone</div></div>
+        <div class="stat-tile anim-up anim-d2"><div class="si">📂</div><div class="sn">∞</div><div class="sl">CA templates supported — any format</div></div>
+        <div class="stat-tile anim-up anim-d3"><div class="si">✅</div><div class="sn">100%</div><div class="sl">formatting &amp; formulas preserved</div></div>
+        <div class="stat-tile anim-up anim-d4"><div class="si">⚡</div><div class="sn">&lt;10s</div><div class="sl">processing time per file</div></div>
+      </div>
+      <div class="page-section">
+        <h2>How It Grew</h2>
+        <ul class="timeline">
+          <li class="tl-item"><div class="tl-dot"></div><div class="tl-label">March 2024</div><div class="tl-text">First version of the year-shift tool — built over a weekend, used internally for 50 clients.</div></li>
+          <li class="tl-item"><div class="tl-dot"></div><div class="tl-label">July 2024</div><div class="tl-text">TB→Balance Sheet tool started — solving the manual figure-picking problem after every Tally close.</div></li>
+          <li class="tl-item"><div class="tl-dot"></div><div class="tl-label">Jan 2025</div><div class="tl-text">GST Reconciliation tool added — Books vs GSTR 3B, month-wise and state-wise, in seconds.</div></li>
+          <li class="tl-item"><div class="tl-dot"></div><div class="tl-label">2025–26</div><div class="tl-text">Free tools added — Tax Calculator, TDS/TCS, Depreciation, MSME, Capital Gains. CA Toolkit goes public.</div></li>
+          <li class="tl-item"><div class="tl-dot"></div><div class="tl-label">Now</div><div class="tl-text">9+ tools live, more coming. Every tool built from real CA office experience.</div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="page-divider"></div>
+  <div class="page-section">
+    <h2>Who Built This</h2>
+    <p>CA Toolkit is built and maintained by <strong>Sumit Verma</strong>, a CA Article from Ludhiana, Punjab. Every tool on this platform comes from a real problem encountered while working in a CA firm — not from a product roadmap. If you have a repetitive CA task that you think could be automated, reach out.</p>
+    <ul>
+      <li>Email: <a href="mailto:sumitverma2880@gmail.com">sumitverma2880@gmail.com</a></li>
+      <li>WhatsApp: <a href="https://wa.me/918427651580">+91 84276 51580</a></li>
+    </ul>
+  </div>
+</div>
+""" + _PAGE_FOOTER + """
+</body></html>"""
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  HOW TO USE PAGE  — /how-to-use
+# ══════════════════════════════════════════════════════════════════════════════
+
+HOW_TO_USE_TEMPLATE = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>How to Use – CA Toolkit</title>
+<style>""" + BASE_CSS + """
+/* How-to-use page extras */
+.tool-guide{background:var(--card);border:1.5px solid var(--border);border-radius:var(--radius);
+  padding:28px 28px 24px;margin-bottom:28px;position:relative;overflow:hidden;
+  transition:border-color .22s,box-shadow .22s,transform .2s}
+.tool-guide:hover{border-color:var(--brand);box-shadow:var(--shadow-md);transform:translateY(-3px)}
+.tool-guide::before{content:'';position:absolute;top:0;left:0;right:0;height:3.5px;
+  background:var(--tg-grad,linear-gradient(90deg,var(--brand),var(--brand-d)))}
+.tg-header{display:flex;align-items:center;gap:14px;margin-bottom:16px}
+.tg-icon{font-size:28px;width:52px;height:52px;border-radius:13px;
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.tg-tag{display:inline-flex;align-items:center;font-size:10px;font-weight:700;
+  padding:3px 10px;border-radius:99px;margin-bottom:6px;letter-spacing:.04em}
+.tg-title{font-family:var(--font-head);font-size:17px;font-weight:800;color:var(--ink);margin-bottom:4px}
+.tg-sub{font-size:12.5px;color:var(--muted);line-height:1.6}
+.tg-body{font-size:13px;color:var(--ink2);line-height:1.8;margin-bottom:16px}
+.tg-body strong{color:var(--ink);font-weight:600}
+.tg-steps{list-style:none;padding:0;counter-reset:step;margin-bottom:18px}
+.tg-steps li{display:flex;gap:12px;align-items:flex-start;padding:10px 0;
+  border-bottom:1px solid var(--border);font-size:13px;color:var(--ink2);line-height:1.6}
+.tg-steps li:last-child{border:none;padding-bottom:0}
+.tg-steps li::before{counter-increment:step;content:counter(step);
+  min-width:24px;height:24px;background:linear-gradient(135deg,var(--brand),var(--brand-d));
+  color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:800;flex-shrink:0;margin-top:1px}
+.tg-tip{background:var(--accent-vl);border:1px solid #FDE68A;border-radius:10px;
+  padding:12px 16px;font-size:12.5px;color:#78350F;line-height:1.7;margin-top:6px}
+.tg-link{display:inline-flex;align-items:center;gap:6px;margin-top:14px;
+  font-size:13px;font-weight:700;color:var(--brand-d);text-decoration:none;
+  padding:9px 20px;border-radius:99px;border:1.5px solid var(--brand-m);
+  background:var(--brand-l);transition:background .18s,border-color .18s,transform .18s}
+.tg-link:hover{background:var(--brand-m);border-color:var(--brand);transform:translateX(3px)}
+.universal-steps{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:36px}
+@media(max-width:768px){.universal-steps{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:420px){.universal-steps{grid-template-columns:1fr}}
+.us-card{background:linear-gradient(135deg,#042F2E,#0D5C50);border-radius:14px;
+  padding:20px 16px;position:relative}
+.us-num{width:32px;height:32px;background:linear-gradient(135deg,var(--accent),var(--accent-d));
+  border-radius:10px;display:flex;align-items:center;justify-content:center;
+  font-size:13px;font-weight:800;color:#fff;margin-bottom:12px;
+  box-shadow:0 3px 10px rgba(245,158,11,.4)}
+.us-title{font-size:13px;font-weight:700;color:#fff;margin-bottom:5px}
+.us-desc{font-size:11.5px;color:rgba(255,255,255,.6);line-height:1.6}
+</style></head><body>
+""" + _PAGE_NAV + """
+<div class="page-wrap anim-up">
+  <div class="page-hero">
+    <div class="page-eyebrow">📖 Guide</div>
+    <h1 class="page-title">How to use <em>CA Toolkit</em></h1>
+    <p class="page-sub">Step-by-step instructions for every tool. No installation, no learning curve — just upload and download.</p>
+  </div>
+  <div class="page-divider"></div>
+
+  <!-- Universal flow -->
+  <div class="page-section">
+    <h2>General Workflow — same for every tool</h2>
+    <p style="margin-bottom:20px">Every tool on CA Toolkit follows this 4-step pattern:</p>
+    <div class="universal-steps">
+      <div class="us-card anim-up anim-d1"><div class="us-num">1</div><div class="us-title">Get access</div><div class="us-desc">Accounts are created by the administrator only. Contact us on WhatsApp or email to get your account set up.</div></div>
+      <div class="us-card anim-up anim-d2"><div class="us-num">2</div><div class="us-title">Upload your file</div><div class="us-desc">Drag and drop your Excel or PDF file. Processed entirely in memory — never stored permanently.</div></div>
+      <div class="us-card anim-up anim-d3"><div class="us-num">3</div><div class="us-title">Review &amp; confirm</div><div class="us-desc">Some tools (like TB→BS) show you an intermediate step to verify auto-mappings before generating.</div></div>
+      <div class="us-card anim-up anim-d4"><div class="us-num">4</div><div class="us-title">Download instantly</div><div class="us-desc">Your processed file downloads in seconds. All formatting, formulas, and print layout remain intact.</div></div>
+    </div>
+  </div>
+
+  <div class="page-divider"></div>
+  <div class="page-section"><h2>Premium Tool Guides</h2></div>
+
+  <!-- Tool 1: Year Shift -->
+  <div class="tool-guide anim-up anim-d1" style="--tg-grad:linear-gradient(90deg,#14B8A6,#0F766E,#F59E0B)">
+    <div class="tg-header">
+      <div class="tg-icon" style="background:linear-gradient(135deg,#E0F7F4,#CCFBF1)">📊</div>
+      <div>
+        <div class="tg-tag" style="background:#F0FDFB;color:#0F766E;border:1px solid #99F6E4">⭐ Premium · Balance Sheet Year-Shift</div>
+        <div class="tg-title">Roll over a comparative Balance Sheet</div>
+        <div class="tg-sub">Shifts CY→PY, clears CY, updates all dates — in under 10 seconds</div>
+      </div>
+    </div>
+    <div class="tg-body">
+      Every comparative balance sheet needs a yearly "roll-over" — the current year (CY) column becomes the previous year (PY) column, CY cells are cleared for new data, and every date reference in the file is updated to the new financial year. This tool handles all of that automatically, without changing a single formula or cell format.
+      <br/><br/><strong>What it handles:</strong> CY→PY column shift, CY cell clearing, all date text formats ("31st March 2024", "31.03.2024", "Year ended March 31, 2024"), formula preservation, and external link removal.
+    </div>
+    <ul class="tg-steps">
+      <li>Sign in to your account and go to <strong>Balance Sheet Year-Shift</strong></li>
+      <li>Upload your existing comparative balance sheet (<strong>.xlsx format</strong>)</li>
+      <li>Enter the <strong>closing financial year</strong> (e.g. 2025 — the year you are rolling over from)</li>
+      <li>Enter the <strong>new financial year</strong> (e.g. 2026 — the year you are rolling into)</li>
+      <li>Click <strong>Process</strong> — wait 5–10 seconds</li>
+      <li>Download the output file — open in Excel and verify: CY column is blank, PY has old CY values, all dates are updated ✓</li>
+    </ul>
+    <div class="tg-tip">💡 <strong>Tip:</strong> The tool preserves all formulas and does not remove any formatting. If a cell had a formula referencing another sheet, it will still have that formula — just with the old CY value cleared.</div>
+    <a href="/tool/converter" class="tg-link">Open Year-Shift Tool →</a>
+  </div>
+
+  <!-- Tool 2: TB to BS -->
+  <div class="tool-guide anim-up anim-d2" style="--tg-grad:linear-gradient(90deg,#F59E0B,#D97706)">
+    <div class="tg-header">
+      <div class="tg-icon" style="background:linear-gradient(135deg,#FFFBEB,#FEF3C7)">🗂️</div>
+      <div>
+        <div class="tg-tag" style="background:#FFFBEB;color:#92400E;border:1px solid #FDE68A">⭐ Premium · Trial Balance → Balance Sheet</div>
+        <div class="tg-title">Auto-fill a BS template from a Trial Balance</div>
+        <div class="tg-sub">Reads your TB, classifies every account, injects figures into your template</div>
+      </div>
+    </div>
+    <div class="tg-body">
+      After closing books in Tally or any accounting software, you have a Trial Balance. Manually picking each figure and filling it into a CA-format balance sheet is slow and error-prone. This tool reads your TB, auto-classifies every account into the correct BS/P&amp;L head (capital, borrowings, trade payables, fixed assets, etc.), and injects the aggregated values into your template — <strong>without changing a single cell's formatting or formula</strong>.
+    </div>
+    <ul class="tg-steps">
+      <li>Sign in and go to <strong>Balance Sheet from Trial Balance</strong></li>
+      <li>Upload your <strong>Trial Balance</strong> (.xlsx — export from Tally or any software). Must have account name + Dr/Cr balance columns</li>
+      <li>Upload your <strong>BS Template</strong> (.xlsx — your existing CA-format balance sheet with CY column ready to fill)</li>
+      <li>Enter <strong>client name</strong> and <strong>financial year</strong></li>
+      <li>Click <strong>Analyse</strong> — the tool auto-maps every account to a BS head. Review the mappings and <strong>override any that are wrong</strong></li>
+      <li>Enter <strong>fixed asset additions, sales, and depreciation</strong> for the year if prompted</li>
+      <li>Enter <strong>capital account movements</strong> (drawings, fresh capital) if applicable</li>
+      <li>Click <strong>Generate Balance Sheet</strong> — download the filled template ✓</li>
+    </ul>
+    <div class="tg-tip">💡 <strong>Tip:</strong> The tool never changes your template's formatting. Only the CY figures are filled in. If a cell had a formula (like a sum), it will be overwritten with the calculated figure — so review total cells if your template uses live formulas.</div>
+    <a href="/tool/tb-to-bs" class="tg-link">Open TB → BS Tool →</a>
+  </div>
+
+  <!-- Tool 3: GST Recon -->
+  <div class="tool-guide anim-up anim-d3" style="--tg-grad:linear-gradient(90deg,#7C3AED,#6D28D9)">
+    <div class="tg-header">
+      <div class="tg-icon" style="background:linear-gradient(135deg,#EDE9FE,#DDD6FE)">📋</div>
+      <div>
+        <div class="tg-tag" style="background:#EDE9FE;color:#5B21B6;border:1px solid #C4B5FD">⭐ Premium · GST Reconciliation</div>
+        <div class="tg-title">Books vs GSTR 3B — find the differences</div>
+        <div class="tg-sub">Month-wise, state-wise reconciliation report in seconds</div>
+      </div>
+    </div>
+    <div class="tg-body">
+      GST reconciliation — comparing sales as per books with GSTR 3B returns — is mandatory for every registered business during audit and ITR filing. Doing it manually across 12 months and multiple states takes hours. This tool parses your GSTR 3B PDFs, compares them with your sales summary, and gives you a complete difference report instantly.
+    </div>
+    <ul class="tg-steps">
+      <li>Sign in and go to <strong>GST Reconciliation</strong></li>
+      <li>Download the <strong>Sales Summary Template</strong> from the tool page and fill in your month-wise, state-wise sales figures from books</li>
+      <li>Collect all 12 months of <strong>GSTR 3B PDFs</strong> (downloaded from the GST portal) and zip them into a single .zip file</li>
+      <li>Upload the <strong>Sales Summary Excel</strong> and the <strong>GSTR 3B ZIP</strong></li>
+      <li>Click <strong>Reconcile</strong> — the tool auto-parses each PDF and matches figures month by month</li>
+      <li>Download the <strong>Reconciliation Report</strong> — differences are highlighted, state-wise breakdown included ✓</li>
+    </ul>
+    <div class="tg-tip">💡 <strong>Tip:</strong> Make sure your GSTR 3B PDFs are the official portal downloads (not scanned copies). The tool reads structured PDF text — scanned images won't work.</div>
+    <a href="/tool/gst-reconciliation" class="tg-link">Open GST Recon Tool →</a>
+  </div>
+
+  <div class="page-divider"></div>
+  <div class="page-section">
+    <h2>Need help or access?</h2>
+    <p>Accounts are created by the administrator only — there is no self-registration. To get access or for any help using the tools, reach out directly:</p>
+    <ul>
+      <li>Email: <a href="mailto:sumitverma2880@gmail.com">sumitverma2880@gmail.com</a></li>
+      <li>WhatsApp: <a href="https://wa.me/918427651580">+91 84276 51580</a></li>
+    </ul>
+  </div>
+</div>
+""" + _PAGE_FOOTER + """
+</body></html>"""
+
+# ══════════════════════════════════════════════════════════════════════════════
 
 LOGIN_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -483,10 +821,10 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 """ + BASE_CSS + """
 /* ── DASHBOARD HERO ─────────────────────────────────────────────── */
 .dash-hero{
-  background:linear-gradient(135deg,#042F2E 0%,#0D9488 40%,#134E4A 70%,#0C1A29 100%);
+  background:linear-gradient(135deg,#0B5D4A 0%,#0E8A7B 35%,#18B5A4 65%,#0B5D4A 100%);
   background-size:300% 300%;
-  animation:meshShift 12s ease infinite;
-  padding:60px 24px 56px;text-align:center;position:relative;overflow:hidden}
+  animation:meshShift 14s ease infinite;
+  padding:64px 24px 60px;text-align:center;position:relative;overflow:hidden}
 .dash-hero::before{content:'';position:absolute;inset:0;
   background:radial-gradient(ellipse 70% 60% at 50% 40%,rgba(245,158,11,.12) 0%,transparent 70%);
   pointer-events:none}
@@ -500,16 +838,20 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   padding:6px 18px;font-size:11.5px;font-weight:700;margin-bottom:22px;letter-spacing:.04em}
 .dash-hero h1{font-family:var(--font-head);font-size:clamp(28px,5vw,48px);
   font-weight:800;line-height:1.12;letter-spacing:-1px;color:#fff;margin-bottom:16px}
-.dash-hero h1 em{font-style:italic;color:#6EE7B7}
-.dash-hero p{font-size:15.5px;color:rgba(255,255,255,.75);line-height:1.75;max-width:500px;margin:0 auto 28px}
-.hero-cta-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
-.hero-cta{display:inline-flex;align-items:center;gap:7px;padding:11px 26px;border-radius:99px;
+.dash-hero h1 em{font-style:italic;color:#A7F3D0}
+.dash-hero p{font-size:15.5px;color:rgba(255,255,255,.78);line-height:1.78;max-width:500px;margin:0 auto 30px}
+.hero-cta-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:16px}
+.hero-link-row{display:flex;gap:20px;justify-content:center;flex-wrap:wrap}
+.hero-link{font-size:12.5px;color:rgba(255,255,255,.55);text-decoration:none;
+  transition:color .2s;letter-spacing:.01em}
+.hero-link:hover{color:rgba(255,255,255,.9)}
+.hero-cta{display:inline-flex;align-items:center;gap:7px;padding:12px 28px;border-radius:99px;
   font-size:13.5px;font-weight:700;text-decoration:none;transition:transform .18s,box-shadow .18s}
-.hero-cta.primary{background:linear-gradient(135deg,#F59E0B,#D97706);color:#fff;
-  box-shadow:0 4px 20px rgba(245,158,11,.45)}
-.hero-cta.primary:hover{transform:translateY(-2px);box-shadow:0 6px 28px rgba(245,158,11,.55)}
-.hero-cta.secondary{background:rgba(255,255,255,.12);color:#fff;border:1.5px solid rgba(255,255,255,.3)}
-.hero-cta.secondary:hover{background:rgba(255,255,255,.2);transform:translateY(-2px)}
+.hero-cta.primary{background:linear-gradient(135deg,#F59E0B,#EFA600);color:#fff;
+  box-shadow:0 4px 22px rgba(245,158,11,.45)}
+.hero-cta.primary:hover{transform:translateY(-2px);box-shadow:0 7px 30px rgba(245,158,11,.55)}
+.hero-cta.secondary{background:rgba(255,255,255,.13);color:#fff;border:1.5px solid rgba(255,255,255,.32)}
+.hero-cta.secondary:hover{background:rgba(255,255,255,.22);transform:translateY(-2px)}
 
 /* ── USAGE STRIP ─────────────────────────────────────────────────── */
 .usage-strip{max-width:1080px;margin:-24px auto 0;padding:0 24px;position:relative;z-index:10}
@@ -530,11 +872,11 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .usage-validity{font-size:11px;color:var(--muted);margin-top:3px}
 .upgrade-btn{display:inline-flex;align-items:center;gap:6px;
   background:linear-gradient(135deg,var(--accent),var(--accent-d));
-  color:#fff;padding:9px 20px;border-radius:99px;
+  color:#fff;padding:9px 22px;border-radius:99px;
   font-size:12.5px;font-weight:700;text-decoration:none;white-space:nowrap;
   transition:opacity .18s,transform .15s,box-shadow .18s;
-  box-shadow:0 2px 12px rgba(245,158,11,.35)}
-.upgrade-btn:hover{opacity:.92;transform:translateY(-1px);box-shadow:0 4px 20px rgba(245,158,11,.45)}
+  box-shadow:0 3px 14px rgba(245,158,11,.38)}
+.upgrade-btn:hover{opacity:.93;transform:translateY(-2px);box-shadow:0 6px 22px rgba(245,158,11,.48)}
 
 /* ── SECTION HEADER ─────────────────────────────────────────────── */
 .section-wrap{max-width:1320px;margin:0 auto;padding:40px 24px 0}
@@ -561,8 +903,8 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   text-decoration:none;color:var(--ink);
   transition:border-color .22s,box-shadow .22s,transform .2s;
   position:relative;overflow:hidden;display:flex;flex-direction:column}
-.tool-card:hover{border-color:var(--brand);
-  box-shadow:0 0 0 3px rgba(13,148,136,.09),0 10px 36px rgba(13,148,136,.16);
+.tool-card:hover{border-color:var(--brand-d);
+  box-shadow:0 0 0 3px rgba(15,118,110,.1),0 12px 40px rgba(15,118,110,.18);
   transform:translateY(-4px)}
 .tool-card.disabled{cursor:default;opacity:.6}
 .tool-card.disabled:hover{border-color:var(--border);box-shadow:none;transform:none}
@@ -735,8 +1077,13 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       <a href="#premium" class="hero-cta secondary">Explore All Tools ↓</a>
       {% else %}
       <a href="#premium" class="hero-cta primary">Explore All Tools ↓</a>
-      <a href="#howit" class="hero-cta secondary">How It Works</a>
+      <a href="/how-to-use" class="hero-cta secondary">How to Use</a>
       {% endif %}
+    </div>
+    <div class="hero-link-row">
+      <a href="/story" class="hero-link">✦ Our Story</a>
+      <a href="/how-to-use" class="hero-link">📖 Tool Guide</a>
+      <a href="/privacy" class="hero-link">🔒 Privacy Policy</a>
     </div>
   </div>
 </div>
@@ -912,129 +1259,75 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   </div>
 </div>
 
-<!-- ── ABOUT + TOOL DEEP-DIVES ─────────────────────────────────── -->
-<div class="about-section" id="howit">
-  <div class="about-inner">
-
-    <!-- ── Story / Why We Built This ── -->
-    <div class="story-strip anim-up">
-      <div class="story-text">
-        <div class="about-eyebrow">✦ Our Story</div>
-        <h3>Built out of frustration — and necessity</h3>
-        <p>Every March, Chartered Accountants and their articles across India spend <strong>days manually rolling over balance sheets</strong> — copying PY figures, clearing CY cells, hunting down every date reference that says "31st March 2024" and changing it to "2025". For hundreds of clients. Every single year.</p>
-        <p>CA Toolkit was built by a CA Article from Ludhiana, Punjab who lived through exactly that. These tools <strong>automate the repetitive, error-prone parts</strong> of CA work so you can focus on what actually requires professional judgment.</p>
-        <div class="story-quote">
-          "I built the year-shift tool after spending 3 hours manually rolling over one client's balance sheet — and realising I had 40 more to go."
-          <cite>— Anmol Verma, CA Article &amp; Creator of CA Toolkit</cite>
-        </div>
-      </div>
-      <div class="story-visual">
-        <div class="sv-card anim-up anim-d1"><div class="sv-icon">⏱️</div><div class="sv-num">3 hrs</div><div class="sv-lbl">saved per client on year-shift</div></div>
-        <div class="sv-card anim-up anim-d2"><div class="sv-icon">📂</div><div class="sv-num">∞</div><div class="sv-lbl">CA templates supported</div></div>
-        <div class="sv-card anim-up anim-d3"><div class="sv-icon">✅</div><div class="sv-num">100%</div><div class="sv-lbl">formatting preserved</div></div>
-        <div class="sv-card anim-up anim-d4"><div class="sv-icon">⚡</div><div class="sv-num">&lt;10s</div><div class="sv-lbl">processing time per file</div></div>
-      </div>
-    </div>
-
-    <!-- ── Tool deep-dives ── -->
-    <div class="about-eyebrow">📖 Tool Guide</div>
-    <h2 class="about-title">What each tool does — <em>and how to use it</em></h2>
-    <p class="about-sub">Each tool solves one specific problem every CA firm faces. Here's exactly what they do and how to use them.</p>
-
-    <div class="tool-deep-wrap">
-
-      <div class="tool-deep anim-up anim-d1" style="--td-color:#0D9488;--td-bg:#F0FDFA;--td-c:#0F766E">
-        <div class="tool-deep-icon">📊</div>
-        <div class="tool-deep-tag">⭐ Balance Sheet Year-Shift</div>
-        <h3>Roll over any comparative BS in seconds</h3>
-        <p>Every financial year, a comparative balance sheet needs to be "rolled over" — the current year (CY) figures become previous year (PY), CY cells are cleared, and every date in the file is updated. This tool does all of that automatically in under 10 seconds, without touching a single formula or changing any formatting.</p>
-        <p><strong>What it handles:</strong> CY→PY column copy, CY cell clearing, all date text formats, formula preservation, external link removal.</p>
-        <ul class="tool-deep-steps">
-          <li>Upload your comparative balance sheet (.xlsx)</li>
-          <li>Enter the closing year (e.g. 2025) and new year (2026)</li>
-          <li>Click Process — download the rolled-over file instantly</li>
-          <li>Open in Excel — CY blank, PY filled, all dates updated ✓</li>
-        </ul>
-        <br/><a href="/tool/converter" class="tool-deep-link">Open Year-Shift Tool →</a>
-      </div>
-
-      <div class="tool-deep anim-up anim-d2" style="--td-color:#D97706;--td-bg:#FFFBEB;--td-c:#92400E">
-        <div class="tool-deep-icon">🗂️</div>
-        <div class="tool-deep-tag">⭐ Trial Balance → Balance Sheet</div>
-        <h3>Auto-fill your BS template from a Trial Balance</h3>
-        <p>After closing books in Tally or any accounting software, you have a Trial Balance. Manually picking figures from the TB and filling them into your CA-format balance sheet is slow and error-prone. This tool reads your TB, auto-classifies every account, and injects aggregated values into your template — <strong>without changing any formatting or formula</strong>.</p>
-        <p><strong>What it handles:</strong> Account classification, manual override for ambiguous accounts, fixed asset additions, capital movements, P&amp;L summary.</p>
-        <ul class="tool-deep-steps">
-          <li>Upload Trial Balance (.xlsx or .pdf) and your BS template</li>
-          <li>Review auto-mapped accounts — override any misclassifications</li>
-          <li>Enter fixed asset additions and capital movements if needed</li>
-          <li>Click Generate — download your filled Balance Sheet ✓</li>
-        </ul>
-        <br/><a href="/tool/tb-to-bs" class="tool-deep-link">Open TB → BS Tool →</a>
-      </div>
-
-      <div class="tool-deep anim-up anim-d3" style="--td-color:#7C3AED;--td-bg:#EDE9FE;--td-c:#5B21B6">
-        <div class="tool-deep-icon">📋</div>
-        <div class="tool-deep-tag">⭐ GST Reconciliation</div>
-        <h3>Books vs GSTR 3B — find differences instantly</h3>
-        <p>GST reconciliation is mandatory for every registered business during audit and ITR filing. Comparing sales as per books with GSTR 3B returns across 12 months and multiple states takes hours manually. This tool compares your sales summary with GSTR 3B PDFs and gives a month-wise, state-wise difference report in seconds.</p>
-        <p><strong>What it handles:</strong> Multi-state IGST/CGST/SGST breakup, month-wise variance, automatic PDF parsing, downloadable Excel report.</p>
-        <ul class="tool-deep-steps">
-          <li>Upload your sales summary Excel (month-wise, state-wise)</li>
-          <li>Upload a ZIP of your GSTR 3B PDFs (one per month)</li>
-          <li>Tool auto-parses and matches each month's figures</li>
-          <li>Download the reconciliation report with differences ✓</li>
-        </ul>
-        <br/><a href="/tool/gst-reconciliation" class="tool-deep-link">Open GST Recon Tool →</a>
-      </div>
-
-    </div>
-
-    <!-- ── Universal How It Works ── -->
-    <div class="howto-section anim-up">
-      <div class="howto-inner">
-        <h2 class="howto-title">How CA Toolkit works — in 4 steps</h2>
-        <p class="howto-sub">Every tool follows the same simple pattern. No installation, no setup, no learning curve.</p>
-        <div class="howto-steps">
-          <div class="hs-item"><div class="hs-num">1</div><div class="hs-title">Create a free account</div><div class="hs-desc">Sign up in 30 seconds. No credit card required. Free plan gives 2 uploads to try any premium tool.</div></div>
-          <div class="hs-item"><div class="hs-num">2</div><div class="hs-title">Upload your file</div><div class="hs-desc">Drag and drop your Excel or PDF. Files are processed on our server and never stored permanently.</div></div>
-          <div class="hs-item"><div class="hs-num">3</div><div class="hs-title">Review &amp; confirm</div><div class="hs-desc">For TB→BS, review auto-mapped accounts and correct any that need a different classification.</div></div>
-          <div class="hs-item"><div class="hs-num">4</div><div class="hs-title">Download instantly</div><div class="hs-desc">Your processed file downloads in seconds. Formatting, formulas, and print layout all intact.</div></div>
-        </div>
-      </div>
-    </div>
-
+<!-- ── LEARN MORE STRIP ──────────────────────────────────────────── -->
+<div style="background:linear-gradient(135deg,#0B5D4A,#0E8A7B);padding:40px 24px;margin:0">
+  <div style="max-width:900px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;text-align:center"
+       class="lm-grid">
+    <a href="/story" style="text-decoration:none;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);
+       border-radius:14px;padding:22px 18px;display:block;transition:background .2s,transform .2s"
+       onmouseover="this.style.background='rgba(255,255,255,.15)';this.style.transform='translateY(-3px)'"
+       onmouseout="this.style.background='rgba(255,255,255,.08)';this.style.transform='translateY(0)'">
+      <div style="font-size:26px;margin-bottom:10px">✦</div>
+      <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:15px;font-weight:800;color:#fff;margin-bottom:6px">Our Story</div>
+      <div style="font-size:12px;color:rgba(255,255,255,.6);line-height:1.6">Why CA Toolkit was built — and who built it</div>
+    </a>
+    <a href="/how-to-use" style="text-decoration:none;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);
+       border-radius:14px;padding:22px 18px;display:block;transition:background .2s,transform .2s"
+       onmouseover="this.style.background='rgba(255,255,255,.15)';this.style.transform='translateY(-3px)'"
+       onmouseout="this.style.background='rgba(255,255,255,.08)';this.style.transform='translateY(0)'">
+      <div style="font-size:26px;margin-bottom:10px">📖</div>
+      <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:15px;font-weight:800;color:#fff;margin-bottom:6px">How to Use</div>
+      <div style="font-size:12px;color:rgba(255,255,255,.6);line-height:1.6">Step-by-step guide for every tool</div>
+    </a>
+    <a href="/privacy" style="text-decoration:none;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);
+       border-radius:14px;padding:22px 18px;display:block;transition:background .2s,transform .2s"
+       onmouseover="this.style.background='rgba(255,255,255,.15)';this.style.transform='translateY(-3px)'"
+       onmouseout="this.style.background='rgba(255,255,255,.08)';this.style.transform='translateY(0)'">
+      <div style="font-size:26px;margin-bottom:10px">🔒</div>
+      <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:15px;font-weight:800;color:#fff;margin-bottom:6px">Privacy Policy</div>
+      <div style="font-size:12px;color:rgba(255,255,255,.6);line-height:1.6">How we handle your data and files</div>
+    </a>
   </div>
 </div>
+<style>@media(max-width:640px){.lm-grid{grid-template-columns:1fr!important}}</style>
 
 <footer>
   <div class="ft-main">
     <div>
       <div class="ft-brand-name">CA<span>Toolkit</span></div>
-      <p class="ft-brand-desc">A comprehensive automation platform built by a CA Article from Ludhiana, Punjab — saving hours of manual work for Indian Chartered Accountants every year.</p>
-    </div>
-    <div>
-      <div class="ft-col-title">Tools</div>
-      <ul class="ft-links">
-        <li><a href="/tool/converter">BS Year Shift</a></li>
-        <li><a href="/tool/tb-to-bs">TB → Balance Sheet</a></li>
-        <li><a href="/tool/gst-reconciliation">GST Reconciliation</a></li>
-        <li><a href="/tool/tax-calculator">Tax Calculator</a></li>
-        <li><a href="/privacy">Privacy Policy</a></li>
-      </ul>
-    </div>
-    <div>
-      <div class="ft-col-title">Contact Us</div>
-      <div class="ft-contact-name">CA Toolkit</div>
-      <div class="ft-contact-addr">Built for Indian Chartered Accountants<br/>Created by CA Article · Ludhiana, Punjab</div>
-      <div class="ft-contact-line">Support · <a href="https://wa.me/918427651580" style="color:#6EE7B7">WhatsApp Chat</a></div>
+      <p class="ft-brand-desc">Automation tools for Indian Chartered Accountants — built by a CA Article from Ludhiana, Punjab. Saving hours of manual work every year-end.</p>
       <div class="ft-socials">
         <a href="https://wa.me/918427651580" target="_blank" title="WhatsApp"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
       </div>
     </div>
+    <div>
+      <div class="ft-col-title">Tools & Pages</div>
+      <ul class="ft-links">
+        <li><a href="/tool/converter">BS Year-Shift</a></li>
+        <li><a href="/tool/tb-to-bs">TB → Balance Sheet</a></li>
+        <li><a href="/tool/gst-reconciliation">GST Reconciliation</a></li>
+        <li><a href="/tool/tax-calculator">Tax Calculator</a></li>
+        <li><a href="/tool/tds-calculator">TDS / TCS Calculator</a></li>
+        <li><a href="/story">Our Story</a></li>
+        <li><a href="/how-to-use">How to Use</a></li>
+        <li><a href="/privacy">Privacy Policy</a></li>
+      </ul>
+    </div>
+    <div>
+      <div class="ft-col-title">Contact &amp; Support</div>
+      <div class="ft-contact-name">Sumit Verma</div>
+      <div class="ft-contact-addr">CA Article · Ludhiana, Punjab<br/>Creator of CA Toolkit</div>
+      <div class="ft-contact-line">📧 <a href="mailto:sumitverma2880@gmail.com">sumitverma2880@gmail.com</a></div>
+      <div class="ft-contact-line">💬 <a href="https://wa.me/918427651580">WhatsApp · +91 84276 51580</a></div>
+      <div class="ft-contact-line" style="margin-top:10px;font-size:11px;color:#64748B">Accounts created by admin only.<br/>Contact to get access.</div>
+    </div>
   </div>
   <div class="ft-bottom">
-    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved · <a href="/privacy" style="color:#475569;text-decoration:none">Privacy Policy</a> · <span style="color:#F87171">No refund after first upload is used</span></span>
+    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved ·
+      <a href="/privacy" style="color:#475569;text-decoration:none">Privacy</a> ·
+      <a href="/story" style="color:#475569;text-decoration:none">Our Story</a> ·
+      <a href="/how-to-use" style="color:#475569;text-decoration:none">How to Use</a> ·
+      <span style="color:#F87171">No refund after first upload is used</span></span>
     <span class="ft-bottom-right">Built for Indian CAs · Ludhiana, Punjab</span>
   </div>
 </footer>
@@ -6261,6 +6554,14 @@ def privacy_page():
             uploads_left=2, uploads_remaining=2, bar_pct=0,
             validity_end=None, contact_email=CONTACT_EMAIL, contact_upi=CONTACT_UPI)
     return render_template_string(PRIVACY_TEMPLATE, **ctx)
+
+@app.route("/story")
+def story_page():
+    return render_template_string(STORY_TEMPLATE)
+
+@app.route("/how-to-use")
+def how_to_use_page():
+    return render_template_string(HOW_TO_USE_TEMPLATE)
 
 @app.route("/tool/converter")
 @login_required
