@@ -640,14 +640,20 @@ HOW_TO_USE_TEMPLATE = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF
 .universal-steps{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:36px}
 @media(max-width:768px){.universal-steps{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:420px){.universal-steps{grid-template-columns:1fr}}
-.us-card{background:linear-gradient(135deg,#042F2E,#0D5C50);border-radius:14px;
-  padding:20px 16px;position:relative}
-.us-num{width:32px;height:32px;background:linear-gradient(135deg,var(--accent),var(--accent-d));
-  border-radius:10px;display:flex;align-items:center;justify-content:center;
-  font-size:13px;font-weight:800;color:#fff;margin-bottom:12px;
-  box-shadow:0 3px 10px rgba(245,158,11,.4)}
-.us-title{font-size:13px;font-weight:700;color:#fff;margin-bottom:5px}
-.us-desc{font-size:11.5px;color:rgba(255,255,255,.6);line-height:1.6}
+/* Light clean workflow cards — not heavy dark green */
+.us-card{background:var(--white);border:1.5px solid var(--border);border-radius:16px;
+  padding:22px 18px;position:relative;overflow:hidden;
+  transition:border-color .22s,box-shadow .22s,transform .2s}
+.us-card:hover{border-color:var(--brand);box-shadow:var(--shadow-md);transform:translateY(-3px)}
+.us-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;
+  background:linear-gradient(90deg,var(--brand),var(--accent))}
+.us-num{width:34px;height:34px;background:linear-gradient(135deg,var(--accent),var(--accent-d));
+  border-radius:11px;display:flex;align-items:center;justify-content:center;
+  font-size:14px;font-weight:800;color:#fff;margin-bottom:14px;
+  box-shadow:0 3px 10px rgba(245,158,11,.35)}
+.us-title{font-size:13.5px;font-weight:800;color:var(--ink);margin-bottom:6px;
+  font-family:var(--font-head)}
+.us-desc{font-size:12px;color:var(--muted);line-height:1.65}
 </style></head><body>
 """ + _PAGE_NAV + """
 <div class="page-wrap anim-up">
@@ -979,8 +985,18 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .cb-free{background:var(--green-l);color:#065F46;border:1px solid #A7F3D0}
 .cb-lock{background:var(--accent-vl);color:#92400E;border:1px solid #FDE68A}
 
-/* ── COMING SOON ROW ─────────────────────────────────────────────── */
-.tool-card.coming{border-style:dashed}
+/* ── FREE TOOLS SECTION ─────────────────────────────────────────── */
+.free-section-wrap{background:linear-gradient(180deg,#F0FDF9 0%,#F8FAFC 100%);
+  padding:32px 24px 48px;margin-top:8px;border-top:1px solid #C6F0E8;
+  border-bottom:1px solid #C6F0E8}
+.free-section-inner{max-width:1320px;margin:0 auto}
+.section-hd-free{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+.section-hd-free h2{font-family:var(--font-head);font-size:20px;font-weight:800;
+  color:#065F46;letter-spacing:-.3px}
+.section-sub-free{font-size:13px;color:var(--muted);margin-bottom:22px;line-height:1.6}
+
+/* ── COMING SOON CARD ───────────────────────────────────────────── */
+.tool-card.coming{border-style:dashed;border-color:#C6F0E8}
 
 /* ── STATS ROW ──────────────────────────────────────────────────── */
 .stats-row{background:linear-gradient(135deg,#042F2E 0%,#0D9488 60%,#134E4A 100%);
@@ -1228,15 +1244,20 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   </div>
 
   <!-- ── FREE TOOLS ──────────────────────────────────────────────── -->
-  <div class="section-hd" style="margin-top:12px">
-    <h2>🆓 Free Tools</h2>
-    <span class="section-hd-badge" style="background:var(--green-l);color:#065F46;border-color:#A7F3D0">No login needed</span>
-  </div>
+</div><!-- close section-wrap -->
+
+<div class="free-section-wrap">
+  <div class="free-section-inner">
+    <div class="section-hd-free">
+      <h2>🆓 Free Tools</h2>
+      <span class="section-hd-badge" style="background:#DCFCE7;color:#065F46;border-color:#A7F3D0">No login needed</span>
+    </div>
+    <p class="section-sub-free">Six calculators built for everyday CA work — no account required, no uploads counted.</p>
   <div class="tools-grid tools-grid-4">
 
     <a href="/tool/tax-calculator" class="tool-card free-card anim-up anim-d1">
       <span class="corner-badge cb-free">Free</span>
-      <div class="tool-icon" style="background:linear-gradient(135deg,#FEF9C3,#FDE68A)">🧮</div>
+      <div class="tool-icon" style="background:linear-gradient(135deg,#ECFDF5,#A7F3D0)">🧮</div>
       <h2>Income Tax Calculator</h2>
       <p>Old &amp; new regime for PY 2025-26. Income under 5 heads, TDS/TCS, surcharge &amp; cess — all built in.</p>
       <div class="tool-footer">
@@ -1247,7 +1268,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 
     <a href="/tool/tds-calculator" class="tool-card free-card anim-up anim-d2">
       <span class="corner-badge cb-free">Free</span>
-      <div class="tool-icon" style="background:linear-gradient(135deg,#E0F2FE,#BAE6FD)">📑</div>
+      <div class="tool-icon" style="background:linear-gradient(135deg,#F0FDFA,#CCFBF1)">📑</div>
       <h2>TDS / TCS Calculator</h2>
       <p>TDS or TCS as per IT Act 2025 (Sec 393/394). New payment codes, rates, late deposit interest.</p>
       <div class="tool-footer">
@@ -1258,7 +1279,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 
     <a href="/tool/depreciation-calculator" class="tool-card free-card anim-up anim-d3">
       <span class="corner-badge cb-free">Free</span>
-      <div class="tool-icon" style="background:linear-gradient(135deg,#EDE9FE,#DDD6FE)">🏭</div>
+      <div class="tool-icon" style="background:linear-gradient(135deg,#ECFDF5,#BBF7D0)">🏭</div>
       <h2>Depreciation Calculator</h2>
       <p>Companies Act 2013 (WDV/SLM) and Income Tax Act. Full schedule with opening/closing WDV.</p>
       <div class="tool-footer">
@@ -1269,7 +1290,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 
     <a href="/tool/msme-calculator" class="tool-card free-card anim-up anim-d4">
       <span class="corner-badge cb-free">Free</span>
-      <div class="tool-icon" style="background:linear-gradient(135deg,#FEE2E2,#FECACA)">📄</div>
+      <div class="tool-icon" style="background:linear-gradient(135deg,#F0FDFA,#99F6E4)">📄</div>
       <h2>MSME Disallowance</h2>
       <p>Check MSME payment compliance under Sec 43B(h). Overdue payments highlighted with total disallowance.</p>
       <div class="tool-footer">
@@ -1299,6 +1320,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       </div>
     </div>
 
+  </div>
   </div>
 </div>
 
