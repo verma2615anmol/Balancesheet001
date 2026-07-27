@@ -244,29 +244,30 @@ def admin_required(f):
 # ══════════════════════════════════════════════════════════════════════════════
 
 BASE_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,700&family=Inter:wght@400;500;600&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --brand:#4F46E5;--brand-d:#4338CA;--brand-l:#EEF2FF;
-  --accent:#F97316;--accent-l:#FFF7ED;
+  /* ── New palette: deep teal + electric amber ── */
+  --brand:#0D9488;--brand-d:#0F766E;--brand-l:#F0FDFA;--brand-m:#CCFBF1;
+  --accent:#F59E0B;--accent-d:#D97706;--accent-l:#FFFBEB;--accent-vl:#FEF3C7;
+  --purple:#6D28D9;--purple-l:#EDE9FE;
   --green:#059669;--green-l:#ECFDF5;
   --red:#DC2626;--red-l:#FEF2F2;
-  --amber:#D97706;--amber-l:#FFFBEB;
-  --ink:#0F172A;--ink2:#334155;--muted:#64748B;
-  --border:#E2E8F0;--border2:#CBD5E1;
-  --bg:#F8FAFC;--bg2:#F1F5F9;--white:#fff;
-  --radius:14px;--radius-sm:8px;
-  --shadow:0 1px 3px rgba(0,0,0,.06),0 4px 16px rgba(0,0,0,.06);
-  --shadow-md:0 4px 6px rgba(0,0,0,.05),0 10px 40px rgba(0,0,0,.10);
+  --ink:#0C1A29;--ink2:#1E3A4A;--muted:#5B7A8A;
+  --border:#D1E8E4;--border2:#A7D5CE;
+  --bg:#F0FAFA;--bg2:#E6F4F1;--white:#fff;
+  --radius:16px;--radius-sm:10px;
+  --shadow:0 1px 3px rgba(13,148,136,.07),0 4px 16px rgba(13,148,136,.07);
+  --shadow-md:0 4px 8px rgba(13,148,136,.08),0 12px 40px rgba(13,148,136,.13);
   --font-head:'Plus Jakarta Sans',sans-serif;
   --font-body:'Inter',sans-serif;
 }
 body{font-family:var(--font-body);background:var(--bg);color:var(--ink);min-height:100vh;-webkit-font-smoothing:antialiased}
 
 /* ── NAV ─────────────────────────────────────────────────────────── */
-nav{background:rgba(255,255,255,.97);backdrop-filter:blur(8px);
+nav{background:rgba(255,255,255,.96);backdrop-filter:blur(12px);
     border-bottom:1px solid var(--border);padding:0 28px;
-    display:flex;align-items:center;justify-content:space-between;height:64px;
+    display:flex;align-items:center;justify-content:space-between;height:62px;
     position:sticky;top:0;z-index:200;box-shadow:0 1px 0 var(--border)}
 .logo{font-family:var(--font-head);font-size:21px;font-weight:800;
       color:var(--brand);letter-spacing:-.6px;text-decoration:none;display:flex;align-items:center;gap:2px}
@@ -275,17 +276,18 @@ nav{background:rgba(255,255,255,.97);backdrop-filter:blur(8px);
 .nav-right{display:flex;align-items:center;gap:10px}
 .nav-user{font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:6px}
 .nav-user strong{color:var(--ink);font-weight:600}
-.nav-avatar{width:28px;height:28px;background:var(--brand-l);border-radius:50%;
+.nav-avatar{width:30px;height:30px;background:linear-gradient(135deg,var(--brand),var(--brand-d));border-radius:50%;
             display:inline-flex;align-items:center;justify-content:center;
-            font-size:12px;font-weight:700;color:var(--brand)}
-.nav-btn{background:var(--brand);color:#fff;padding:7px 15px;border-radius:var(--radius-sm);
-         font-size:12.5px;font-weight:600;text-decoration:none;
-         transition:background .18s,transform .1s;white-space:nowrap;
-         font-family:var(--font-body);display:inline-flex;align-items:center;gap:5px}
-.nav-btn:hover{background:var(--brand-d);transform:translateY(-1px)}
-.nav-btn.ghost{background:transparent;color:var(--ink2);border:1.5px solid var(--border2)}
+            font-size:12px;font-weight:700;color:#fff;box-shadow:0 2px 8px rgba(13,148,136,.35)}
+.nav-btn{background:linear-gradient(135deg,var(--brand),var(--brand-d));color:#fff;padding:8px 18px;border-radius:var(--radius-sm);
+         font-size:12.5px;font-weight:700;text-decoration:none;letter-spacing:.01em;
+         transition:opacity .18s,transform .15s,box-shadow .18s;white-space:nowrap;
+         font-family:var(--font-body);display:inline-flex;align-items:center;gap:5px;
+         box-shadow:0 2px 10px rgba(13,148,136,.3)}
+.nav-btn:hover{opacity:.92;transform:translateY(-1px);box-shadow:0 4px 18px rgba(13,148,136,.4)}
+.nav-btn.ghost{background:transparent;color:var(--ink2);border:1.5px solid var(--border2);box-shadow:none}
 .nav-btn.ghost:hover{background:var(--bg2);border-color:var(--brand);color:var(--brand)}
-.nav-btn.dash{background:var(--bg2);color:var(--ink2);border:1.5px solid var(--border);font-weight:600}
+.nav-btn.dash{background:var(--bg2);color:var(--ink2);border:1.5px solid var(--border);font-weight:600;box-shadow:none}
 .nav-btn.dash:hover{background:var(--brand-l);color:var(--brand);border-color:var(--brand);transform:translateY(-1px)}
 .nav-link{font-size:12.5px;color:var(--muted);text-decoration:none;font-weight:500;padding:4px 2px}
 .nav-link:hover{color:var(--brand)}
@@ -293,16 +295,16 @@ nav{background:rgba(255,255,255,.97);backdrop-filter:blur(8px);
 
 /* ── BADGES ────────────────────────────────────────────────────────── */
 .badge{display:inline-flex;align-items:center;font-size:10px;font-weight:700;
-       padding:2px 8px;border-radius:99px;text-transform:uppercase;letter-spacing:.05em}
+       padding:2px 9px;border-radius:99px;text-transform:uppercase;letter-spacing:.05em}
 .b-free{background:#F1F5F9;color:var(--muted)}
 .b-starter{background:var(--green-l);color:#065F46}
-.b-standard{background:var(--brand-l);color:var(--brand)}
-.b-pro{background:var(--amber-l);color:#92400E}
-.b-firm{background:#F5F3FF;color:#5B21B6}
+.b-standard{background:var(--brand-l);color:var(--brand-d)}
+.b-pro{background:var(--accent-vl);color:#92400E}
+.b-firm{background:var(--purple-l);color:#5B21B6}
 .b-ca{background:#FDF2F8;color:#9D174D}
 
 /* ── FOOTER ─────────────────────────────────────────────────────────── */
-footer{background:#0A0F1E;color:#94A3B8;font-size:12px;padding:0}
+footer{background:#071C22;color:#94A3B8;font-size:12px;padding:0}
 .ft-main{display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:40px;
          padding:44px 52px;max-width:1280px;margin:0 auto}
 .ft-brand-name{color:#fff;font-family:var(--font-head);font-size:19px;font-weight:800;
@@ -313,17 +315,17 @@ footer{background:#0A0F1E;color:#94A3B8;font-size:12px;padding:0}
 .ft-links{list-style:none;padding:0;margin:0}
 .ft-links li{margin-bottom:9px}
 .ft-links a{color:#94A3B8;text-decoration:none;font-size:12.5px;transition:color .18s}
-.ft-links a:hover{color:#fff}
+.ft-links a:hover{color:var(--accent)}
 .ft-contact-name{color:#fff;font-weight:700;font-size:13px;margin-bottom:6px}
 .ft-contact-addr{color:#94A3B8;font-size:12px;line-height:1.8;margin-bottom:10px}
 .ft-contact-line{color:#94A3B8;font-size:12px;margin-bottom:4px}
 .ft-socials{display:flex;gap:12px;margin-top:14px}
-.ft-socials a{width:34px;height:34px;background:#1E293B;border-radius:8px;
+.ft-socials a{width:34px;height:34px;background:#0F2D35;border-radius:8px;
               display:flex;align-items:center;justify-content:center;
               color:#94A3B8;transition:background .18s,color .18s}
 .ft-socials a:hover{background:var(--brand);color:#fff}
 .ft-socials svg{width:16px;height:16px;fill:currentColor}
-.ft-bottom{background:#070C18;border-top:1px solid #1E293B;
+.ft-bottom{background:#040E12;border-top:1px solid #0F2D35;
            padding:13px 52px;display:flex;justify-content:space-between;
            align-items:center;flex-wrap:wrap;gap:8px}
 .ft-bottom-left{font-size:11px;color:#475569}
@@ -343,16 +345,16 @@ footer{background:#0A0F1E;color:#94A3B8;font-size:12px;padding:0}
 
 /* ── HELP MODAL ─────────────────────────────────────────────────────────── */
 .help-btn{position:fixed;bottom:86px;right:20px;width:42px;height:42px;
-          background:var(--brand);color:#fff;border-radius:50%;
+          background:linear-gradient(135deg,var(--brand),var(--brand-d));color:#fff;border-radius:50%;
           display:flex;align-items:center;justify-content:center;
           font-size:18px;font-weight:800;cursor:pointer;
-          box-shadow:0 4px 14px rgba(79,70,229,.4);z-index:998;border:none;
+          box-shadow:0 4px 14px rgba(13,148,136,.4);z-index:998;border:none;
           transition:transform .2s,box-shadow .2s;text-decoration:none}
-.help-btn:hover{transform:scale(1.1);box-shadow:0 6px 20px rgba(79,70,229,.5)}
-.help-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);
+.help-btn:hover{transform:scale(1.1);box-shadow:0 6px 20px rgba(13,148,136,.5)}
+.help-overlay{display:none;position:fixed;inset:0;background:rgba(7,28,34,.55);
               z-index:1001;align-items:center;justify-content:center;padding:16px}
 .help-overlay.open{display:flex}
-.help-modal{background:#fff;border-radius:18px;max-width:540px;width:100%;
+.help-modal{background:#fff;border-radius:20px;max-width:540px;width:100%;
             max-height:82vh;overflow-y:auto;box-shadow:0 24px 72px rgba(0,0,0,.22)}
 .help-modal-head{padding:22px 24px 16px;border-bottom:1px solid var(--border);
                  display:flex;justify-content:space-between;align-items:center}
@@ -360,20 +362,26 @@ footer{background:#0A0F1E;color:#94A3B8;font-size:12px;padding:0}
 .help-close{background:none;border:none;font-size:22px;cursor:pointer;color:var(--muted);line-height:1}
 .help-modal-body{padding:20px 24px}
 .help-step{display:flex;gap:14px;margin-bottom:18px;align-items:flex-start}
-.help-step-num{min-width:28px;height:28px;background:var(--brand);color:#fff;
+.help-step-num{min-width:28px;height:28px;background:linear-gradient(135deg,var(--brand),var(--brand-d));color:#fff;
                border-radius:50%;display:flex;align-items:center;justify-content:center;
                font-size:12px;font-weight:800;flex-shrink:0;margin-top:1px}
 .help-step-body h4{font-size:13px;font-weight:700;margin-bottom:3px;color:var(--ink)}
 .help-step-body p{font-size:12px;color:var(--muted);line-height:1.6;margin:0}
-.help-tip{background:var(--brand-l);border:1px solid #C7D2FE;border-radius:8px;
+.help-tip{background:var(--brand-l);border:1px solid var(--brand-m);border-radius:8px;
           padding:10px 14px;font-size:12px;color:var(--brand-d);margin-top:4px;line-height:1.6}
 
-/* ── ANIMATIONS ─────────────────────────────────────────────────────────── */
-@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+/* ── ANIMATIONS (CSS-only, Render-safe) ─────────────────────────────── */
+@keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-@keyframes slideIn{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:translateX(0)}}
-.anim-up{animation:fadeUp .4s ease-out both}
-.anim-in{animation:fadeIn .3s ease-out both}
+@keyframes slideIn{from{opacity:0;transform:translateX(-12px)}to{opacity:1;transform:translateX(0)}}
+@keyframes meshShift{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+@keyframes pulseRing{0%,100%{opacity:.6;transform:scale(1)}50%{opacity:.25;transform:scale(1.08)}}
+@keyframes countUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.anim-up{animation:fadeUp .45s cubic-bezier(.22,.68,0,1.2) both}
+.anim-in{animation:fadeIn .35s ease-out both}
+.anim-d1{animation-delay:.08s}.anim-d2{animation-delay:.16s}.anim-d3{animation-delay:.24s}
+.anim-d4{animation-delay:.32s}.anim-d5{animation-delay:.40s}.anim-d6{animation-delay:.48s}
+@media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 """
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -475,30 +483,44 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 """ + BASE_CSS + """
 /* ── DASHBOARD HERO ─────────────────────────────────────────────── */
 .dash-hero{
-  background:linear-gradient(135deg,#312E81 0%,#4F46E5 45%,#7C3AED 100%);
-  padding:52px 24px 48px;text-align:center;position:relative;overflow:hidden}
+  background:linear-gradient(135deg,#042F2E 0%,#0D9488 40%,#134E4A 70%,#0C1A29 100%);
+  background-size:300% 300%;
+  animation:meshShift 12s ease infinite;
+  padding:60px 24px 56px;text-align:center;position:relative;overflow:hidden}
 .dash-hero::before{content:'';position:absolute;inset:0;
-  background:url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.04'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+  background:radial-gradient(ellipse 70% 60% at 50% 40%,rgba(245,158,11,.12) 0%,transparent 70%);
   pointer-events:none}
-.dash-hero-inner{position:relative;max-width:720px;margin:0 auto}
+.dash-hero::after{content:'';position:absolute;inset:0;
+  background:url("data:image/svg+xml,%3Csvg width='52' height='52' viewBox='0 0 52 52' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='26' cy='26' r='1' fill='%23ffffff' fill-opacity='0.06'/%3E%3C/svg%3E");
+  pointer-events:none}
+.dash-hero-inner{position:relative;max-width:740px;margin:0 auto}
 .dash-hero-badge{display:inline-flex;align-items:center;gap:6px;
-  background:rgba(255,255,255,.15);backdrop-filter:blur(4px);
-  color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:99px;
-  padding:5px 16px;font-size:11.5px;font-weight:600;margin-bottom:20px;letter-spacing:.02em}
-.dash-hero h1{font-family:var(--font-head);font-size:clamp(26px,5vw,42px);
-  font-weight:800;line-height:1.15;letter-spacing:-.8px;color:#fff;margin-bottom:14px}
-.dash-hero h1 em{font-style:normal;color:#FCA5A5}
-.dash-hero p{font-size:15px;color:rgba(255,255,255,.8);line-height:1.7;max-width:500px;margin:0 auto}
+  background:rgba(245,158,11,.18);backdrop-filter:blur(6px);
+  color:#FDE68A;border:1px solid rgba(245,158,11,.35);border-radius:99px;
+  padding:6px 18px;font-size:11.5px;font-weight:700;margin-bottom:22px;letter-spacing:.04em}
+.dash-hero h1{font-family:var(--font-head);font-size:clamp(28px,5vw,48px);
+  font-weight:800;line-height:1.12;letter-spacing:-1px;color:#fff;margin-bottom:16px}
+.dash-hero h1 em{font-style:italic;color:#6EE7B7}
+.dash-hero p{font-size:15.5px;color:rgba(255,255,255,.75);line-height:1.75;max-width:500px;margin:0 auto 28px}
+.hero-cta-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.hero-cta{display:inline-flex;align-items:center;gap:7px;padding:11px 26px;border-radius:99px;
+  font-size:13.5px;font-weight:700;text-decoration:none;transition:transform .18s,box-shadow .18s}
+.hero-cta.primary{background:linear-gradient(135deg,#F59E0B,#D97706);color:#fff;
+  box-shadow:0 4px 20px rgba(245,158,11,.45)}
+.hero-cta.primary:hover{transform:translateY(-2px);box-shadow:0 6px 28px rgba(245,158,11,.55)}
+.hero-cta.secondary{background:rgba(255,255,255,.12);color:#fff;border:1.5px solid rgba(255,255,255,.3)}
+.hero-cta.secondary:hover{background:rgba(255,255,255,.2);transform:translateY(-2px)}
 
 /* ── USAGE STRIP ─────────────────────────────────────────────────── */
-.usage-strip{max-width:1080px;margin:-20px auto 0;padding:0 24px;position:relative;z-index:10}
+.usage-strip{max-width:1080px;margin:-24px auto 0;padding:0 24px;position:relative;z-index:10}
 .usage-box{background:var(--white);border:1px solid var(--border);
   border-radius:var(--radius);padding:16px 22px;
   display:flex;align-items:center;justify-content:space-between;
   flex-wrap:wrap;gap:14px;box-shadow:var(--shadow-md)}
 .usage-left{display:flex;align-items:center;gap:16px;flex:1;min-width:0}
-.usage-icon{width:38px;height:38px;background:var(--brand-l);border-radius:10px;
-  display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.usage-icon{width:40px;height:40px;background:linear-gradient(135deg,var(--brand),var(--brand-d));border-radius:11px;
+  display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;
+  box-shadow:0 2px 10px rgba(13,148,136,.3)}
 .usage-text{min-width:0}
 .usage-text strong{display:block;font-size:14px;font-weight:700;color:var(--ink)}
 .usage-text span{font-size:12px;color:var(--muted)}
@@ -506,82 +528,97 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .usage-bar-bg{background:var(--bg2);border-radius:99px;height:7px;overflow:hidden}
 .usage-bar-fill{height:100%;border-radius:99px}
 .usage-validity{font-size:11px;color:var(--muted);margin-top:3px}
-.upgrade-btn{display:inline-flex;align-items:center;gap:6px;background:linear-gradient(135deg,var(--brand),#7C3AED);
-  color:#fff;padding:8px 18px;border-radius:var(--radius-sm);
-  font-size:12.5px;font-weight:600;text-decoration:none;white-space:nowrap;
-  transition:opacity .18s,transform .1s}
-.upgrade-btn:hover{opacity:.9;transform:translateY(-1px)}
+.upgrade-btn{display:inline-flex;align-items:center;gap:6px;
+  background:linear-gradient(135deg,var(--accent),var(--accent-d));
+  color:#fff;padding:9px 20px;border-radius:99px;
+  font-size:12.5px;font-weight:700;text-decoration:none;white-space:nowrap;
+  transition:opacity .18s,transform .15s,box-shadow .18s;
+  box-shadow:0 2px 12px rgba(245,158,11,.35)}
+.upgrade-btn:hover{opacity:.92;transform:translateY(-1px);box-shadow:0 4px 20px rgba(245,158,11,.45)}
 
 /* ── SECTION HEADER ─────────────────────────────────────────────── */
-.section-wrap{max-width:1320px;margin:0 auto;padding:36px 24px 0}
-.section-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.section-wrap{max-width:1320px;margin:0 auto;padding:40px 24px 0}
+.section-hd{display:flex;align-items:center;gap:12px;margin-bottom:22px}
 .section-hd h2{font-family:var(--font-head);font-size:18px;font-weight:800;
   color:var(--ink);letter-spacing:-.3px}
 .section-hd-badge{display:inline-flex;align-items:center;gap:5px;
-  background:var(--brand-l);color:var(--brand);
-  padding:4px 12px;border-radius:99px;font-size:11px;font-weight:700}
+  background:var(--brand-l);color:var(--brand-d);
+  padding:4px 13px;border-radius:99px;font-size:11px;font-weight:700;
+  border:1px solid var(--brand-m)}
 
 /* ── TOOL CARDS ─────────────────────────────────────────────────── */
-.tools-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-bottom:48px}
+.tools-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:48px}
 @media(max-width:1100px){.tools-grid{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:768px){.tools-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:480px){.tools-grid{grid-template-columns:1fr}}
+.tools-grid-4{grid-template-columns:repeat(4,1fr)}
+@media(max-width:1100px){.tools-grid-4{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:768px){.tools-grid-4{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:480px){.tools-grid-4{grid-template-columns:1fr}}
 
 .tool-card{background:var(--white);border:1.5px solid var(--border);
-  border-radius:var(--radius);padding:22px 20px 18px;
+  border-radius:var(--radius);padding:24px 22px 20px;
   text-decoration:none;color:var(--ink);
-  transition:border-color .2s,box-shadow .2s,transform .18s;
+  transition:border-color .22s,box-shadow .22s,transform .2s;
   position:relative;overflow:hidden;display:flex;flex-direction:column}
 .tool-card:hover{border-color:var(--brand);
-  box-shadow:0 0 0 3px rgba(79,70,229,.08),0 8px 32px rgba(79,70,229,.14);
-  transform:translateY(-3px)}
-.tool-card.disabled{cursor:default;opacity:.65}
+  box-shadow:0 0 0 3px rgba(13,148,136,.09),0 10px 36px rgba(13,148,136,.16);
+  transform:translateY(-4px)}
+.tool-card.disabled{cursor:default;opacity:.6}
 .tool-card.disabled:hover{border-color:var(--border);box-shadow:none;transform:none}
-/* Premium card accent line */
+/* Accent top stripe */
 .tool-card.premium-card::before{content:'';position:absolute;top:0;left:0;right:0;
-  height:3px;background:linear-gradient(90deg,var(--brand),#7C3AED)}
+  height:3.5px;background:linear-gradient(90deg,var(--brand),#0FADA0,var(--accent))}
 .tool-card.free-card::before{content:'';position:absolute;top:0;left:0;right:0;
-  height:3px;background:linear-gradient(90deg,var(--green),#34D399)}
+  height:3.5px;background:linear-gradient(90deg,var(--green),#34D399)}
+/* Shimmer on hover */
+.tool-card:not(.disabled)::after{content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,rgba(13,148,136,.04) 0%,transparent 60%);
+  opacity:0;transition:opacity .25s;pointer-events:none}
+.tool-card:not(.disabled):hover::after{opacity:1}
 
-.tool-icon{width:46px;height:46px;border-radius:12px;display:flex;
-  align-items:center;justify-content:center;font-size:22px;margin-bottom:14px;flex-shrink:0}
+.tool-icon{width:48px;height:48px;border-radius:13px;display:flex;
+  align-items:center;justify-content:center;font-size:23px;margin-bottom:16px;flex-shrink:0;
+  box-shadow:0 2px 8px rgba(0,0,0,.07)}
 .tool-card h2{font-family:var(--font-head);font-size:14.5px;font-weight:700;
-  margin-bottom:6px;color:var(--ink)}
-.tool-card p{font-size:12px;color:var(--muted);line-height:1.65;
-  margin-bottom:16px;flex:1}
+  margin-bottom:7px;color:var(--ink);line-height:1.3}
+.tool-card p{font-size:12px;color:var(--muted);line-height:1.7;
+  margin-bottom:18px;flex:1}
 .tool-footer{display:flex;align-items:center;justify-content:space-between;margin-top:auto}
 .tool-tag{display:inline-flex;align-items:center;gap:4px;
-  font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:99px;letter-spacing:.02em}
-.tag-live-prem{background:var(--brand-l);color:var(--brand)}
-.tag-live-free{background:var(--green-l);color:var(--green)}
+  font-size:10.5px;font-weight:700;padding:4px 10px;border-radius:99px;letter-spacing:.02em}
+.tag-live-prem{background:var(--brand-l);color:var(--brand-d);border:1px solid var(--brand-m)}
+.tag-live-free{background:var(--green-l);color:#065F46;border:1px solid #A7F3D0}
+.tag-login{background:var(--accent-vl);color:#92400E;border:1px solid #FDE68A}
 .tag-soon{background:var(--bg2);color:var(--muted)}
-.tool-arrow{width:28px;height:28px;background:var(--bg2);border-radius:8px;
+.tool-arrow{width:30px;height:30px;background:var(--bg2);border-radius:9px;
   display:flex;align-items:center;justify-content:center;
-  font-size:13px;color:var(--muted);
-  transition:background .18s,color .18s,transform .18s}
-.tool-card:not(.disabled):hover .tool-arrow{background:var(--brand);color:#fff;transform:translateX(3px)}
+  font-size:14px;color:var(--muted);
+  transition:background .2s,color .2s,transform .2s}
+.tool-card:not(.disabled):hover .tool-arrow{background:var(--brand);color:#fff;transform:translateX(4px)}
 
-/* Corner badge */
-.corner-badge{position:absolute;top:14px;right:14px;
-  font-size:9.5px;font-weight:700;padding:3px 8px;border-radius:6px;letter-spacing:.04em}
-.cb-prem{background:#EDE9FE;color:#5B21B6}
-.cb-free{background:var(--green-l);color:#065F46}
-.cb-lock{background:var(--amber-l);color:#92400E}
+/* Corner badge — uniform for all 3 premium cards */
+.corner-badge{position:absolute;top:15px;right:15px;
+  font-size:9.5px;font-weight:700;padding:3px 9px;border-radius:7px;letter-spacing:.04em}
+.cb-prem{background:linear-gradient(135deg,#F0FDFA,#CCFBF1);color:var(--brand-d);border:1px solid var(--brand-m)}
+.cb-free{background:var(--green-l);color:#065F46;border:1px solid #A7F3D0}
+.cb-lock{background:var(--accent-vl);color:#92400E;border:1px solid #FDE68A}
 
 /* ── COMING SOON ROW ─────────────────────────────────────────────── */
 .tool-card.coming{border-style:dashed}
 
 /* ── STATS ROW ──────────────────────────────────────────────────── */
-.stats-row{background:linear-gradient(135deg,#0A0F1E,#1E1B4B);
-  padding:28px 24px;margin:0}
-.stats-inner{max-width:900px;margin:0 auto;
+.stats-row{background:linear-gradient(135deg,#042F2E 0%,#0D9488 60%,#134E4A 100%);
+  padding:32px 24px;margin:0}
+.stats-inner{max-width:960px;margin:0 auto;
   display:grid;grid-template-columns:repeat(4,1fr);gap:0;text-align:center}
-.stat-item{padding:8px 0;border-right:1px solid rgba(255,255,255,.1)}
+.stat-item{padding:8px 0;border-right:1px solid rgba(255,255,255,.12)}
 .stat-item:last-child{border:none}
-.stat-n{font-family:var(--font-head);font-size:22px;font-weight:800;color:#fff;margin-bottom:2px}
-.stat-n em{font-style:normal;color:#A5B4FC}
-.stat-l{font-size:11px;color:#94A3B8}
-@media(max-width:640px){.stats-inner{grid-template-columns:repeat(2,1fr)}.stat-item:nth-child(2){border-right:none}.stat-item{border-bottom:1px solid rgba(255,255,255,.1);padding:12px 0}}
+.stat-n{font-family:var(--font-head);font-size:26px;font-weight:800;color:#fff;margin-bottom:3px;
+  animation:countUp .5s ease-out both}
+.stat-n em{font-style:normal;color:#6EE7B7}
+.stat-l{font-size:11.5px;color:rgba(255,255,255,.6);letter-spacing:.02em}
+@media(max-width:640px){.stats-inner{grid-template-columns:repeat(2,1fr)}.stat-item:nth-child(2){border-right:none}.stat-item{border-bottom:1px solid rgba(255,255,255,.1);padding:14px 0}}
 </style></head><body>
 
 <!-- ── NAV ─────────────────────────────────────────────────────── -->
@@ -606,10 +643,19 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 
 <!-- ── HERO ─────────────────────────────────────────────────────── -->
 <div class="dash-hero">
-  <div class="dash-hero-inner">
+  <div class="dash-hero-inner anim-up">
     <div class="dash-hero-badge">🇮🇳 Made for Indian CAs &amp; Accountants</div>
     <h1>Your Complete <em>CA Toolkit</em></h1>
-    <p>Professional tools built by CA Article — designed to save hours of manual work every year.</p>
+    <p>Professional automation tools built by a CA Article — saving hours of manual work every year.</p>
+    <div class="hero-cta-row">
+      {% if not username %}
+      <a href="/login" class="hero-cta primary">Sign In &amp; Get Started →</a>
+      <a href="#premium" class="hero-cta secondary">Explore Tools ↓</a>
+      {% else %}
+      <a href="/tool/converter" class="hero-cta primary">Open Year-Shift Tool →</a>
+      <a href="/tool/tb-to-bs" class="hero-cta secondary">TB → Balance Sheet</a>
+      {% endif %}
+    </div>
   </div>
 </div>
 
@@ -639,58 +685,60 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 {% endif %}
 
 <!-- ── PREMIUM TOOLS ───────────────────────────────────────────── -->
-<div class="section-wrap">
+<div class="section-wrap" id="premium">
   <div class="section-hd">
-    <h2>🔒 Premium Tools</h2>
-    <span class="section-hd-badge">Shared upload quota</span>
+    <h2>⚡ Premium Tools</h2>
+    <span class="section-hd-badge">{% if username %}✓ {{ uploads_remaining }} uploads left{% else %}Login required{% endif %}</span>
   </div>
   <div class="tools-grid">
 
     {% if username %}
-    <a href="/tool/converter" class="tool-card premium-card">
-    {% else %}
-    <a href="/login" class="tool-card premium-card">
-    {% endif %}
-      {% if not username %}
-      <span class="corner-badge cb-lock">🔒 Login</span>
-      {% else %}
+    <a href="/tool/converter" class="tool-card premium-card anim-up anim-d1">
       <span class="corner-badge cb-prem">⭐ Premium</span>
-      {% endif %}
-      <div class="tool-icon" style="background:#EEF2FF">📊</div>
+    {% else %}
+    <a href="/login" class="tool-card premium-card anim-up anim-d1">
+      <span class="corner-badge cb-lock">🔒 Sign In</span>
+    {% endif %}
+      <div class="tool-icon" style="background:linear-gradient(135deg,#E0F2FE,#BAE6FD)">📊</div>
       <h2>Balance Sheet Year-Shift</h2>
-      <p>Roll over your comparative Excel balance sheet to any financial year. Shifts CY→PY, clears CY, restores all formulas and updates every date — in seconds.</p>
+      <p>Roll over your comparative Excel balance sheet to any financial year. Shifts CY→PY, clears CY, restores formulas and updates every date — in seconds.</p>
       <div class="tool-footer">
-        <span class="tool-tag tag-live-prem">✓ Live · Premium</span>
+        {% if username %}<span class="tool-tag tag-live-prem">✓ Live · Premium</span>
+        {% else %}<span class="tool-tag tag-login">🔒 Login to Use</span>{% endif %}
         <span class="tool-arrow">→</span>
       </div>
     </a>
 
     {% if username %}
-    <a href="/tool/gst-reconciliation" class="tool-card premium-card">
-    {% else %}
-    <a href="/login" class="tool-card premium-card">
-    {% endif %}
-      {% if not username %}
-      <span class="corner-badge cb-lock">🔒 Login</span>
-      {% else %}
+    <a href="/tool/gst-reconciliation" class="tool-card premium-card anim-up anim-d2">
       <span class="corner-badge cb-prem">⭐ Premium</span>
-      {% endif %}
-      <div class="tool-icon" style="background:#FFFBEB">📋</div>
+    {% else %}
+    <a href="/login" class="tool-card premium-card anim-up anim-d2">
+      <span class="corner-badge cb-lock">🔒 Sign In</span>
+    {% endif %}
+      <div class="tool-icon" style="background:linear-gradient(135deg,#FEF9C3,#FDE68A)">📋</div>
       <h2>GST Reconciliation</h2>
       <p>Compare Sales as per Books vs GSTR 3B returns. Upload your sales summary and GSTR 3B PDFs (ZIP) — month-wise, state-wise difference report instantly.</p>
       <div class="tool-footer">
-        <span class="tool-tag tag-live-prem">✓ Live · Premium</span>
+        {% if username %}<span class="tool-tag tag-live-prem">✓ Live · Premium</span>
+        {% else %}<span class="tool-tag tag-login">🔒 Login to Use</span>{% endif %}
         <span class="tool-arrow">→</span>
       </div>
     </a>
 
-    <a href="/tool/tb-to-bs" class="tool-card premium-card">
+    {% if username %}
+    <a href="/tool/tb-to-bs" class="tool-card premium-card anim-up anim-d3">
       <span class="corner-badge cb-prem">⭐ Premium</span>
-      <div class="tool-icon" style="background:#F0FDF4">🗂️</div>
+    {% else %}
+    <a href="/login" class="tool-card premium-card anim-up anim-d3">
+      <span class="corner-badge cb-lock">🔒 Sign In</span>
+    {% endif %}
+      <div class="tool-icon" style="background:linear-gradient(135deg,#DCFCE7,#A7F3D0)">🗂️</div>
       <h2>Balance Sheet from Trial Balance</h2>
-      <p>Upload your trial balance and BS template — tool auto-maps accounts and fills CY figures. Zero formatting change in your template.</p>
+      <p>Upload your trial balance and BS template — auto-maps accounts and fills CY figures. Zero formatting change in your template.</p>
       <div class="tool-footer">
-        <span class="tool-tag tag-live-prem">✓ Live · Premium</span>
+        {% if username %}<span class="tool-tag tag-live-prem">✓ Live · Premium</span>
+        {% else %}<span class="tool-tag tag-login">🔒 Login to Use</span>{% endif %}
         <span class="tool-arrow">→</span>
       </div>
     </a>
@@ -698,73 +746,73 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   </div>
 
   <!-- ── FREE TOOLS ──────────────────────────────────────────────── -->
-  <div class="section-hd" style="margin-top:8px">
+  <div class="section-hd" style="margin-top:12px">
     <h2>🆓 Free Tools</h2>
-    <span class="section-hd-badge" style="background:var(--green-l);color:var(--green)">No login needed</span>
+    <span class="section-hd-badge" style="background:var(--green-l);color:#065F46;border-color:#A7F3D0">No login needed</span>
   </div>
-  <div class="tools-grid">
+  <div class="tools-grid tools-grid-4">
 
-    <a href="/tool/tax-calculator" class="tool-card free-card">
+    <a href="/tool/tax-calculator" class="tool-card free-card anim-up anim-d1">
       <span class="corner-badge cb-free">Free</span>
-      <div class="tool-icon" style="background:#FFFBEB">🧮</div>
+      <div class="tool-icon" style="background:linear-gradient(135deg,#FEF9C3,#FDE68A)">🧮</div>
       <h2>Income Tax Calculator</h2>
-      <p>Calculate tax under old and new regime for PY 2025-26. Income under 5 heads, TDS/TCS, surcharge &amp; cess — all built in.</p>
+      <p>Old &amp; new regime for PY 2025-26. Income under 5 heads, TDS/TCS, surcharge &amp; cess — all built in.</p>
       <div class="tool-footer">
         <span class="tool-tag tag-live-free">✓ Live · Free</span>
         <span class="tool-arrow">→</span>
       </div>
     </a>
 
-    <a href="/tool/tds-calculator" class="tool-card free-card">
+    <a href="/tool/tds-calculator" class="tool-card free-card anim-up anim-d2">
       <span class="corner-badge cb-free">Free</span>
-      <div class="tool-icon" style="background:#EEF2FF">📑</div>
+      <div class="tool-icon" style="background:linear-gradient(135deg,#E0F2FE,#BAE6FD)">📑</div>
       <h2>TDS / TCS Calculator</h2>
-      <p>Calculate TDS or TCS as per IT Act 2025 (Sec 393/394). New payment codes, rates, late deposit interest — all in one tool.</p>
+      <p>TDS or TCS as per IT Act 2025 (Sec 393/394). New payment codes, rates, late deposit interest.</p>
       <div class="tool-footer">
         <span class="tool-tag tag-live-free">✓ Live · Free</span>
         <span class="tool-arrow">→</span>
       </div>
     </a>
 
-    <a href="/tool/depreciation-calculator" class="tool-card free-card">
+    <a href="/tool/depreciation-calculator" class="tool-card free-card anim-up anim-d3">
       <span class="corner-badge cb-free">Free</span>
-      <div class="tool-icon" style="background:#F5F3FF">🏭</div>
+      <div class="tool-icon" style="background:linear-gradient(135deg,#EDE9FE,#DDD6FE)">🏭</div>
       <h2>Depreciation Calculator</h2>
-      <p>Calculate depreciation under Companies Act 2013 (WDV/SLM) and Income Tax Act. Full schedule with opening/closing WDV.</p>
+      <p>Companies Act 2013 (WDV/SLM) and Income Tax Act. Full schedule with opening/closing WDV.</p>
       <div class="tool-footer">
         <span class="tool-tag tag-live-free">✓ Live · Free</span>
         <span class="tool-arrow">→</span>
       </div>
     </a>
 
-    <a href="/tool/msme-calculator" class="tool-card free-card">
+    <a href="/tool/msme-calculator" class="tool-card free-card anim-up anim-d4">
       <span class="corner-badge cb-free">Free</span>
-      <div class="tool-icon" style="background:#FEF2F2">📄</div>
-      <h2>MSME Disallowance Calculator</h2>
-      <p>Upload creditors list and check MSME payment compliance under Sec 43B(h). Overdue payments highlighted with total disallowance.</p>
+      <div class="tool-icon" style="background:linear-gradient(135deg,#FEE2E2,#FECACA)">📄</div>
+      <h2>MSME Disallowance</h2>
+      <p>Check MSME payment compliance under Sec 43B(h). Overdue payments highlighted with total disallowance.</p>
       <div class="tool-footer">
         <span class="tool-tag tag-live-free">✓ Live · Free</span>
         <span class="tool-arrow">→</span>
       </div>
     </a>
 
-    <a href="/tool/capital-gains-calculator" class="tool-card free-card">
+    <a href="/tool/capital-gains-calculator" class="tool-card free-card anim-up anim-d5">
       <span class="corner-badge cb-free">Free</span>
-      <div class="tool-icon" style="background:#F5F3FF">💰</div>
+      <div class="tool-icon" style="background:linear-gradient(135deg,#DCFCE7,#A7F3D0)">💰</div>
       <h2>Capital Gains Calculator</h2>
-      <p>Calculate LTCG/STCG on property, shares, MF and more. Compare old vs new regime, indexation benefit, and find zero-tax sale price.</p>
+      <p>LTCG/STCG on property, shares, MF. Old vs new regime, indexation, zero-tax sale price.</p>
       <div class="tool-footer">
         <span class="tool-tag tag-live-free">✓ Live · Free</span>
         <span class="tool-arrow">→</span>
       </div>
     </a>
 
-    <div class="tool-card coming disabled">
-      <div class="tool-icon" style="background:#FEF2F2">🚀</div>
-      <h2>More Tools Coming Soon</h2>
-      <p>We're building more tools for Indian CAs. Stay tuned — new utilities added regularly based on your feedback.</p>
+    <div class="tool-card coming disabled anim-up anim-d6">
+      <div class="tool-icon" style="background:linear-gradient(135deg,#F0FDFA,#CCFBF1)">🚀</div>
+      <h2>More Tools Coming</h2>
+      <p>New utilities added regularly based on your feedback. Stay tuned!</p>
       <div class="tool-footer">
-        <span class="tool-tag tag-soon">Stay Tuned</span>
+        <span class="tool-tag tag-soon">Coming Soon</span>
         <span></span>
       </div>
     </div>
@@ -775,10 +823,10 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <!-- ── STATS BAR ──────────────────────────────────────────────── -->
 <div class="stats-row">
   <div class="stats-inner">
-    <div class="stat-item"><div class="stat-n"><em>9</em>+</div><div class="stat-l">CA Tools Live</div></div>
-    <div class="stat-item"><div class="stat-n">100%</div><div class="stat-l">Formatting Preserved</div></div>
-    <div class="stat-item"><div class="stat-n">&lt;<em>10s</em></div><div class="stat-l">Processing Time</div></div>
-    <div class="stat-item"><div class="stat-n"><em>∞</em></div><div class="stat-l">CA Templates Supported</div></div>
+    <div class="stat-item anim-up anim-d1"><div class="stat-n"><em>9</em>+</div><div class="stat-l">CA Tools Live</div></div>
+    <div class="stat-item anim-up anim-d2"><div class="stat-n">100%</div><div class="stat-l">Formatting Preserved</div></div>
+    <div class="stat-item anim-up anim-d3"><div class="stat-n">&lt;<em>10s</em></div><div class="stat-l">Processing Time</div></div>
+    <div class="stat-item anim-up anim-d4"><div class="stat-n"><em>∞</em></div><div class="stat-l">CA Templates Supported</div></div>
   </div>
 </div>
 
@@ -786,7 +834,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   <div class="ft-main">
     <div>
       <div class="ft-brand-name">CA<span>Toolkit</span></div>
-      <p class="ft-brand-desc">A comprehensive utility platform built by a CA Article from Ludhiana, Punjab — providing automation tools for Indian Chartered Accountants. Saving hours of manual work every year.</p>
+      <p class="ft-brand-desc">A comprehensive automation platform built by a CA Article from Ludhiana, Punjab — saving hours of manual work for Indian Chartered Accountants every year.</p>
     </div>
     <div>
       <div class="ft-col-title">Tools</div>
@@ -802,14 +850,14 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       <div class="ft-col-title">Contact Us</div>
       <div class="ft-contact-name">CA Toolkit</div>
       <div class="ft-contact-addr">Built for Indian Chartered Accountants<br/>Created by CA Article · Ludhiana, Punjab</div>
-      <div class="ft-contact-line">Support · <a href="https://wa.me/918427651580" style="color:#94A3B8">WhatsApp Chat</a></div>
+      <div class="ft-contact-line">Support · <a href="https://wa.me/918427651580" style="color:#6EE7B7">WhatsApp Chat</a></div>
       <div class="ft-socials">
         <a href="https://wa.me/918427651580" target="_blank" title="WhatsApp"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
       </div>
     </div>
   </div>
   <div class="ft-bottom">
-    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved · <a href="/privacy" style="color:#475569;text-decoration:none">Privacy Policy</a> · <span style="color:#EF4444">No refund after first upload is used</span></span>
+    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved · <a href="/privacy" style="color:#475569;text-decoration:none">Privacy Policy</a> · <span style="color:#F87171">No refund after first upload is used</span></span>
     <span class="ft-bottom-right">Built for Indian CAs · Ludhiana, Punjab</span>
   </div>
 </footer>
