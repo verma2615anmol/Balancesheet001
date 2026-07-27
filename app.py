@@ -824,7 +824,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   background:linear-gradient(135deg,#0B5D4A 0%,#0E8A7B 35%,#18B5A4 65%,#0B5D4A 100%);
   background-size:300% 300%;
   animation:meshShift 14s ease infinite;
-  padding:64px 24px 60px;text-align:center;position:relative;overflow:hidden}
+  padding:36px 24px 38px;text-align:center;position:relative;overflow:hidden}
 .dash-hero::before{content:'';position:absolute;inset:0;
   background:radial-gradient(ellipse 70% 60% at 50% 40%,rgba(245,158,11,.12) 0%,transparent 70%);
   pointer-events:none}
@@ -835,18 +835,18 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .dash-hero-badge{display:inline-flex;align-items:center;gap:6px;
   background:rgba(245,158,11,.18);backdrop-filter:blur(6px);
   color:#FDE68A;border:1px solid rgba(245,158,11,.35);border-radius:99px;
-  padding:6px 18px;font-size:11.5px;font-weight:700;margin-bottom:22px;letter-spacing:.04em}
-.dash-hero h1{font-family:var(--font-head);font-size:clamp(28px,5vw,48px);
-  font-weight:800;line-height:1.12;letter-spacing:-1px;color:#fff;margin-bottom:16px}
+  padding:5px 16px;font-size:11.5px;font-weight:700;margin-bottom:12px;letter-spacing:.04em}
+.dash-hero h1{font-family:var(--font-head);font-size:clamp(26px,5vw,44px);
+  font-weight:800;line-height:1.12;letter-spacing:-1px;color:#fff;margin-bottom:10px}
 .dash-hero h1 em{font-style:italic;color:#A7F3D0}
-.dash-hero p{font-size:15.5px;color:rgba(255,255,255,.78);line-height:1.78;max-width:500px;margin:0 auto 30px}
-.hero-cta-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:16px}
-.hero-link-row{display:flex;gap:20px;justify-content:center;flex-wrap:wrap}
-.hero-link{font-size:12.5px;color:rgba(255,255,255,.55);text-decoration:none;
+.dash-hero p{font-size:15px;color:rgba(255,255,255,.78);line-height:1.7;max-width:480px;margin:0 auto 20px}
+.hero-cta-row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:10px}
+.hero-link-row{display:flex;gap:18px;justify-content:center;flex-wrap:wrap}
+.hero-link{font-size:12px;color:rgba(255,255,255,.5);text-decoration:none;
   transition:color .2s;letter-spacing:.01em}
-.hero-link:hover{color:rgba(255,255,255,.9)}
-.hero-cta{display:inline-flex;align-items:center;gap:7px;padding:12px 28px;border-radius:99px;
-  font-size:13.5px;font-weight:700;text-decoration:none;transition:transform .18s,box-shadow .18s}
+.hero-link:hover{color:rgba(255,255,255,.88)}
+.hero-cta{display:inline-flex;align-items:center;gap:6px;padding:10px 24px;border-radius:99px;
+  font-size:13px;font-weight:700;text-decoration:none;transition:transform .18s,box-shadow .18s}
 .hero-cta.primary{background:linear-gradient(135deg,#F59E0B,#EFA600);color:#fff;
   box-shadow:0 4px 22px rgba(245,158,11,.45)}
 .hero-cta.primary:hover{transform:translateY(-2px);box-shadow:0 7px 30px rgba(245,158,11,.55)}
@@ -854,7 +854,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .hero-cta.secondary:hover{background:rgba(255,255,255,.22);transform:translateY(-2px)}
 
 /* ── USAGE STRIP ─────────────────────────────────────────────────── */
-.usage-strip{max-width:1080px;margin:-24px auto 0;padding:0 24px;position:relative;z-index:10}
+.usage-strip{max-width:1080px;margin:-18px auto 0;padding:0 24px;position:relative;z-index:10}
 .usage-box{background:var(--white);border:1px solid var(--border);
   border-radius:var(--radius);padding:16px 22px;
   display:flex;align-items:center;justify-content:space-between;
