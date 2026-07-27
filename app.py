@@ -819,27 +819,54 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <title>Dashboard – CA Toolkit</title>
 <style>
 """ + BASE_CSS + """
+/* ── DASHBOARD NAV EXTRAS ───────────────────────────────────────── */
+.nav-links-center{display:flex;align-items:center;gap:4px;position:absolute;
+  left:50%;transform:translateX(-50%)}
+.nav-link-item{font-size:13px;color:var(--muted);text-decoration:none;font-weight:500;
+  padding:6px 12px;border-radius:8px;transition:background .18s,color .18s;white-space:nowrap}
+.nav-link-item:hover{background:var(--bg2);color:var(--brand-d)}
+.nav-link-item.active{color:var(--brand-d);font-weight:600}
+@media(max-width:768px){.nav-links-center{display:none}}
+/* Bigger logo */
+.logo-lg{font-size:24px!important;letter-spacing:-.8px!important}
+/* Amber Sign In button */
+.nav-btn-amber{background:linear-gradient(135deg,#F59E0B,#EFA600)!important;
+  box-shadow:0 2px 12px rgba(245,158,11,.35)!important}
+.nav-btn-amber:hover{box-shadow:0 4px 20px rgba(245,158,11,.5)!important}
+
+/* ── TRUST STRIP ────────────────────────────────────────────────── */
+.trust-strip{background:var(--white);border-bottom:1px solid var(--border);
+  padding:10px 24px}
+.trust-inner{max-width:1320px;margin:0 auto;display:flex;align-items:center;
+  justify-content:center;gap:28px;flex-wrap:wrap}
+.trust-item{display:inline-flex;align-items:center;gap:6px;
+  font-size:12px;color:var(--muted);font-weight:500;white-space:nowrap}
+.trust-item .ti-check{width:16px;height:16px;background:linear-gradient(135deg,var(--brand),var(--brand-d));
+  border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
+  font-size:9px;color:#fff;flex-shrink:0}
+
 /* ── DASHBOARD HERO ─────────────────────────────────────────────── */
 .dash-hero{
   background:linear-gradient(135deg,#0B5D4A 0%,#0E8A7B 35%,#18B5A4 65%,#0B5D4A 100%);
   background-size:300% 300%;
   animation:meshShift 14s ease infinite;
-  padding:36px 24px 38px;text-align:center;position:relative;overflow:hidden}
+  padding:32px 24px 34px;text-align:center;position:relative;overflow:hidden}
 .dash-hero::before{content:'';position:absolute;inset:0;
-  background:radial-gradient(ellipse 70% 60% at 50% 40%,rgba(245,158,11,.12) 0%,transparent 70%);
+  background:radial-gradient(ellipse 70% 60% at 50% 40%,rgba(245,158,11,.10) 0%,transparent 70%);
   pointer-events:none}
 .dash-hero::after{content:'';position:absolute;inset:0;
-  background:url("data:image/svg+xml,%3Csvg width='52' height='52' viewBox='0 0 52 52' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='26' cy='26' r='1' fill='%23ffffff' fill-opacity='0.06'/%3E%3C/svg%3E");
+  background:url("data:image/svg+xml,%3Csvg width='32' height='32' viewBox='0 0 32 32' xmlns='http://www.w3.org/2000/svg'%3E%3Crect x='15' y='15' width='2' height='2' rx='1' fill='%23ffffff' fill-opacity='0.04'/%3E%3C/svg%3E");
   pointer-events:none}
 .dash-hero-inner{position:relative;max-width:740px;margin:0 auto}
 .dash-hero-badge{display:inline-flex;align-items:center;gap:6px;
   background:rgba(245,158,11,.18);backdrop-filter:blur(6px);
   color:#FDE68A;border:1px solid rgba(245,158,11,.35);border-radius:99px;
-  padding:5px 16px;font-size:11.5px;font-weight:700;margin-bottom:12px;letter-spacing:.04em}
-.dash-hero h1{font-family:var(--font-head);font-size:clamp(26px,5vw,44px);
-  font-weight:800;line-height:1.12;letter-spacing:-1px;color:#fff;margin-bottom:10px}
+  padding:5px 16px;font-size:11.5px;font-weight:700;margin-bottom:10px;letter-spacing:.04em}
+.dash-hero h1{font-family:var(--font-head);font-size:clamp(26px,4.5vw,42px);
+  font-weight:800;line-height:1.12;letter-spacing:-1px;color:#fff;margin-bottom:8px}
 .dash-hero h1 em{font-style:italic;color:#A7F3D0}
-.dash-hero p{font-size:15px;color:rgba(255,255,255,.78);line-height:1.7;max-width:480px;margin:0 auto 20px}
+.dash-hero p{font-size:17px;color:rgba(255,255,255,.82);line-height:1.75;
+  max-width:480px;margin:0 auto 18px;letter-spacing:.01em}
 .hero-cta-row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:10px}
 .hero-link-row{display:flex;gap:18px;justify-content:center;flex-wrap:wrap}
 .hero-link{font-size:12px;color:rgba(255,255,255,.5);text-decoration:none;
@@ -898,30 +925,35 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 @media(max-width:768px){.tools-grid-4{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:480px){.tools-grid-4{grid-template-columns:1fr}}
 
-.tool-card{background:var(--white);border:1.5px solid var(--border);
+.tool-card{background:var(--card);border:1.5px solid var(--border);
   border-radius:var(--radius);padding:24px 22px 20px;
   text-decoration:none;color:var(--ink);
-  transition:border-color .22s,box-shadow .22s,transform .2s;
+  transition:border-color .22s,box-shadow .25s,transform .22s;
   position:relative;overflow:hidden;display:flex;flex-direction:column}
 .tool-card:hover{border-color:var(--brand-d);
-  box-shadow:0 0 0 3px rgba(15,118,110,.1),0 12px 40px rgba(15,118,110,.18);
-  transform:translateY(-4px)}
+  box-shadow:0 0 0 3px rgba(15,118,110,.1),0 16px 48px rgba(15,118,110,.22);
+  transform:translateY(-6px)}
 .tool-card.disabled{cursor:default;opacity:.6}
 .tool-card.disabled:hover{border-color:var(--border);box-shadow:none;transform:none}
-/* Accent top stripe */
+/* Accent top stripe — brightens on hover */
 .tool-card.premium-card::before{content:'';position:absolute;top:0;left:0;right:0;
-  height:3.5px;background:linear-gradient(90deg,var(--brand),#0FADA0,var(--accent))}
+  height:3.5px;background:linear-gradient(90deg,var(--brand),#0FADA0,var(--accent));
+  transition:height .22s,opacity .22s}
+.tool-card.premium-card:hover::before{height:4.5px}
 .tool-card.free-card::before{content:'';position:absolute;top:0;left:0;right:0;
-  height:3.5px;background:linear-gradient(90deg,var(--green),#34D399)}
+  height:3.5px;background:linear-gradient(90deg,var(--green),#34D399);
+  transition:height .22s}
+.tool-card.free-card:hover::before{height:4.5px}
 /* Shimmer on hover */
 .tool-card:not(.disabled)::after{content:'';position:absolute;inset:0;
-  background:linear-gradient(135deg,rgba(13,148,136,.04) 0%,transparent 60%);
+  background:linear-gradient(135deg,rgba(15,118,110,.04) 0%,transparent 60%);
   opacity:0;transition:opacity .25s;pointer-events:none}
 .tool-card:not(.disabled):hover::after{opacity:1}
 
 .tool-icon{width:48px;height:48px;border-radius:13px;display:flex;
   align-items:center;justify-content:center;font-size:23px;margin-bottom:16px;flex-shrink:0;
-  box-shadow:0 2px 8px rgba(0,0,0,.07)}
+  box-shadow:0 2px 8px rgba(0,0,0,.07);transition:transform .22s,box-shadow .22s}
+.tool-card:hover .tool-icon{transform:scale(1.08);box-shadow:0 4px 14px rgba(0,0,0,.12)}
 .tool-card h2{font-family:var(--font-head);font-size:14.5px;font-weight:700;
   margin-bottom:7px;color:var(--ink);line-height:1.3}
 .tool-card p{font-size:12px;color:var(--muted);line-height:1.7;
@@ -936,8 +968,9 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .tool-arrow{width:30px;height:30px;background:var(--bg2);border-radius:9px;
   display:flex;align-items:center;justify-content:center;
   font-size:14px;color:var(--muted);
-  transition:background .2s,color .2s,transform .2s}
-.tool-card:not(.disabled):hover .tool-arrow{background:var(--brand);color:#fff;transform:translateX(4px)}
+  transition:background .2s,color .2s,transform .22s,box-shadow .22s}
+.tool-card:not(.disabled):hover .tool-arrow{background:var(--brand-d);color:#fff;
+  transform:translateX(5px);box-shadow:0 2px 8px rgba(15,118,110,.35)}
 
 /* Corner badge — uniform for all 3 premium cards */
 .corner-badge{position:absolute;top:15px;right:15px;
@@ -1046,8 +1079,15 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 </style></head><body>
 
 <!-- ── NAV ─────────────────────────────────────────────────────── -->
-<nav>
-  <a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a>
+<nav style="position:relative">
+  <a href="/" class="logo logo-lg">CA<span class="logo-dot"></span><span>Toolkit</span></a>
+  <!-- Centre nav links (desktop only) -->
+  <div class="nav-links-center">
+    <a href="/#premium" class="nav-link-item">Tools</a>
+    <a href="/how-to-use" class="nav-link-item">How to Use</a>
+    <a href="/story" class="nav-link-item">About</a>
+    {% if username %}<a href="/tool/converter#pricing" class="nav-link-item">Pricing</a>{% endif %}
+  </div>
   <div class="nav-right">
     {% if username %}
     <div class="nav-user">
@@ -1060,10 +1100,22 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     {% if is_admin %}<a href="/admin" class="nav-btn ghost">⚙ Admin</a>{% endif %}
     <a href="/logout" class="nav-link">Sign out</a>
     {% else %}
-    <a href="/login" class="nav-btn">Sign In →</a>
+    <a href="/login" class="nav-btn nav-btn-amber">Sign In →</a>
     {% endif %}
   </div>
 </nav>
+
+<!-- ── TRUST STRIP ────────────────────────────────────────────── -->
+<div class="trust-strip">
+  <div class="trust-inner">
+    <span class="trust-item"><span class="ti-check">✓</span> Built for Indian CAs</span>
+    <span class="trust-item"><span class="ti-check">✓</span> Excel Compatible</span>
+    <span class="trust-item"><span class="ti-check">✓</span> Formatting Always Preserved</span>
+    <span class="trust-item"><span class="ti-check">✓</span> Secure — Files Auto-Deleted</span>
+    <span class="trust-item"><span class="ti-check">✓</span> No Software Installation</span>
+    <span class="trust-item"><span class="ti-check">✓</span> Works with Any CA Template</span>
+  </div>
+</div>
 
 <!-- ── HERO ─────────────────────────────────────────────────────── -->
 <div class="dash-hero">
