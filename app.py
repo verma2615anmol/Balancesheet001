@@ -502,7 +502,7 @@ _PAGE_NAV = """<nav>
   <div class="nav-right">
     <a href="/story" class="nav-link">Our Story</a>
     <a href="/how-to-use" class="nav-link">How to Use</a>
-    <a href="/our-products" class="nav-link">Our Products</a>
+    <a href="/ca-tools-hub" class="nav-link">CA Tools Hub</a>
     <a href="/pricing" class="nav-link">Pricing</a>
     <div class="nav-sep"></div>
     <a href="/" class="nav-btn dash">← Dashboard</a>
@@ -515,7 +515,7 @@ _PAGE_FOOTER = """<footer>
       <a href="/privacy" style="color:#6B7280;text-decoration:none">Privacy</a> ·
       <a href="/story" style="color:#6B7280;text-decoration:none">Our Story</a> ·
       <a href="/how-to-use" style="color:#6B7280;text-decoration:none">How to Use</a> ·
-      <a href="/our-products" style="color:#6B7280;text-decoration:none">Our Products</a> ·
+      <a href="/ca-tools-hub" style="color:#6B7280;text-decoration:none">CA Tools Hub</a> ·
       <a href="/pricing" style="color:#6B7280;text-decoration:none">Pricing</a>
     </span>
   </div>
@@ -1156,7 +1156,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <a href="/#premium" class="nav-link-item active">Tools</a>
     <a href="/how-to-use" class="nav-link-item">How to Use</a>
     <a href="/story" class="nav-link-item">About</a>
-    <a href="/our-products" class="nav-link-item">Our Products</a>
+    <a href="/ca-tools-hub" class="nav-link-item">CA Tools Hub</a>
     <a href="/pricing" class="nav-link-item">Pricing</a>
   </div>
   <div class="nav-right">
@@ -1184,7 +1184,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   <a href="/#premium" class="active">⚡ Tools</a>
   <a href="/how-to-use">📖 How to Use</a>
   <a href="/story">✦ About</a>
-  <a href="/our-products">🚀 Our Products</a>
+  <a href="/ca-tools-hub">🧰 CA Tools Hub</a>
   <a href="/pricing">💳 Pricing</a>
   <div class="mob-divider"></div>
   {% if username %}
@@ -6691,6 +6691,105 @@ def user_ctx(user):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  CA TOOLS HUB PAGE  — /ca-tools-hub
+# ══════════════════════════════════════════════════════════════════════════════
+
+CA_TOOLS_HUB_TEMPLATE = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CA Tools Hub – CA Toolkit</title>
+<style>""" + BASE_CSS + """
+.hub-grid{display:grid;grid-template-columns:1fr;gap:24px;margin-top:8px}
+.hub-card{background:var(--card);border:1.5px solid var(--border);border-radius:var(--radius);
+  padding:28px 26px;position:relative;overflow:hidden;
+  transition:border-color .22s,box-shadow .25s,transform .22s}
+.hub-card:hover{border-color:var(--brand);
+  box-shadow:0 0 0 3px rgba(20,184,166,.09),0 18px 52px rgba(15,118,110,.18);
+  transform:translateY(-4px)}
+.hub-card::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;
+  background:var(--hc-grad,linear-gradient(90deg,var(--brand),var(--accent)))}
+.hub-card-head{display:flex;align-items:flex-start;gap:16px;margin-bottom:14px}
+.hub-icon{width:54px;height:54px;border-radius:14px;display:flex;align-items:center;
+  justify-content:center;font-size:26px;flex-shrink:0;box-shadow:0 2px 10px rgba(0,0,0,.07)}
+.hub-tag{display:inline-flex;align-items:center;font-size:10px;font-weight:700;
+  padding:3px 10px;border-radius:99px;margin-bottom:7px;letter-spacing:.04em;
+  background:var(--brand-l);color:var(--brand-d);border:1px solid var(--brand-m)}
+.hub-name{font-family:var(--font-head);font-size:19px;font-weight:800;
+  color:var(--ink);letter-spacing:-.3px;margin-bottom:4px;line-height:1.2}
+.hub-tagline{font-size:13px;color:var(--muted);line-height:1.6}
+.hub-desc{font-size:13.5px;color:#374151;line-height:1.85;margin-bottom:18px}
+.hub-features{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:20px}
+.hub-feat{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500;
+  color:var(--brand-d);background:var(--brand-l);border:1px solid var(--brand-m);
+  padding:4px 11px;border-radius:99px}
+.hub-cta{display:inline-flex;align-items:center;gap:8px;
+  background:linear-gradient(135deg,var(--brand),var(--brand-d));color:#fff;
+  padding:10px 24px;border-radius:99px;font-size:13px;font-weight:700;
+  text-decoration:none;transition:transform .18s,box-shadow .18s,opacity .18s;
+  box-shadow:0 4px 16px rgba(15,118,110,.30)}
+.hub-cta:hover{transform:translateY(-2px);box-shadow:0 7px 24px rgba(15,118,110,.40);opacity:.95}
+.hub-cta:active{transform:scale(0.97)}
+.hub-cta-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.hub-note{font-size:11.5px;color:var(--muted);font-style:italic}
+</style></head><body>
+""" + _PAGE_NAV + """
+<div class="page-wrap anim-up">
+  <div class="page-hero">
+    <div class="page-eyebrow">🧰 CA Tools Hub</div>
+    <h1 class="page-title">Companion tools for <em>CA students &amp; firms</em></h1>
+    <p class="page-sub">Standalone products built alongside CA Toolkit — each solving a specific problem faced by CA students and practitioners.</p>
+  </div>
+  <div class="page-divider"></div>
+
+  <div class="hub-grid">
+
+    <!-- Habit Tracker -->
+    <div class="hub-card anim-up anim-d1" style="--hc-grad:linear-gradient(90deg,#6D28D9,#8B5CF6,#F59E0B)">
+      <div class="hub-card-head">
+        <div class="hub-icon" style="background:linear-gradient(135deg,#EDE9FE,#DDD6FE)">📅</div>
+        <div>
+          <div class="hub-tag" style="background:#EDE9FE;color:#5B21B6;border-color:#C4B5FD">Free · For CA Students</div>
+          <div class="hub-name">Habit Tracker for CA Students</div>
+          <div class="hub-tagline">Build consistent study habits and track your daily CA exam preparation.</div>
+        </div>
+      </div>
+      <p class="hub-desc">
+        CA preparation demands months of consistent, disciplined study. This Habit Tracker is built specifically for CA students — log daily study hours, track subject-wise progress, and build streaks that keep you accountable through Foundation, Intermediate, and Final.
+        <br/><br/>
+        Log habits like revision, mock tests, ICAI material reading, and practice questions. See weekly completion rates at a glance and stay on track toward your exam date. No distractions, no social feed — just you and your goals.
+      </p>
+      <div class="hub-features">
+        <span class="hub-feat">✓ Daily habit logging</span>
+        <span class="hub-feat" style="background:#EDE9FE;color:#5B21B6;border-color:#C4B5FD">✓ Streak tracking</span>
+        <span class="hub-feat">✓ Subject-wise progress</span>
+        <span class="hub-feat" style="background:#EDE9FE;color:#5B21B6;border-color:#C4B5FD">✓ Free to use</span>
+        <span class="hub-feat">✓ Works on mobile</span>
+      </div>
+      <div class="hub-cta-row">
+        <a href="https://habit-tracker-9hcr.onrender.com" target="_blank" rel="noopener"
+           class="hub-cta" style="background:linear-gradient(135deg,#6D28D9,#7C3AED)">
+          Open Habit Tracker ↗
+        </a>
+        <span class="hub-note">Free · Opens in new tab · No login needed</span>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="page-divider"></div>
+  <div class="page-section">
+    <h2>Request a tool</h2>
+    <p>Every tool here comes from a real problem faced by CA students or practitioners. If you have a repetitive task that could be automated, or a tool that would genuinely help your CA preparation, reach out — the best ideas come from people in the field.</p>
+    <ul>
+      <li>WhatsApp: <a href="https://wa.me/918427651580">+91 84276 51580</a></li>
+      <li>Email: <a href="mailto:sumitverma2880@gmail.com">sumitverma2880@gmail.com</a></li>
+    </ul>
+  </div>
+</div>
+""" + _PAGE_FOOTER + """
+</body></html>"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  PRICING PAGE  — /pricing
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -6877,6 +6976,10 @@ def story_page():
 @app.route("/how-to-use")
 def how_to_use_page():
     return render_template_string(HOW_TO_USE_TEMPLATE)
+
+@app.route("/ca-tools-hub")
+def ca_tools_hub_page():
+    return render_template_string(CA_TOOLS_HUB_TEMPLATE)
 
 @app.route("/pricing")
 def pricing_page():
