@@ -65,7 +65,7 @@ PLANS = {
     "standard": {"label": "Standard",     "uploads": 25,  "price": 130},
     "pro":      {"label": "Professional", "uploads": 60,  "price": 270},
     "firm":     {"label": "Firm",         "uploads": 150, "price": 600},
-    "ca":       {"label": "CA Admin",     "uploads": 500, "price": 1000},
+    "ca":       {"label": "CA Firm",      "uploads": 500, "price": 1000},
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -244,7 +244,7 @@ def admin_required(f):
 # ══════════════════════════════════════════════════════════════════════════════
 
 BASE_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,700&family=Inter:wght@400;500;600&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
   /* ── Option 1: Professional Premium — Teal + Amber ── */
@@ -264,33 +264,40 @@ BASE_CSS = """
   --shadow-lg:0 8px 24px rgba(15,118,110,.10),0 24px 64px rgba(15,118,110,.18);
   --font-head:'Plus Jakarta Sans',sans-serif;
   --font-body:'Inter',sans-serif;
-  --font-mono:'JetBrains Mono',monospace;
 }
-/* Monospace numbers — rupee amounts, plan counts, stat figures */
-.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 body{font-family:var(--font-body);background:var(--bg);color:var(--ink);min-height:100vh;-webkit-font-smoothing:antialiased}
 
 /* ── NAV ─────────────────────────────────────────────────────────── */
 nav{background:rgba(255,255,255,.97);backdrop-filter:blur(14px);
-    border-bottom:1px solid var(--border);padding:0 28px;
-    display:flex;align-items:center;justify-content:space-between;height:62px;
+    border-bottom:1px solid var(--border);padding:0 16px;
+    display:flex;align-items:center;justify-content:space-between;height:54px;
     position:sticky;top:0;z-index:200;box-shadow:0 1px 0 var(--border)}
-.logo{font-family:var(--font-head);font-size:21px;font-weight:800;
+@media(min-width:769px){nav{padding:0 28px;height:62px}}
+.logo{font-family:var(--font-head);font-size:19px;font-weight:800;
       color:var(--brand-d);letter-spacing:-.6px;text-decoration:none;display:flex;align-items:center;gap:2px}
+@media(min-width:769px){.logo{font-size:21px}}
 .logo-dot{width:7px;height:7px;background:var(--accent);border-radius:50%;margin-bottom:2px;flex-shrink:0}
 .logo span{color:var(--accent)}
-.nav-right{display:flex;align-items:center;gap:10px}
+.nav-right{display:flex;align-items:center;gap:8px}
+@media(min-width:769px){.nav-right{gap:10px}}
 .nav-user{font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:6px}
 .nav-user strong{color:var(--ink);font-weight:600}
+/* Hide username text + plan badge on mobile — keep only avatar */
+@media(max-width:768px){
+  .nav-user strong,.nav-user .badge,.nav-sep,.nav-link{display:none!important}
+  nav .nav-btn.ghost{display:none!important}
+}
 .nav-avatar{width:30px;height:30px;background:linear-gradient(135deg,var(--brand),var(--brand-d));border-radius:50%;
             display:inline-flex;align-items:center;justify-content:center;
             font-size:12px;font-weight:700;color:#fff;box-shadow:0 2px 8px rgba(15,118,110,.35)}
-.nav-btn{background:linear-gradient(135deg,var(--brand),var(--brand-d));color:#fff;padding:8px 18px;border-radius:var(--radius-sm);
-         font-size:12.5px;font-weight:700;text-decoration:none;letter-spacing:.01em;
+.nav-btn{background:linear-gradient(135deg,var(--brand),var(--brand-d));color:#fff;padding:7px 14px;border-radius:var(--radius-sm);
+         font-size:12px;font-weight:700;text-decoration:none;letter-spacing:.01em;
          transition:opacity .18s,transform .15s,box-shadow .18s;white-space:nowrap;
          font-family:var(--font-body);display:inline-flex;align-items:center;gap:5px;
          box-shadow:0 2px 12px rgba(15,118,110,.28)}
+@media(min-width:769px){.nav-btn{padding:8px 18px;font-size:12.5px}}
 .nav-btn:hover{opacity:.93;transform:translateY(-1px);box-shadow:0 5px 20px rgba(15,118,110,.38)}
+.nav-btn:active{transform:scale(0.97)!important}
 .nav-btn.ghost{background:transparent;color:var(--ink2);border:1.5px solid var(--border2);box-shadow:none}
 .nav-btn.ghost:hover{background:var(--bg2);border-color:var(--brand-d);color:var(--brand-d)}
 .nav-btn.dash{background:var(--bg2);color:var(--ink2);border:1.5px solid var(--border);font-weight:600;box-shadow:none}
@@ -302,11 +309,6 @@ nav{background:rgba(255,255,255,.97);backdrop-filter:blur(14px);
 .nav-link:hover{color:var(--brand-d)}
 .nav-link:hover::after{width:100%}
 .nav-sep{width:1px;height:20px;background:var(--border);margin:0 2px}
-/* ── BUTTON PRESS MICRO-INTERACTION ──────────────────────────────── */
-.nav-btn:active,.btn-main:active,.btn:active,.hero-cta:active,.upgrade-btn:active,
-.tg-link:active,.product-cta:active{transform:scale(0.97)!important;transition:transform .08s!important}
-/* ── HEADING LETTER-SPACING (standardised) ───────────────────────── */
-h1,h2,h3{letter-spacing:-0.03em}
 
 /* ── BADGES ────────────────────────────────────────────────────────── */
 .badge{display:inline-flex;align-items:center;font-size:10px;font-weight:700;
@@ -401,18 +403,6 @@ footer{background:#071812;color:#94A3B8;font-size:12px;padding:0}
 .anim-d1{animation-delay:.08s}.anim-d2{animation-delay:.16s}.anim-d3{animation-delay:.24s}
 .anim-d4{animation-delay:.32s}.anim-d5{animation-delay:.40s}.anim-d6{animation-delay:.48s}
 @media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
-
-/* ── SHARED SCROLL-TO-TOP (all pages) ─────────────────────────────── */
-#pageScrollTop{position:fixed;bottom:82px;right:24px;width:40px;height:40px;
-  background:var(--white);border:1.5px solid var(--border2);border-radius:50%;
-  display:flex;align-items:center;justify-content:center;cursor:pointer;
-  font-size:17px;color:var(--brand-d);box-shadow:var(--shadow-md);
-  opacity:0;transform:translateY(10px);
-  transition:opacity .26s,transform .26s,background .18s,box-shadow .18s;
-  z-index:997;pointer-events:none;text-decoration:none}
-#pageScrollTop.vis{opacity:1;transform:translateY(0);pointer-events:auto}
-#pageScrollTop:hover{background:var(--brand-l);border-color:var(--brand)}
-#pageScrollTop:active{transform:scale(0.92)}
 
 /* ── SHARED PAGE WRAPPER (privacy / story / how-to-use) ─────────────── */
 .page-wrap{max-width:820px;margin:48px auto;padding:0 28px 80px}
@@ -513,6 +503,7 @@ _PAGE_NAV = """<nav>
     <a href="/story" class="nav-link">Our Story</a>
     <a href="/how-to-use" class="nav-link">How to Use</a>
     <a href="/our-products" class="nav-link">Our Products</a>
+    <a href="/pricing" class="nav-link">Pricing</a>
     <div class="nav-sep"></div>
     <a href="/" class="nav-btn dash">← Dashboard</a>
   </div>
@@ -520,20 +511,18 @@ _PAGE_NAV = """<nav>
 
 _PAGE_FOOTER = """<footer>
   <div class="ft-bottom" style="justify-content:center;background:#071812;border-top:1px solid #0D2E24;padding:14px 24px">
-    <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved ·
-      <a href="/privacy" style="color:#6B7280;text-decoration:none">Privacy Policy</a> ·
+    <span class="ft-bottom-left" style="text-align:center;line-height:2">©2026 CA Toolkit · All Rights Reserved ·
+      <a href="/privacy" style="color:#6B7280;text-decoration:none">Privacy</a> ·
       <a href="/story" style="color:#6B7280;text-decoration:none">Our Story</a> ·
       <a href="/how-to-use" style="color:#6B7280;text-decoration:none">How to Use</a> ·
-      <a href="/our-products" style="color:#6B7280;text-decoration:none">Our Products</a>
+      <a href="/our-products" style="color:#6B7280;text-decoration:none">Our Products</a> ·
+      <a href="/pricing" style="color:#6B7280;text-decoration:none">Pricing</a>
     </span>
   </div>
 </footer>
 <a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support">""" + WA_SVG + """</a>
-<button id="pageScrollTop" onclick="window.scrollTo({top:0,behavior:'smooth'})" title="Back to top" aria-label="Scroll to top">↑</button>
-<script>
-(function(){var b=document.getElementById('pageScrollTop');if(!b)return;
-window.addEventListener('scroll',function(){b.classList.toggle('vis',window.scrollY>320);},{passive:true});})();
-</script>"""
+<button id="pageScrollTop" onclick="window.scrollTo({top:0,behavior:'scroll'})" title="Back to top" aria-label="Scroll to top" style="position:fixed;bottom:82px;right:24px;width:40px;height:40px;background:var(--white);border:1.5px solid var(--border2);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:17px;color:var(--brand-d);box-shadow:var(--shadow-md);opacity:0;transform:translateY(10px);transition:opacity .26s,transform .26s;z-index:997;pointer-events:none">↑</button>
+<script>(function(){var b=document.getElementById('pageScrollTop');if(!b)return;window.addEventListener('scroll',function(){var s=window.scrollY>320;b.style.opacity=s?'1':'0';b.style.transform=s?'translateY(0)':' translateY(10px)';b.style.pointerEvents=s?'auto':'none';},{passive:true});})();</script>"""
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  STORY PAGE  — /story
@@ -859,14 +848,27 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .nav-links-center{display:flex;align-items:center;gap:4px;position:absolute;
   left:50%;transform:translateX(-50%)}
 .nav-link-item{font-size:13px;color:var(--muted);text-decoration:none;font-weight:500;
-  padding:6px 12px;border-radius:8px;transition:background .18s,color .18s;white-space:nowrap;
-  position:relative}
-.nav-link-item::after{content:'';position:absolute;bottom:0;left:50%;transform:translateX(-50%);
-  width:0;height:2px;background:var(--brand-d);border-radius:99px;transition:width .22s ease}
+  padding:6px 12px;border-radius:8px;transition:background .18s,color .18s;white-space:nowrap}
 .nav-link-item:hover{background:var(--bg2);color:var(--brand-d)}
-.nav-link-item:hover::after,.nav-link-item.active::after{width:calc(100% - 24px)}
 .nav-link-item.active{color:var(--brand-d);font-weight:600}
 @media(max-width:768px){.nav-links-center{display:none}}
+/* Mobile hamburger */
+.hamburger{display:none;background:none;border:none;cursor:pointer;
+  padding:6px;border-radius:8px;color:var(--ink2);transition:background .18s;
+  flex-direction:column;justify-content:center;gap:4px}
+.hamburger:hover{background:var(--bg2)}
+.hamburger span{display:block;width:20px;height:2px;background:currentColor;border-radius:99px;transition:transform .22s,opacity .22s}
+@media(max-width:768px){.hamburger{display:flex}}
+#mobileMenu{display:none;position:fixed;top:54px;left:0;right:0;
+  background:rgba(255,255,255,.98);backdrop-filter:blur(14px);
+  border-bottom:1px solid var(--border);z-index:199;
+  padding:12px 16px 16px;box-shadow:0 8px 24px rgba(15,118,110,.12)}
+#mobileMenu.open{display:block}
+#mobileMenu a{display:block;padding:11px 14px;font-size:14px;font-weight:500;
+  color:var(--ink2);text-decoration:none;border-radius:10px;
+  transition:background .18s,color .18s;margin-bottom:2px}
+#mobileMenu a:hover,#mobileMenu a.active{background:var(--brand-l);color:var(--brand-d);font-weight:600}
+#mobileMenu .mob-divider{height:1px;background:var(--border);margin:8px 0}
 /* Bigger logo */
 .logo-lg{font-size:24px!important;letter-spacing:-.8px!important}
 /* Amber Sign In button */
@@ -886,13 +888,15 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   font-size:9px;color:#fff;flex-shrink:0}
 
 /* ── DASHBOARD HERO ─────────────────────────────────────────────── */
+/* ── DASHBOARD HERO ─────────────────────────────────────────────── */
+@keyframes heroGlow{0%,100%{opacity:.7}50%{opacity:1}}
 .dash-hero{
-  background:linear-gradient(135deg,#0B5D4A 0%,#0E8A7B 35%,#18B5A4 65%,#0B5D4A 100%);
-  background-size:300% 300%;
-  animation:meshShift 14s ease infinite;
-  padding:24px 24px 26px;text-align:center;position:relative;overflow:hidden}
+  background:linear-gradient(135deg,#0A5244 0%,#0E7E6F 40%,#12A896 70%,#0A5244 100%);
+  padding:28px 16px 30px;text-align:center;position:relative;overflow:hidden}
+@media(min-width:769px){.dash-hero{padding:24px 24px 26px}}
 .dash-hero::before{content:'';position:absolute;inset:0;
-  background:radial-gradient(ellipse 70% 60% at 50% 40%,rgba(245,158,11,.10) 0%,transparent 70%);
+  background:radial-gradient(ellipse 70% 60% at 50% 40%,rgba(245,158,11,.13) 0%,transparent 70%);
+  animation:heroGlow 8s ease-in-out infinite;
   pointer-events:none}
 .dash-hero::after{content:'';position:absolute;inset:0;
   background:url("data:image/svg+xml,%3Csvg width='32' height='32' viewBox='0 0 32 32' xmlns='http://www.w3.org/2000/svg'%3E%3Crect x='15' y='15' width='2' height='2' rx='1' fill='%23ffffff' fill-opacity='0.04'/%3E%3C/svg%3E");
@@ -901,19 +905,24 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .dash-hero-badge{display:inline-flex;align-items:center;gap:6px;
   background:rgba(245,158,11,.18);backdrop-filter:blur(6px);
   color:#FDE68A;border:1px solid rgba(245,158,11,.35);border-radius:99px;
-  padding:5px 16px;font-size:11.5px;font-weight:700;margin-bottom:10px;letter-spacing:.04em}
-.dash-hero h1{font-family:var(--font-head);font-size:clamp(26px,4.5vw,42px);
+  padding:5px 14px;font-size:11px;font-weight:700;margin-bottom:10px;letter-spacing:.04em}
+@media(min-width:769px){.dash-hero-badge{padding:5px 16px;font-size:11.5px}}
+.dash-hero h1{font-family:var(--font-head);font-size:clamp(24px,6vw,42px);
   font-weight:800;line-height:1.12;letter-spacing:-1px;color:#fff;margin-bottom:8px}
 .dash-hero h1 em{font-style:italic;color:#A7F3D0}
-.dash-hero p{font-size:17px;color:rgba(255,255,255,.82);line-height:1.75;
+.dash-hero p{font-size:15px;color:rgba(255,255,255,.82);line-height:1.7;
   max-width:480px;margin:0 auto 18px;letter-spacing:.01em}
+@media(min-width:769px){.dash-hero p{font-size:17px;line-height:1.75}}
 .hero-cta-row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:10px}
-.hero-link-row{display:flex;gap:18px;justify-content:center;flex-wrap:wrap}
-.hero-link{font-size:12px;color:rgba(255,255,255,.5);text-decoration:none;
+.hero-link-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+@media(min-width:769px){.hero-link-row{gap:18px}}
+.hero-link{font-size:11.5px;color:rgba(255,255,255,.5);text-decoration:none;
   transition:color .2s;letter-spacing:.01em}
+@media(min-width:769px){.hero-link{font-size:12px}}
 .hero-link:hover{color:rgba(255,255,255,.88)}
-.hero-cta{display:inline-flex;align-items:center;gap:6px;padding:10px 24px;border-radius:99px;
+.hero-cta{display:inline-flex;align-items:center;gap:6px;padding:11px 22px;border-radius:99px;
   font-size:13px;font-weight:700;text-decoration:none;transition:transform .18s,box-shadow .18s}
+@media(min-width:769px){.hero-cta{padding:10px 24px}}
 .hero-cta.primary{background:linear-gradient(135deg,#F59E0B,#EFA600);color:#fff;
   box-shadow:0 4px 22px rgba(245,158,11,.45)}
 .hero-cta.primary:hover{transform:translateY(-2px);box-shadow:0 7px 30px rgba(245,158,11,.55)}
@@ -921,28 +930,38 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .hero-cta.secondary:hover{background:rgba(255,255,255,.22);transform:translateY(-2px)}
 
 /* ── USAGE STRIP ─────────────────────────────────────────────────── */
-.usage-strip{max-width:1080px;margin:-18px auto 0;padding:0 24px;position:relative;z-index:10}
+.usage-strip{max-width:1080px;margin:-18px auto 0;padding:0 16px;position:relative;z-index:10}
+@media(min-width:769px){.usage-strip{padding:0 24px}}
 .usage-box{background:var(--white);border:1px solid var(--border);
-  border-radius:var(--radius);padding:16px 22px;
+  border-radius:var(--radius);padding:12px 16px;
   display:flex;align-items:center;justify-content:space-between;
-  flex-wrap:wrap;gap:14px;box-shadow:var(--shadow-md)}
-.usage-left{display:flex;align-items:center;gap:16px;flex:1;min-width:0}
-.usage-icon{width:40px;height:40px;background:linear-gradient(135deg,var(--brand),var(--brand-d));border-radius:11px;
-  display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;
+  flex-wrap:nowrap;gap:10px;box-shadow:var(--shadow-md);overflow:hidden}
+@media(min-width:769px){.usage-box{padding:16px 22px;gap:14px}}
+.usage-left{display:flex;align-items:center;gap:10px;flex:1;min-width:0;overflow:hidden}
+@media(min-width:769px){.usage-left{gap:16px}}
+.usage-icon{width:36px;height:36px;background:linear-gradient(135deg,var(--brand),var(--brand-d));border-radius:10px;
+  display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;
   box-shadow:0 2px 10px rgba(13,148,136,.3)}
-.usage-text{min-width:0}
-.usage-text strong{display:block;font-family:var(--font-mono);font-size:14px;font-weight:600;color:var(--ink);letter-spacing:-.02em}
-.usage-text span{font-size:12px;color:var(--muted)}
+@media(min-width:769px){.usage-icon{width:40px;height:40px;font-size:18px;border-radius:11px}}
+.usage-text{min-width:0;overflow:hidden}
+.usage-text strong{display:block;font-size:13px;font-weight:700;color:var(--ink);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(min-width:769px){.usage-text strong{font-size:14px}}
+.usage-text span{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+@media(min-width:769px){.usage-text span{font-size:12px}}
+/* Hide progress bar on mobile — saves space */
 .usage-bar-wrap{flex:1;max-width:180px}
+@media(max-width:768px){.usage-bar-wrap{display:none}}
 .usage-bar-bg{background:var(--bg2);border-radius:99px;height:7px;overflow:hidden}
 .usage-bar-fill{height:100%;border-radius:99px}
 .usage-validity{font-size:11px;color:var(--muted);margin-top:3px}
-.upgrade-btn{display:inline-flex;align-items:center;gap:6px;
+.upgrade-btn{display:inline-flex;align-items:center;gap:5px;
   background:linear-gradient(135deg,var(--accent),var(--accent-d));
-  color:#fff;padding:9px 22px;border-radius:99px;
-  font-size:12.5px;font-weight:700;text-decoration:none;white-space:nowrap;
+  color:#fff;padding:8px 14px;border-radius:99px;
+  font-size:12px;font-weight:700;text-decoration:none;white-space:nowrap;flex-shrink:0;
   transition:opacity .18s,transform .15s,box-shadow .18s;
   box-shadow:0 3px 14px rgba(245,158,11,.38)}
+@media(min-width:769px){.upgrade-btn{padding:9px 22px;font-size:12.5px}}
 .upgrade-btn:hover{opacity:.93;transform:translateY(-2px);box-shadow:0 6px 22px rgba(245,158,11,.48)}
 
 /* ── SECTION HEADER ─────────────────────────────────────────────── */
@@ -1040,8 +1059,8 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .stat-item{padding:10px 0;border-right:1px solid rgba(255,255,255,.12)}
 .stat-item:last-child{border:none}
 .stat-icon{font-size:20px;margin-bottom:6px;display:block}
-.stat-n{font-family:var(--font-mono);font-size:26px;font-weight:600;color:#fff;margin-bottom:3px;
-  animation:countUp .5s ease-out both;letter-spacing:-.02em}
+.stat-n{font-family:var(--font-head);font-size:26px;font-weight:800;color:#fff;margin-bottom:3px;
+  animation:countUp .5s ease-out both}
 .stat-n em{font-style:normal;color:#6EE7B7}
 .stat-l{font-size:11.5px;color:rgba(255,255,255,.6);letter-spacing:.02em}
 @media(max-width:640px){.stats-inner{grid-template-columns:repeat(2,1fr)}.stat-item:nth-child(2){border-right:none}.stat-item{border-bottom:1px solid rgba(255,255,255,.1);padding:14px 0}}
@@ -1127,39 +1146,6 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   box-shadow:0 3px 10px rgba(245,158,11,.4)}
 .hs-title{font-size:13px;font-weight:700;color:#fff;margin-bottom:5px}
 .hs-desc{font-size:11.5px;color:rgba(255,255,255,.6);line-height:1.6}
-
-/* ── SCROLL-TO-TOP BUTTON ───────────────────────────────────────── */
-#scrollTopBtn{position:fixed;bottom:82px;right:24px;width:42px;height:42px;
-  background:var(--white);border:1.5px solid var(--border2);border-radius:50%;
-  display:flex;align-items:center;justify-content:center;cursor:pointer;
-  font-size:18px;color:var(--brand-d);box-shadow:var(--shadow-md);
-  opacity:0;transform:translateY(12px);
-  transition:opacity .28s,transform .28s,box-shadow .2s,background .18s;
-  z-index:997;pointer-events:none}
-#scrollTopBtn.visible{opacity:1;transform:translateY(0);pointer-events:auto}
-#scrollTopBtn:hover{background:var(--brand-l);border-color:var(--brand);box-shadow:var(--shadow-lg)}
-#scrollTopBtn:active{transform:scale(0.93)}
-
-/* ── DASHBOARD TOAST ────────────────────────────────────────────── */
-@keyframes dashToastIn{0%{transform:translateY(80px) scale(.92)}70%{transform:translateY(-4px) scale(1.02)}100%{transform:translateY(0) scale(1)}}
-#dashToast{position:fixed;bottom:24px;right:24px;
-  background:var(--ink);color:#fff;padding:11px 18px;
-  border-radius:12px;font-size:13px;font-weight:500;
-  opacity:0;pointer-events:none;z-index:1000;
-  display:flex;align-items:center;gap:8px}
-#dashToast.show{opacity:1;animation:dashToastIn .4s cubic-bezier(.34,1.56,.64,1) forwards}
-#dashToast .toast-icon{font-size:15px}
-
-/* ── HERO TYPING CURSOR ─────────────────────────────────────────── */
-@keyframes cursorBlink{0%,100%{opacity:1}49%{opacity:1}50%,98%{opacity:0}}
-.hero-cursor{display:inline-block;width:2px;height:.85em;background:#A7F3D0;
-  border-radius:1px;margin-left:3px;vertical-align:middle;
-  animation:cursorBlink .7s step-end 8;
-  animation-fill-mode:forwards}
-
-/* ── SCROLL-REVEAL (cards start hidden, JS reveals them) ────────── */
-.reveal{opacity:0;transform:translateY(22px);transition:opacity .48s cubic-bezier(.22,.68,0,1.2),transform .48s cubic-bezier(.22,.68,0,1.2)}
-.reveal.revealed{opacity:1;transform:translateY(0)}
 </style></head><body>
 
 <!-- ── NAV ─────────────────────────────────────────────────────── -->
@@ -1171,7 +1157,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <a href="/how-to-use" class="nav-link-item">How to Use</a>
     <a href="/story" class="nav-link-item">About</a>
     <a href="/our-products" class="nav-link-item">Our Products</a>
-    {% if username %}<a href="/tool/converter#pricing" class="nav-link-item">Pricing</a>{% endif %}
+    <a href="/pricing" class="nav-link-item">Pricing</a>
   </div>
   <div class="nav-right">
     {% if username %}
@@ -1187,8 +1173,27 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     {% else %}
     <a href="/login" class="nav-btn nav-btn-amber">Sign In →</a>
     {% endif %}
+    <!-- Hamburger for mobile -->
+    <button class="hamburger" id="hamburgerBtn" onclick="toggleMobileMenu()" aria-label="Open menu">
+      <span></span><span></span><span></span>
+    </button>
   </div>
 </nav>
+<!-- Mobile nav drawer -->
+<div id="mobileMenu">
+  <a href="/#premium" class="active">⚡ Tools</a>
+  <a href="/how-to-use">📖 How to Use</a>
+  <a href="/story">✦ About</a>
+  <a href="/our-products">🚀 Our Products</a>
+  <a href="/pricing">💳 Pricing</a>
+  <div class="mob-divider"></div>
+  {% if username %}
+  <a href="/logout" style="color:var(--muted)">Sign out ({{ username }})</a>
+  {% if is_admin %}<a href="/admin">⚙ Admin Panel</a>{% endif %}
+  {% else %}
+  <a href="/login" style="color:var(--brand-d);font-weight:700">Sign In →</a>
+  {% endif %}
+</div>
 
 <!-- ── TRUST STRIP ────────────────────────────────────────────── -->
 <div class="trust-strip">
@@ -1206,7 +1211,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <div class="dash-hero">
   <div class="dash-hero-inner anim-up">
     <div class="dash-hero-badge">🇮🇳 Made for Indian CAs &amp; Accountants</div>
-    <h1>Your Complete <em>CA Toolkit</em><span class="hero-cursor" aria-hidden="true"></span></h1>
+    <h1>Your Complete <em>CA Toolkit</em></h1>
     <p>Professional automation tools built by a CA Article — saving hours of manual work every year.</p>
     <div class="hero-cta-row">
       {% if not username %}
@@ -1245,7 +1250,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
         </div>
       </div>
     </div>
-    <a href="/tool/converter#pricing" class="upgrade-btn">⬆ Upgrade Plan</a>
+    <a href="/pricing" class="upgrade-btn">⬆ Upgrade Plan</a>
   </div>
 </div>
 {% endif %}
@@ -1259,10 +1264,10 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   <div class="tools-grid">
 
     {% if username %}
-    <a href="/tool/converter" class="tool-card premium-card reveal">
+    <a href="/tool/converter" class="tool-card premium-card anim-up anim-d1">
       <span class="corner-badge cb-prem">⭐ Premium</span>
     {% else %}
-    <a href="/login" class="tool-card premium-card reveal">
+    <a href="/login" class="tool-card premium-card anim-up anim-d1">
       <span class="corner-badge cb-lock">🔒 Sign In</span>
     {% endif %}
       <div class="tool-icon" style="background:linear-gradient(135deg,#E0F2FE,#BAE6FD)">📊</div>
@@ -1276,10 +1281,10 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     </a>
 
     {% if username %}
-    <a href="/tool/gst-reconciliation" class="tool-card premium-card reveal">
+    <a href="/tool/gst-reconciliation" class="tool-card premium-card anim-up anim-d2">
       <span class="corner-badge cb-prem">⭐ Premium</span>
     {% else %}
-    <a href="/login" class="tool-card premium-card reveal">
+    <a href="/login" class="tool-card premium-card anim-up anim-d2">
       <span class="corner-badge cb-lock">🔒 Sign In</span>
     {% endif %}
       <div class="tool-icon" style="background:linear-gradient(135deg,#FEF9C3,#FDE68A)">📋</div>
@@ -1293,10 +1298,10 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     </a>
 
     {% if username %}
-    <a href="/tool/tb-to-bs" class="tool-card premium-card reveal">
+    <a href="/tool/tb-to-bs" class="tool-card premium-card anim-up anim-d3">
       <span class="corner-badge cb-prem">⭐ Premium</span>
     {% else %}
-    <a href="/login" class="tool-card premium-card reveal">
+    <a href="/login" class="tool-card premium-card anim-up anim-d3">
       <span class="corner-badge cb-lock">🔒 Sign In</span>
     {% endif %}
       <div class="tool-icon" style="background:linear-gradient(135deg,#DCFCE7,#A7F3D0)">🗂️</div>
@@ -1323,7 +1328,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <p class="section-sub-free">Six calculators built for everyday CA work — no account required, no uploads counted.</p>
   <div class="tools-grid tools-grid-4">
 
-    <a href="/tool/tax-calculator" class="tool-card free-card reveal">
+    <a href="/tool/tax-calculator" class="tool-card free-card anim-up anim-d1">
       <span class="corner-badge cb-free">Free</span>
       <div class="tool-icon" style="background:linear-gradient(135deg,#ECFDF5,#A7F3D0)">🧮</div>
       <h2>Income Tax Calculator</h2>
@@ -1334,7 +1339,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       </div>
     </a>
 
-    <a href="/tool/tds-calculator" class="tool-card free-card reveal">
+    <a href="/tool/tds-calculator" class="tool-card free-card anim-up anim-d2">
       <span class="corner-badge cb-free">Free</span>
       <div class="tool-icon" style="background:linear-gradient(135deg,#F0FDFA,#CCFBF1)">📑</div>
       <h2>TDS / TCS Calculator</h2>
@@ -1345,7 +1350,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       </div>
     </a>
 
-    <a href="/tool/depreciation-calculator" class="tool-card free-card reveal">
+    <a href="/tool/depreciation-calculator" class="tool-card free-card anim-up anim-d3">
       <span class="corner-badge cb-free">Free</span>
       <div class="tool-icon" style="background:linear-gradient(135deg,#ECFDF5,#BBF7D0)">🏭</div>
       <h2>Depreciation Calculator</h2>
@@ -1356,7 +1361,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       </div>
     </a>
 
-    <a href="/tool/msme-calculator" class="tool-card free-card reveal">
+    <a href="/tool/msme-calculator" class="tool-card free-card anim-up anim-d4">
       <span class="corner-badge cb-free">Free</span>
       <div class="tool-icon" style="background:linear-gradient(135deg,#F0FDFA,#99F6E4)">📄</div>
       <h2>MSME Disallowance</h2>
@@ -1367,7 +1372,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       </div>
     </a>
 
-    <a href="/tool/capital-gains-calculator" class="tool-card free-card reveal">
+    <a href="/tool/capital-gains-calculator" class="tool-card free-card anim-up anim-d5">
       <span class="corner-badge cb-free">Free</span>
       <div class="tool-icon" style="background:linear-gradient(135deg,#DCFCE7,#A7F3D0)">💰</div>
       <h2>Capital Gains Calculator</h2>
@@ -1482,53 +1487,24 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support">
   <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
 </a>
+</a>
 
 <!-- ── SCROLL TO TOP ──────────────────────────────────────────────── -->
-<button id="scrollTopBtn" onclick="window.scrollTo({top:0,behavior:'smooth'})" title="Back to top" aria-label="Scroll to top">↑</button>
-
-<!-- ── DASHBOARD TOAST ───────────────────────────────────────────── -->
-<div id="dashToast" role="status" aria-live="polite"><span class="toast-icon">✓</span><span id="dashToastMsg"></span></div>
+<button id="scrollTopBtn" onclick="window.scrollTo({top:0,behavior:'smooth'})" title="Back to top" aria-label="Scroll to top" style="position:fixed;bottom:82px;right:24px;width:42px;height:42px;background:var(--white);border:1.5px solid var(--border2);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:18px;color:var(--brand-d);box-shadow:var(--shadow-md);opacity:0;transform:translateY(12px);transition:opacity .28s,transform .28s;z-index:997;pointer-events:none">↑</button>
 
 <script>
-// ── Scroll-to-top visibility ──────────────────────────────────────
-(function(){
-  var btn=document.getElementById('scrollTopBtn');
-  window.addEventListener('scroll',function(){
-    btn.classList.toggle('visible',window.scrollY>400);
-  },{passive:true});
-})();
-
-// ── IntersectionObserver scroll-reveal for tool cards ────────────
-(function(){
-  var els=document.querySelectorAll('.reveal');
-  if(!els.length)return;
-  var obs=new IntersectionObserver(function(entries){
-    entries.forEach(function(e,i){
-      if(e.isIntersecting){
-        setTimeout(function(){e.target.classList.add('revealed')},i*60);
-        obs.unobserve(e.target);
-      }
-    });
-  },{threshold:0.12});
-  els.forEach(function(el){obs.observe(el);});
-})();
-
-// ── Dashboard toast helper ────────────────────────────────────────
-function dashToast(msg){
-  var t=document.getElementById('dashToast');
-  document.getElementById('dashToastMsg').textContent=msg;
-  t.classList.remove('show');
-  void t.offsetWidth; // reflow to restart animation
-  t.classList.add('show');
-  clearTimeout(t._tid);
-  t._tid=setTimeout(function(){t.classList.remove('show');},3200);
-}
+// Scroll-to-top
+(function(){var b=document.getElementById('scrollTopBtn');window.addEventListener('scroll',function(){b.style.opacity=window.scrollY>400?'1':'0';b.style.transform=window.scrollY>400?'translateY(0)':' translateY(12px)';b.style.pointerEvents=window.scrollY>400?'auto':'none';},{passive:true});})();
+// IntersectionObserver scroll-reveal
+(function(){var els=document.querySelectorAll('.reveal');if(!els.length)return;var obs=new IntersectionObserver(function(entries){entries.forEach(function(e,i){if(e.isIntersecting){setTimeout(function(){e.target.style.opacity='1';e.target.style.transform='translateY(0)';},i*60);obs.unobserve(e.target);}});},{threshold:0.1});els.forEach(function(el){el.style.opacity='0';el.style.transform='translateY(22px)';el.style.transition='opacity .48s cubic-bezier(.22,.68,0,1.2),transform .48s cubic-bezier(.22,.68,0,1.2)';obs.observe(el);});})();
+// Mobile hamburger
+function toggleMobileMenu(){var m=document.getElementById('mobileMenu');var b=document.getElementById('hamburgerBtn');m.classList.toggle('open');b.classList.toggle('open');}
+document.addEventListener('click',function(e){var m=document.getElementById('mobileMenu');if(m&&m.classList.contains('open')&&!m.contains(e.target)&&!document.getElementById('hamburgerBtn').contains(e.target)){m.classList.remove('open');}});
 </script>
 </body></html>"""
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  BALANCE SHEET CONVERTER TOOL PAGE
-# ══════════════════════════════════════════════════════════════════════════════
+#  BALANCE SHEET CONVERTER TOOL PAGE════════════════════════════════════════════════════════════════════════════
 
 CONVERTER_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1632,8 +1608,8 @@ input:focus{border-color:var(--brand)}
             padding:2px 10px;border-radius:99px;white-space:nowrap}
 .plan-name{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
            letter-spacing:.06em;margin-bottom:6px}
-.plan-price{font-family:var(--font-mono);font-size:24px;font-weight:600;color:var(--ink);margin-bottom:2px;letter-spacing:-.02em}
-.plan-uploads{font-family:var(--font-mono);font-size:12px;font-weight:600;color:var(--brand);margin-bottom:2px}
+.plan-price{font-size:24px;font-weight:800;color:var(--ink);margin-bottom:2px}
+.plan-uploads{font-size:12px;font-weight:700;color:var(--brand);margin-bottom:2px}
 .plan-validity{font-size:10px;color:var(--muted);margin-bottom:14px}
 .plan ul{list-style:none;margin-bottom:16px}
 .plan ul li{font-size:11px;padding:3px 0;display:flex;gap:5px}
@@ -1667,14 +1643,10 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
 .limit-box h3{font-size:15px;font-weight:700;color:#991B1B;margin-bottom:8px}
 .limit-box p{font-size:13px;color:#7F1D1D;line-height:1.7;margin-bottom:10px}
 .limit-box a{color:var(--brand);font-weight:600;text-decoration:none}
-@keyframes toastBounceIn{0%{transform:translateY(80px) scale(.92)}70%{transform:translateY(-4px) scale(1.02)}100%{transform:translateY(0) scale(1)}}
 .toast{position:fixed;bottom:24px;right:24px;background:var(--ink);color:#fff;
-       padding:11px 18px;border-radius:12px;font-size:13px;font-weight:500;
-       opacity:0;pointer-events:none;z-index:999;display:flex;align-items:center;gap:7px}
-.toast.show{opacity:1;animation:toastBounceIn .4s cubic-bezier(.34,1.56,.64,1) forwards}
-/* Fake determinate progress bar shown during processing */
-#convProgress{height:3px;background:linear-gradient(90deg,var(--brand),var(--accent));
-  border-radius:0;width:0%;transition:width .4s ease;margin-top:10px;display:none}
+       padding:11px 18px;border-radius:10px;font-size:13px;font-weight:500;
+       transform:translateY(80px);transition:transform .3s;z-index:999}
+.toast.show{transform:translateY(0)}
 @media(max-width:480px){.row2{grid-template-columns:1fr}}
 </style></head><body>
 
@@ -1785,7 +1757,6 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
         <span id="btnText">⚡ Process &amp; Download</span>
         <div class="spinner" id="spinner"></div>
       </button>
-      <div id="convProgress"></div>
       <div id="status"></div>
       <a id="dlBtn" class="dl-btn" href="#">⬇&nbsp; Download Processed File</a>
     </div>
@@ -1882,7 +1853,7 @@ details p{padding:0 16px 12px;font-size:12px;color:var(--muted);line-height:1.7}
       <a href="#contact" class="plan-btn">Contact to Buy</a>
     </div>
     <div class="plan">
-      <div class="plan-name">CA Admin</div>
+      <div class="plan-name">CA Firm</div>
       <div class="plan-price">₹1,000</div>
       <div class="plan-uploads">500 uploads</div>
       <div class="plan-validity">3 month validity</div>
@@ -1969,27 +1940,6 @@ if(dz&&fi){
 function showFile(f){dzFile.textContent='✓ '+f.name;dzFile.style.display='block';}
 document.getElementById('closingYear').addEventListener('input',function(){
   const v=parseInt(this.value);if(!isNaN(v))document.getElementById('newYear').value=v+1;});
-// ── Fake progress bar helpers ────────────────────────────────────
-var _progTimer=null,_progVal=0;
-function startProgress(){
-  var bar=document.getElementById('convProgress');
-  bar.style.display='block';bar.style.width='0%';_progVal=0;
-  clearInterval(_progTimer);
-  _progTimer=setInterval(function(){
-    // Eases toward 88% but never reaches 100% until done
-    _progVal+=(_progVal<40?3.5:_progVal<70?1.8:_progVal<88?0.5:0);
-    bar.style.width=Math.min(_progVal,88)+'%';
-  },200);
-}
-function finishProgress(ok){
-  clearInterval(_progTimer);
-  var bar=document.getElementById('convProgress');
-  bar.style.width='100%';
-  bar.style.background=ok?'linear-gradient(90deg,var(--brand),var(--green))':'var(--red)';
-  setTimeout(function(){bar.style.width='0%';bar.style.display='none';
-    bar.style.background='linear-gradient(90deg,var(--brand),var(--accent))';},900);
-}
-
 async function processFile(){
   const f=fi?fi.files[0]:null,cYr=parseInt(document.getElementById('closingYear').value),
         nYr=parseInt(document.getElementById('newYear').value),
@@ -2000,35 +1950,27 @@ async function processFile(){
   if(isNaN(cYr)){showStatus('error','✗ Enter a valid closing year.');return;}
   btn.disabled=true;sp.style.display='block';bt.textContent='Processing…';
   dl.style.display='none';showStatus('','');
-  startProgress();
   const fd=new FormData();
   fd.append('file',f);fd.append('closing_year',cYr);fd.append('new_year',nYr);fd.append('output_name',oNm);
   try{
     const res=await fetch('/process',{method:'POST',body:fd});
     const ct=res.headers.get('content-type')||'';
     if(!ct.includes('application/json')){
-      finishProgress(false);
       showStatus('error','✗ Server error (non-JSON response). Please try again or contact support.');return;
     }
     const data=await res.json();
     if(data.status==='success'){
-      finishProgress(true);
       const logHtml='<ul class="log-list">'+data.log.map(l=>`<li>${l}</li>`).join('')+'</ul>';
       showStatus('success','✓ Done! Your file is ready.'+logHtml);
       dl.href='/download/'+data.file_id+'?fn='+encodeURIComponent(data.filename);dl.download=data.filename;
       dl.textContent='⬇  Download — '+data.filename;dl.style.display='block';
-      toast('✓ File processed successfully!');
-    }else{finishProgress(false);showStatus('error','✗ '+data.message);}
-  }catch(e){finishProgress(false);showStatus('error','✗ Network error: '+e.message);}
+      toast('Processed successfully!');
+    }else{showStatus('error','✗ '+data.message);}
+  }catch(e){showStatus('error','✗ Network error: '+e.message);}
   finally{btn.disabled=false;sp.style.display='none';bt.textContent='⚡ Process & Download';}
 }
 function showStatus(t,m){const e=document.getElementById('status');e.className=t;e.innerHTML=m;e.style.display=m?'block':'none';}
-function toast(msg){
-  var t=document.getElementById('toast');
-  t.textContent=msg;t.classList.remove('show');
-  void t.offsetWidth;t.classList.add('show');
-  clearTimeout(t._tid);t._tid=setTimeout(function(){t.classList.remove('show');},3200);
-}
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3000);}
 </script>
 <a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
 
@@ -6609,7 +6551,7 @@ tr:hover td{background:#F9FAFB}
               <option value="standard" selected>Standard (25 uploads · ₹130)</option>
               <option value="pro">Professional (60 uploads · ₹270)</option>
               <option value="firm">Firm (150 uploads · ₹600)</option>
-              <option value="ca">CA Admin (500 uploads · ₹1000)</option>
+              <option value="ca">CA Firm (500 uploads · ₹1000)</option>
             </select></div>
           <div class="field"><label>&nbsp;</label>
             <button class="btn" type="submit">Create User</button></div>
@@ -6747,6 +6689,155 @@ def user_ctx(user):
         contact_upi=CONTACT_UPI,
     )
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PRICING PAGE  — /pricing
+# ══════════════════════════════════════════════════════════════════════════════
+
+PRICING_TEMPLATE = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pricing – CA Toolkit</title>
+<style>""" + BASE_CSS + """
+.plans-wrap{max-width:960px;margin:0 auto}
+.plans-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-bottom:28px}
+@media(max-width:700px){.plans-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:440px){.plans-grid{grid-template-columns:1fr}}
+.plan-card{background:var(--card);border:1.5px solid var(--border);border-radius:var(--radius);
+  padding:22px 18px;position:relative;transition:border-color .22s,box-shadow .22s,transform .2s}
+.plan-card:hover{border-color:var(--brand);box-shadow:var(--shadow-md);transform:translateY(-4px)}
+.plan-card.popular{border-color:var(--brand);box-shadow:var(--shadow-md)}
+.plan-card.popular::before{content:'Most Popular';position:absolute;top:-11px;left:50%;
+  transform:translateX(-50%);background:linear-gradient(135deg,var(--brand),var(--brand-d));
+  color:#fff;font-size:10px;font-weight:700;padding:3px 12px;border-radius:99px;white-space:nowrap;
+  letter-spacing:.04em}
+.plan-name{font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.06em;margin-bottom:8px}
+.plan-price{font-family:var(--font-mono,monospace);font-size:28px;font-weight:700;
+  color:var(--ink);margin-bottom:2px;letter-spacing:-.02em}
+.plan-uploads{font-family:var(--font-mono,monospace);font-size:13px;font-weight:600;
+  color:var(--brand-d);margin-bottom:2px}
+.plan-validity{font-size:11px;color:var(--muted);margin-bottom:14px}
+.plan-features{list-style:none;padding:0;margin-bottom:18px}
+.plan-features li{font-size:12px;color:var(--ink2);padding:4px 0;display:flex;gap:6px;
+  border-bottom:1px solid var(--border)}
+.plan-features li:last-child{border:none}
+.plan-features li::before{content:"✓";color:var(--green);font-weight:700;flex-shrink:0}
+.plan-cta{display:block;text-align:center;padding:9px;border-radius:9px;
+  font-size:12px;font-weight:700;text-decoration:none;transition:all .2s;
+  border:1.5px solid var(--brand);color:var(--brand);background:transparent}
+.plan-cta:hover{background:var(--brand);color:#fff}
+.plan-card.popular .plan-cta{background:var(--brand);color:#fff}
+.plan-card.popular .plan-cta:hover{background:var(--brand-d)}
+/* Payment box */
+.pay-box{background:var(--white);border:1.5px solid var(--border);border-radius:var(--radius);
+  padding:28px;max-width:560px;margin:0 auto}
+.pay-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:20px}
+@media(max-width:480px){.pay-grid{grid-template-columns:1fr}}
+.pay-item{background:var(--bg);border:1.5px solid var(--border);border-radius:12px;
+  padding:16px 18px}
+.pay-item .pi-label{font-size:10px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--muted);margin-bottom:6px}
+.pay-item .pi-value{font-size:14px;font-weight:600;color:var(--ink)}
+.pay-item .pi-value a{color:var(--brand-d);text-decoration:none}
+.pay-item.upi-item{border-color:var(--brand-m);background:var(--brand-l)}
+.pay-item.upi-item .pi-label{color:var(--brand-d)}
+.pay-item.upi-item .pi-value{font-family:var(--font-mono,monospace);font-size:13px;
+  letter-spacing:-.01em;color:var(--brand-dk)}
+.refund-note{font-size:11.5px;color:var(--muted);text-align:center;margin-top:16px;line-height:1.7}
+.refund-note strong{color:var(--red)}
+</style></head><body>
+""" + _PAGE_NAV + """
+<div class="page-wrap anim-up">
+  <div class="page-hero">
+    <div class="page-eyebrow">💳 Pricing</div>
+    <h1 class="page-title">Simple, <em>upload-based</em> pricing</h1>
+    <p class="page-sub">No subscriptions. Buy uploads when you need them — they stack if you recharge before expiry.</p>
+  </div>
+  <div class="page-divider"></div>
+
+  <div class="plans-wrap">
+    <div class="plans-grid">
+      <div class="plan-card anim-up anim-d1">
+        <div class="plan-name">Free</div>
+        <div class="plan-price">₹0</div>
+        <div class="plan-uploads">2 uploads</div>
+        <div class="plan-validity">Try it out</div>
+        <ul class="plan-features"><li>All features</li><li>All sheet types</li><li>Up to 20 MB</li></ul>
+        <a href="/" class="plan-cta">Get Started</a>
+      </div>
+      <div class="plan-card anim-up anim-d2">
+        <div class="plan-name">Starter</div>
+        <div class="plan-price">₹60</div>
+        <div class="plan-uploads">10 uploads</div>
+        <div class="plan-validity">3 month validity</div>
+        <ul class="plan-features"><li>All features</li><li>All sheet types</li><li>Up to 20 MB</li></ul>
+        <a href="#pay" class="plan-cta">Buy via UPI ↓</a>
+      </div>
+      <div class="plan-card popular anim-up anim-d3">
+        <div class="plan-name">Standard</div>
+        <div class="plan-price">₹130</div>
+        <div class="plan-uploads">25 uploads</div>
+        <div class="plan-validity">3 month validity</div>
+        <ul class="plan-features"><li>All features</li><li>Priority support</li><li>Up to 20 MB</li></ul>
+        <a href="#pay" class="plan-cta">Buy via UPI ↓</a>
+      </div>
+      <div class="plan-card anim-up anim-d4">
+        <div class="plan-name">Professional</div>
+        <div class="plan-price">₹270</div>
+        <div class="plan-uploads">60 uploads</div>
+        <div class="plan-validity">3 month validity</div>
+        <ul class="plan-features"><li>All features</li><li>Priority support</li><li>Up to 20 MB</li></ul>
+        <a href="#pay" class="plan-cta">Buy via UPI ↓</a>
+      </div>
+      <div class="plan-card anim-up anim-d5">
+        <div class="plan-name">Firm</div>
+        <div class="plan-price">₹600</div>
+        <div class="plan-uploads">150 uploads</div>
+        <div class="plan-validity">3 month validity</div>
+        <ul class="plan-features"><li>All features</li><li>WhatsApp support</li><li>Up to 20 MB</li></ul>
+        <a href="#pay" class="plan-cta">Buy via UPI ↓</a>
+      </div>
+      <div class="plan-card anim-up anim-d6">
+        <div class="plan-name">CA Firm</div>
+        <div class="plan-price">₹1,000</div>
+        <div class="plan-uploads">500 uploads</div>
+        <div class="plan-validity">3 month validity</div>
+        <ul class="plan-features"><li>All features + GST Recon</li><li>WhatsApp support</li><li>Best for CA firms</li></ul>
+        <a href="#pay" class="plan-cta">Buy via UPI ↓</a>
+      </div>
+    </div>
+
+    <div class="page-divider"></div>
+
+    <!-- Payment section — UPI only, email only in contact -->
+    <div class="pay-box" id="pay">
+      <div style="text-align:center;margin-bottom:6px">
+        <div class="page-eyebrow" style="justify-content:center">How to Purchase</div>
+        <p style="font-size:13.5px;color:var(--muted);line-height:1.8;margin-top:8px">
+          Pay via UPI below and send your payment screenshot on WhatsApp or email.
+          Your account will be upgraded within a few hours.
+        </p>
+      </div>
+      <div class="pay-grid">
+        <div class="pay-item upi-item">
+          <div class="pi-label">💳 UPI Payment</div>
+          <div class="pi-value">{{ contact_upi }}</div>
+        </div>
+        <div class="pay-item">
+          <div class="pi-label">💬 WhatsApp</div>
+          <div class="pi-value"><a href="https://wa.me/918427651580">+91 84276 51580</a></div>
+        </div>
+      </div>
+      <p class="refund-note">
+        <strong>No refund</strong> after first upload of a paid plan is used ·
+        Unused uploads stack when you recharge before expiry
+      </p>
+    </div>
+  </div>
+</div>
+""" + _PAGE_FOOTER + """
+</body></html>"""
+
 @app.route("/")
 def dashboard():
     if "uid" in session:
@@ -6786,6 +6877,18 @@ def story_page():
 @app.route("/how-to-use")
 def how_to_use_page():
     return render_template_string(HOW_TO_USE_TEMPLATE)
+
+@app.route("/pricing")
+def pricing_page():
+    if "uid" in session:
+        user = get_user_by_id(session["uid"])
+        ctx = user_ctx(user)
+    else:
+        ctx = dict(username=None, plan="free", plan_label="Free",
+            is_admin=False, uploads_used=0, uploads_total=2,
+            uploads_left=2, uploads_remaining=2, bar_pct=0,
+            validity_end=None, contact_email=CONTACT_EMAIL, contact_upi=CONTACT_UPI)
+    return render_template_string(PRICING_TEMPLATE, **ctx)
 
 @app.route("/tool/converter")
 @login_required
@@ -7462,7 +7565,7 @@ function gstDragLeave(e,dzId){
       <a href="#gst-contact" style="display:block;text-align:center;padding:8px;border-radius:7px;font-size:12px;font-weight:700;background:var(--bg);color:var(--ink);text-decoration:none;border:1px solid var(--border)">Contact to Buy</a>
     </div>
     <div style="border:1.5px solid var(--border);border-radius:var(--radius);padding:20px 16px">
-      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">CA Admin</div>
+      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">CA Firm</div>
       <div style="font-size:24px;font-weight:800;margin-bottom:2px">₹1,000</div>
       <div style="font-size:12px;font-weight:700;color:var(--brand);margin-bottom:2px">500 uploads</div>
       <div style="font-size:10px;color:var(--muted);margin-bottom:14px">3 month validity</div>
