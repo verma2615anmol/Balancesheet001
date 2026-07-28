@@ -489,6 +489,7 @@ _PAGE_NAV = """<nav>
   <div class="nav-right">
     <a href="/story" class="nav-link">Our Story</a>
     <a href="/how-to-use" class="nav-link">How to Use</a>
+    <a href="/our-products" class="nav-link">Our Products</a>
     <div class="nav-sep"></div>
     <a href="/" class="nav-btn dash">← Dashboard</a>
   </div>
@@ -499,7 +500,8 @@ _PAGE_FOOTER = """<footer>
     <span class="ft-bottom-left">©2026 CA Toolkit · All Rights Reserved ·
       <a href="/privacy" style="color:#6B7280;text-decoration:none">Privacy Policy</a> ·
       <a href="/story" style="color:#6B7280;text-decoration:none">Our Story</a> ·
-      <a href="/how-to-use" style="color:#6B7280;text-decoration:none">How to Use</a>
+      <a href="/how-to-use" style="color:#6B7280;text-decoration:none">How to Use</a> ·
+      <a href="/our-products" style="color:#6B7280;text-decoration:none">Our Products</a>
     </span>
   </div>
 </footer>
@@ -596,6 +598,108 @@ STORY_TEMPLATE = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 </div>
 """ + _PAGE_FOOTER + """
 </body></html>"""
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  OUR PRODUCTS PAGE  — /our-products
+# ══════════════════════════════════════════════════════════════════════════════
+
+OUR_PRODUCTS_TEMPLATE = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Our Products – CA Toolkit</title>
+<style>""" + BASE_CSS + """
+/* Products page extras */
+.products-grid{display:grid;grid-template-columns:1fr;gap:28px;margin-top:8px}
+.product-card{background:var(--card);border:1.5px solid var(--border);border-radius:var(--radius);
+  padding:30px 28px;position:relative;overflow:hidden;
+  transition:border-color .22s,box-shadow .25s,transform .22s;
+  display:flex;flex-direction:column;gap:0}
+.product-card:hover{border-color:var(--brand);
+  box-shadow:0 0 0 3px rgba(20,184,166,.10),0 18px 52px rgba(15,118,110,.18);
+  transform:translateY(-4px)}
+.product-card::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;
+  background:var(--pc-grad,linear-gradient(90deg,var(--brand),var(--accent)))}
+.product-header{display:flex;align-items:flex-start;gap:18px;margin-bottom:16px}
+.product-icon{width:56px;height:56px;border-radius:16px;display:flex;align-items:center;
+  justify-content:center;font-size:26px;flex-shrink:0;
+  box-shadow:0 2px 10px rgba(0,0,0,.08)}
+.product-meta{flex:1;min-width:0}
+.product-tag{display:inline-flex;align-items:center;font-size:10px;font-weight:700;
+  padding:3px 10px;border-radius:99px;margin-bottom:7px;letter-spacing:.04em;
+  background:var(--brand-l);color:var(--brand-d);border:1px solid var(--brand-m)}
+.product-name{font-family:var(--font-head);font-size:20px;font-weight:800;
+  color:var(--ink);letter-spacing:-.3px;margin-bottom:5px;line-height:1.2}
+.product-tagline{font-size:13px;color:var(--muted);line-height:1.6}
+.product-desc{font-size:13.5px;color:#374151;line-height:1.85;margin-bottom:20px}
+.product-features{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px}
+.product-feat{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500;
+  color:var(--brand-d);background:var(--brand-l);border:1px solid var(--brand-m);
+  padding:4px 12px;border-radius:99px}
+.product-cta{display:inline-flex;align-items:center;gap:8px;
+  background:linear-gradient(135deg,var(--brand),var(--brand-d));color:#fff;
+  padding:11px 26px;border-radius:99px;font-size:13.5px;font-weight:700;
+  text-decoration:none;transition:transform .18s,box-shadow .18s,opacity .18s;
+  box-shadow:0 4px 18px rgba(15,118,110,.32);align-self:flex-start}
+.product-cta:hover{transform:translateY(-2px);box-shadow:0 7px 26px rgba(15,118,110,.42);opacity:.95}
+.product-cta-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.product-note{font-size:11.5px;color:var(--muted);font-style:italic}
+</style></head><body>
+""" + _PAGE_NAV + """
+<div class="page-wrap anim-up">
+  <div class="page-hero">
+    <div class="page-eyebrow">🚀 Our Products</div>
+    <h1 class="page-title">Tools built for <em>CA students &amp; professionals</em></h1>
+    <p class="page-sub">Beyond CA Toolkit, here are standalone products built to help CA students and practitioners save time, stay consistent, and build better habits.</p>
+  </div>
+  <div class="page-divider"></div>
+
+  <div class="products-grid">
+
+    <!-- Product 1: Habit Tracker -->
+    <div class="product-card anim-up anim-d1" style="--pc-grad:linear-gradient(90deg,#6D28D9,#8B5CF6,#F59E0B)">
+      <div class="product-header">
+        <div class="product-icon" style="background:linear-gradient(135deg,#EDE9FE,#DDD6FE)">📅</div>
+        <div class="product-meta">
+          <div class="product-tag" style="background:#EDE9FE;color:#5B21B6;border-color:#C4B5FD">Free · For CA Students</div>
+          <div class="product-name">Habit Tracker for CA Students</div>
+          <div class="product-tagline">Build consistent study habits and track your daily CA preparation — the smart way.</div>
+        </div>
+      </div>
+      <p class="product-desc">
+        CA preparation demands months of consistent, disciplined study. This Habit Tracker is built specifically for CA students — helping you log daily study hours, track subject-wise progress, and build streaks that keep you accountable through Foundation, Intermediate, and Final.
+        <br/><br/>
+        Log habits like revision, mock tests, reading ICAI material, and practice questions. See your weekly completion rates at a glance, spot patterns in your study routine, and stay on track toward your exam date. No distractions, no social feed — just you and your goals.
+      </p>
+      <div class="product-features">
+        <span class="product-feat">✓ Daily habit logging</span>
+        <span class="product-feat" style="background:#EDE9FE;color:#5B21B6;border-color:#C4B5FD">✓ Streak tracking</span>
+        <span class="product-feat">✓ Subject-wise progress</span>
+        <span class="product-feat" style="background:#EDE9FE;color:#5B21B6;border-color:#C4B5FD">✓ Free to use</span>
+        <span class="product-feat">✓ Works on mobile</span>
+      </div>
+      <div class="product-cta-row">
+        <a href="https://habit-tracker-9hcr.onrender.com" target="_blank" rel="noopener" class="product-cta"
+           style="background:linear-gradient(135deg,#6D28D9,#7C3AED)">
+          Open Habit Tracker →
+        </a>
+        <span class="product-note">Opens in a new tab · Free · No login required</span>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="page-divider"></div>
+  <div class="page-section">
+    <h2>More tools coming soon</h2>
+    <p>Every product listed here is built from a real problem faced by CA students or practitioners. If you have a suggestion or want to request a specific tool, reach out on WhatsApp or email — the best ideas come from people in the field.</p>
+    <ul>
+      <li>Email: <a href="mailto:sumitverma2880@gmail.com">sumitverma2880@gmail.com</a></li>
+      <li>WhatsApp: <a href="https://wa.me/918427651580">+91 84276 51580</a></li>
+    </ul>
+  </div>
+</div>
+""" + _PAGE_FOOTER + """
+</body></html>"""
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  HOW TO USE PAGE  — /how-to-use
@@ -852,13 +956,13 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   font-size:9px;color:#fff;flex-shrink:0}
 
 /* ── DASHBOARD HERO ─────────────────────────────────────────────── */
+@keyframes heroGlow{0%,100%{opacity:.7}50%{opacity:1}}
 .dash-hero{
-  background:linear-gradient(135deg,#0B5D4A 0%,#0E8A7B 35%,#18B5A4 65%,#0B5D4A 100%);
-  background-size:300% 300%;
-  animation:meshShift 14s ease infinite;
+  background:linear-gradient(135deg,#0A5244 0%,#0E7E6F 40%,#12A896 70%,#0A5244 100%);
   padding:24px 24px 26px;text-align:center;position:relative;overflow:hidden}
 .dash-hero::before{content:'';position:absolute;inset:0;
-  background:radial-gradient(ellipse 70% 60% at 50% 40%,rgba(245,158,11,.10) 0%,transparent 70%);
+  background:radial-gradient(ellipse 70% 60% at 50% 40%,rgba(245,158,11,.13) 0%,transparent 70%);
+  animation:heroGlow 8s ease-in-out infinite;
   pointer-events:none}
 .dash-hero::after{content:'';position:absolute;inset:0;
   background:url("data:image/svg+xml,%3Csvg width='32' height='32' viewBox='0 0 32 32' xmlns='http://www.w3.org/2000/svg'%3E%3Crect x='15' y='15' width='2' height='2' rx='1' fill='%23ffffff' fill-opacity='0.04'/%3E%3C/svg%3E");
@@ -1103,6 +1207,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <a href="/#premium" class="nav-link-item">Tools</a>
     <a href="/how-to-use" class="nav-link-item">How to Use</a>
     <a href="/story" class="nav-link-item">About</a>
+    <a href="/our-products" class="nav-link-item">Our Products</a>
     {% if username %}<a href="/tool/converter#pricing" class="nav-link-item">Pricing</a>{% endif %}
   </div>
   <div class="nav-right">
@@ -1390,6 +1495,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
         <li><a href="/tool/tds-calculator">TDS / TCS Calculator</a></li>
         <li><a href="/story">Our Story</a></li>
         <li><a href="/how-to-use">How to Use</a></li>
+        <li><a href="/our-products">Our Products</a></li>
         <li><a href="/privacy">Privacy Policy</a></li>
       </ul>
     </div>
@@ -6642,6 +6748,10 @@ def story_page():
 @app.route("/how-to-use")
 def how_to_use_page():
     return render_template_string(HOW_TO_USE_TEMPLATE)
+
+@app.route("/our-products")
+def our_products_page():
+    return render_template_string(OUR_PRODUCTS_TEMPLATE)
 
 @app.route("/tool/converter")
 @login_required
