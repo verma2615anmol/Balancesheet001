@@ -575,7 +575,7 @@ STORY_TEMPLATE = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       </div>
       <div class="story-quote-block">
         "I spent 3 hours rolling over one client's balance sheet manually — updating dates, copying PY figures, clearing CY cells. Then I looked at my list and saw 47 more clients waiting. That's when I decided to build the tool."
-        <cite>— Sumit Verma (Anmol), CA Article &amp; Founder of CA Toolkit</cite>
+        <cite>— Sumit Verma, Article of G.D. Singla &amp; Co. &amp; Founder of CA Toolkit</cite>
       </div>
       <div class="page-section">
         <h2>The Solution</h2>
@@ -6057,12 +6057,12 @@ footer{background:#0f1b2d;color:#9CA3AF;font-size:12px;padding:0}
         <div class="row2">
           <div class="field">
             <label>Date of Purchase</label>
-            <input type="text" id="purchaseDate" placeholder="DD/MM/YYYY"/>
+            <input type="text" id="purchaseDate" placeholder="DD/MM/YYYY" maxlength="10" oninput="autoDateSlash(this)" autocomplete="off" inputmode="numeric"/>
             <p class="hint">Original acquisition date</p>
           </div>
           <div class="field">
             <label>Date of Sale</label>
-            <input type="text" id="saleDate" placeholder="DD/MM/YYYY"/>
+            <input type="text" id="saleDate" placeholder="DD/MM/YYYY" maxlength="10" oninput="autoDateSlash(this)" autocomplete="off" inputmode="numeric"/>
             <p class="hint">Date of transfer/sale</p>
           </div>
         </div>
@@ -6370,11 +6370,24 @@ function calcCG(){
   }
 
   // ── Reverse calculator ─────────────────────────────────────────────────────
-  // Min sale price for zero tax (new regime)
+  // Sale price at which capital gains tax = 0 (new regime)
+  // Formula: netSale = COA + exemAmt + exempt_threshold
+  //  → sp - tc = COA + exemAmt + exempt_threshold
+  //  → sp = COA + tc + exemAmt + exempt_threshold
   let zeroTaxSale = null;
-  if(newRate>0 && isLTCG){
-    zeroTaxSale = newCOA + tc + newExempt + exemAmt;
-    if(asset==="equity") zeroTaxSale += 125000;
+  let zeroTaxNote = "";
+  if(newRate > 0){
+    // Fixed-rate: solve for sp where taxable gain = 0
+    zeroTaxSale = newCOA + tc + exemAmt + newExempt;
+    zeroTaxNote = "Sell at or below this price → zero tax (New Regime, " + newRate + "% rate). Capital gain will be ≤ ₹0 / within exempt threshold.";
+  } else if(newRate === 0 && isLTCG){
+    // Debt/Slab LTCG — zero tax when gain is zero (COA = sale)
+    zeroTaxSale = newCOA + tc + exemAmt;
+    zeroTaxNote = "Slab-rate LTCG. Zero capital gain (no addition to income) when sold at or below this price.";
+  } else if(!isLTCG && newRate === 0){
+    // STCG slab rate — zero capital gain
+    zeroTaxSale = newCOA + tc + exemAmt;
+    zeroTaxNote = "Slab-rate STCG. Zero capital gain (no addition to income) when sold at or below this price.";
   }
 
   // ── Render results ─────────────────────────────────────────────────────────
@@ -6447,12 +6460,15 @@ function calcCG(){
 
   document.getElementById("detailBreakdown").innerHTML = detailHTML;
 
-  // Reverse calculator
-  if(zeroTaxSale!==null && zeroTaxSale>0){
+  // Reverse calculator — always show if zeroTaxSale computed
+  if(zeroTaxSale !== null && zeroTaxSale > 0){
     document.getElementById("reverseBox").style.display = "block";
-    document.getElementById("revSalePrice").textContent = fmt(zeroTaxSale);
-    document.getElementById("revSub").textContent =
-      `Sell at or below ${fmt(zeroTaxSale)} to have zero capital gains tax liability (new regime, excluding transfer expenses in computation)`;
+    document.getElementById("revSalePrice").innerHTML =
+      `<span style="font-size:22px;font-weight:800;color:var(--brand)">${fmt(zeroTaxSale)}</span>`;
+    document.getElementById("revSub").innerHTML =
+      `<span style="font-size:12px;color:var(--muted)">${zeroTaxNote}</span>` +
+      (showOldRegime && isLTCG ? `<br><span style="font-size:12px;color:var(--muted);margin-top:4px;display:block">` +
+        `Old Regime (indexed): Sell at or below <strong>${fmt(oldCOA + tc + exemAmt)}</strong> for zero tax.</span>` : "");
   } else {
     document.getElementById("reverseBox").style.display = "none";
   }
@@ -6470,6 +6486,16 @@ function calcCG(){
 }
 
 updateAssetUI();
+
+function autoDateSlash(el) {
+  // Auto-insert "/" after DD and MM as user types digits
+  let v = el.value.replace(/[^0-9]/g, ""); // strip non-digits
+  let out = "";
+  if (v.length > 2) out = v.slice(0,2) + "/" + v.slice(2);
+  else out = v;
+  if (v.length > 4) out = v.slice(0,2) + "/" + v.slice(2,4) + "/" + v.slice(4,8);
+  el.value = out;
+}
 </script>
 <a href="https://wa.me/918427651580" target="_blank" class="wa-float" title="WhatsApp Support"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
 </body></html>"""
