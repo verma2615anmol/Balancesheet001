@@ -7667,9 +7667,9 @@ def process_file():
             if is_xls:
                 raw_tmp = os.path.join(UPLOAD_DIR, f"{h}_in.xls")
                 f.save(raw_tmp)
-                if _TSHAPE_AVAILABLE and _is_tshape_xls(raw_tmp):
-                    is_tshape = True
-                else:
+                # Detect BEFORE conversion — always, regardless of processor availability
+                is_tshape = _is_tshape_xls(raw_tmp)
+                if not is_tshape:
                     _convert_xls_to_xlsx(raw_tmp, ip)
             elif is_xlsb:
                 raw_tmp = os.path.join(UPLOAD_DIR, f"{h}_in.xlsb")
@@ -7689,11 +7689,19 @@ def process_file():
                 except: pass
 
         if is_tshape:
-            # ── T-shaped path: cy_year auto-derived from XLS bs_date ──────────
+            # ── T-shaped path ─────────────────────────────────────────────────
+            if not _TSHAPE_AVAILABLE:
+                try: os.remove(raw_tmp)
+                except: pass
+                return jsonify({"status": "error",
+                                "message": "tshape_processor.py not found on server. "
+                                           "Please ensure it is uploaded to the repository."})
             client_name = on or None
             base_name   = on or os.path.splitext(f.filename)[0]
             fname       = f"{base_name}.xlsx"
             try:
+                # Find template on disk; fall back to embedded base64 copy
+                import base64 as _b64, io as _io
                 base_dir = os.path.dirname(os.path.abspath(__file__))
                 template_path = None
                 for _tn in ('Output_sample_format.xlsx',
@@ -7704,8 +7712,11 @@ def process_file():
                         template_path = _tp
                         break
                 if not template_path:
-                    return jsonify({"status": "error",
-                                    "message": "Output template not found on server."})
+                    # Write embedded template to a temp file
+                    _tmp_tpl = os.path.join(UPLOAD_DIR, f"{h}_template.xlsx")
+                    with open(_tmp_tpl, 'wb') as _tf:
+                        _tf.write(_b64.b64decode(_TSHAPE_SAMPLE_B64))
+                    template_path = _tmp_tpl
                 result = _process_tshape(
                     input_path=raw_tmp,
                     output_path=op,
@@ -7717,10 +7728,15 @@ def process_file():
                     return jsonify({"status": "error",
                                     "message": result.get("message", "T-shape processing failed")})
             except Exception as e:
-                return jsonify({"status": "error", "message": str(e)})
+                return jsonify({"status": "error", "message": f"T-shape error: {e}"})
             finally:
                 try: os.remove(raw_tmp)
                 except: pass
+                # Clean up tmp template if we created one
+                _tmp_tpl_path = os.path.join(UPLOAD_DIR, f"{h}_template.xlsx")
+                if os.path.exists(_tmp_tpl_path):
+                    try: os.remove(_tmp_tpl_path)
+                    except: pass
 
         else:
             # ── Standard year-shift path ──────────────────────────────────────
