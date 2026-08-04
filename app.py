@@ -7608,6 +7608,36 @@ def _convert_xlsb_to_xlsx(xlsb_path: str, xlsx_path: str) -> None:
     wb_out.save(xlsx_path)
 
 
+# ── T-shaped balance sheet detection & routing ────────────────────────────────
+try:
+    from tshape_processor import process_tshape as _process_tshape
+    _TSHAPE_AVAILABLE = True
+except ImportError:
+    _TSHAPE_AVAILABLE = False
+
+
+def _is_tshape_xls(xls_path: str) -> bool:
+    """
+    Return True if the .xls file is a T-shaped balance sheet.
+    Detection: LIABILITIES and ASSETS appear in the same row within the
+    first 15 rows — the hallmark of a T-shaped BS layout.
+    """
+    try:
+        import xlrd as _xlrd
+        _wb = _xlrd.open_workbook(xls_path)
+        _ws = _wb.sheet_by_index(0)
+        for _r in range(min(15, _ws.nrows)):
+            _row_str = ' '.join(
+                str(_ws.cell_value(_r, _c)).upper()
+                for _c in range(min(_ws.ncols, 25))
+            )
+            if 'LIABILIT' in _row_str and 'ASSET' in _row_str and 'AMOUNT' in _row_str:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 @app.route("/process", methods=["POST"])
 @login_required
 def process_file():
