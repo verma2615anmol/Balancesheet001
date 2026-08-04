@@ -7266,6 +7266,33 @@ def _convert_xlsb_to_xlsx(xlsb_path: str, xlsx_path: str) -> None:
     wb_out.save(xlsx_path)
 
 
+# ── T-shaped balance sheet detection & routing ────────────────────────────────
+try:
+    from tshape_processor import process_tshape as _process_tshape
+    _TSHAPE_AVAILABLE = True
+except ImportError:
+    _TSHAPE_AVAILABLE = False
+
+def _is_tshape_xls(xls_path: str) -> bool:
+    """
+    Return True if the .xls file is a GD Singla T-shaped balance sheet.
+    Detection: LIABILITIES and ASSETS appear in the same row within the
+    first 15 rows (the hallmark of a T-shaped BS layout).
+    """
+    try:
+        import xlrd
+        wb = xlrd.open_workbook(xls_path)
+        ws = wb.sheet_by_index(0)
+        for r in range(min(15, ws.nrows)):
+            row_str = ' '.join(str(ws.cell_value(r, c)).upper()
+                               for c in range(min(ws.ncols, 25)))
+            if 'LIABILIT' in row_str and 'ASSET' in row_str and 'AMOUNT' in row_str:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 @app.route("/process", methods=["POST"])
 @login_required
 def process_file():
@@ -7295,12 +7322,18 @@ def process_file():
         ip = os.path.join(UPLOAD_DIR, f"{h}_in.xlsx")
         op = os.path.join(OUTPUT_DIR, f"{h}_out.xlsx")
         raw_tmp = None
+        is_tshape = False
         try:
             if is_xls:
-                # Save .xls first, then convert to .xlsx via xlrd + openpyxl
+                # Save .xls first
                 raw_tmp = os.path.join(UPLOAD_DIR, f"{h}_in.xls")
                 f.save(raw_tmp)
-                _convert_xls_to_xlsx(raw_tmp, ip)
+                # Detect T-shaped BEFORE conversion (tshape_processor reads .xls directly)
+                if _TSHAPE_AVAILABLE and _is_tshape_xls(raw_tmp):
+                    is_tshape = True
+                else:
+                    # Not T-shaped — convert to .xlsx for standard year-shift
+                    _convert_xls_to_xlsx(raw_tmp, ip)
             elif is_xlsb:
                 # Save .xlsb first, then convert to .xlsx via pyxlsb + openpyxl
                 raw_tmp = os.path.join(UPLOAD_DIR, f"{h}_in.xlsb")
@@ -7310,12 +7343,13 @@ def process_file():
                 f.save(ip)
         except Exception as e:
             for p in (raw_tmp, ip):
-                if p:
+                if p and not is_tshape:
                     try: os.remove(p)
                     except: pass
             return jsonify({"status": "error", "message": f"File conversion error: {e}"})
         finally:
-            if raw_tmp:
+            # Only delete raw_tmp here if NOT T-shaped (T-shaped needs it for processing)
+            if raw_tmp and not is_tshape:
                 try: os.remove(raw_tmp)
                 except: pass
         # Build clean output filename: strip year suffixes like "2024-25", "2025-26", "2026"
@@ -7332,14 +7366,39 @@ def process_file():
                 base_name = _re.sub(r'[_\-]+\d{4}$', '', base_name).strip('_- ')
         fname = f"{base_name}_{ny}.xlsx"
         try:
-            result = process(ip, op, cy, ny)
-            # ── FA year-end rollover (mirror source CY into PY, then reset new CY inputs) ──
-            _rollover_fixed_assets(op, str(ny), result.get("log", []), source_path=ip)
+            if is_tshape:
+                # ── T-shaped XLS → comparative BS conversion ──────────────────
+                template_path = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    'Output_sample_format.xlsx'
+                )
+                client_name = on or None   # output_name doubles as client_name
+                result = _process_tshape(
+                    input_path=raw_tmp,
+                    output_path=op,
+                    template_path=template_path,
+                    client_name=client_name,
+                    cy_year=str(ny),
+                )
+                if result.get("status") != "success":
+                    return jsonify({
+                        "status": "error",
+                        "message": result.get("message", "T-shape processing failed")
+                    })
+            else:
+                # ── Standard year-shift ───────────────────────────────────────
+                result = process(ip, op, cy, ny)
+                # ── FA year-end rollover ──────────────────────────────────────
+                _rollover_fixed_assets(op, str(ny), result.get("log", []), source_path=ip)
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
         finally:
-            try: os.remove(ip)
-            except: pass
+            if is_tshape:
+                try: os.remove(raw_tmp)
+                except: pass
+            else:
+                try: os.remove(ip)
+                except: pass
 
         log_usage(user["id"], fname)
         return jsonify({"status": "success", "log": result["log"], "file_id": h, "filename": fname})
