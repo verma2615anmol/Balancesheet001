@@ -783,21 +783,21 @@ HOW_TO_USE_TEMPLATE = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF
       <div>
         <div class="tg-tag" style="background:#FEF2F2;color:#991B1B;border:1px solid #FECACA">&#11088; Premium &middot; T-Shape BS Converter</div>
         <div class="tg-title">Convert a T-shaped XLS into a comparative Balance Sheet</div>
-        <div class="tg-sub">Reads GD Singla format &mdash; fills PY column automatically across all notes</div>
+        <div class="tg-sub">Extracts every annexure &mdash; fills PY column automatically across all notes</div>
       </div>
     </div>
     <div class="tg-body">
-      GD Singla &amp; Co. produces balance sheets in a T-shaped format (.xls) where liabilities and assets sit side by side in the same rows. This tool reads that format forensically &mdash; extracting every annexure (capital account, creditors, debtors, unsecured loans, fixed assets, cash &amp; bank, short-term loans, and more) &mdash; and fills the PY column of the standard comparative output template. The CY column is left blank (yellow-highlighted) for the CA to fill.
+      Some CA firms produce balance sheets in a T-shaped format (.xls) where liabilities and assets sit side by side in the same rows. This tool reads that format forensically &mdash; extracting every annexure (capital account, creditors, debtors, unsecured loans, fixed assets, cash &amp; bank, short-term loans, and more) &mdash; and fills the PY column of the standard comparative output template. The CY column is left blank (yellow-highlighted) for the CA to fill.
     </div>
     <ul class="tg-steps">
       <li>Sign in and go to <strong>T-Shape BS Converter</strong></li>
-      <li>Upload the <strong>T-shaped .xls file</strong> from GD Singla &amp; Co.</li>
+      <li>Upload the <strong>T-shaped .xls file</strong></li>
       <li>Enter <strong>Closing Year</strong> (e.g. 2024 &mdash; the year of the T-shaped BS) and <strong>New Year</strong> (e.g. 2025)</li>
       <li>Optionally enter the <strong>client name</strong> in the Output Name field</li>
       <li>Click <strong>Process</strong> &mdash; the tool auto-detects the T-shaped format and converts it</li>
       <li>Download the output .xlsx &mdash; open in Excel, verify PY values, then fill the CY column &#10003;</li>
     </ul>
-    <div class="tg-tip">&#128161; <strong>Tip:</strong> The tool auto-detects T-shaped .xls files &mdash; no separate mode needed. Just upload the file from GD Singla and it will route automatically.</div>
+    <div class="tg-tip">&#128161; <strong>Tip:</strong> The tool auto-detects T-shaped .xls files &mdash; no separate mode needed. Just upload the file and it will route automatically.</div>
     <a href="/tool/tshape" class="tg-link">Open T-Shape Converter &#8594;</a>
   </div>
 
@@ -1346,9 +1346,9 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <a href="/login" class="tool-card premium-card anim-up anim-d4">
       <span class="corner-badge cb-lock">&#128274; Sign In</span>
     {% endif %}
-      <div class="tool-icon" style="background:linear-gradient(135deg,#FEE2E2,#FECACA)">&#128209;</div>
+      <div class="tool-icon" style="background:linear-gradient(135deg,#F0FDFB,#CCFBF1)">&#128209;</div>
       <h2>T-Shape BS Converter</h2>
-      <p>Convert a GD Singla T-shaped balance sheet (.xls) into the standard comparative format. Auto-fills PY column — creditors, debtors, capital, fixed assets, loans and more.</p>
+      <p>Convert a T-shaped balance sheet (.xls) into the standard comparative format. Auto-fills PY column — creditors, debtors, capital, fixed assets, loans and more.</p>
       <div class="tool-footer">
         {% if username %}<span class="tool-tag tag-live-prem">&#10003; Live &middot; Premium</span>
         {% else %}<span class="tool-tag tag-login">&#128274; Login to Use</span>{% endif %}
@@ -7078,17 +7078,17 @@ TSHAPE_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 .nav-links a{text-decoration:none;color:var(--muted);font-size:13px;font-weight:500;transition:color .2s}
 .nav-links a:hover{color:var(--brand)}
 .hero{text-align:center;padding:56px 24px 40px;max-width:700px;margin:0 auto}
-.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#FEF2F2;
-            color:#991B1B;border:1px solid #FECACA;border-radius:99px;
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:var(--brand-l);
+            color:var(--brand-d);border:1px solid var(--brand-m);border-radius:99px;
             padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:18px}
 h1{font-size:clamp(24px,4vw,40px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:14px}
 h1 em{font-style:normal;color:var(--accent)}
 .hero p{font-size:15px;color:var(--muted);line-height:1.7;max-width:520px;margin:0 auto 28px}
 .stats{display:flex;justify-content:center;gap:36px;flex-wrap:wrap;padding:16px 24px;
        background:var(--white);border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
-.stat-n{font-size:20px;font-weight:800;color:#DC2626}
+.stat-n{font-size:20px;font-weight:800;color:var(--brand-d)}
 .stat-l{font-size:11px;color:var(--muted);margin-top:2px}
-.main{max-width:1080px;margin:0 auto;padding:40px 24px;
+.main{max-width:1160px;margin:0 auto;padding:40px 24px;
       display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start}
 @media(max-width:768px){.main{grid-template-columns:1fr}}
 .card{background:var(--white);border-radius:var(--radius);border:1px solid var(--border);
@@ -7103,29 +7103,29 @@ h1 em{font-style:normal;color:var(--accent)}
 .usage-row{display:flex;justify-content:space-between;align-items:center;
            font-size:12px;font-weight:600;margin-bottom:5px}
 .usage-bar-bg{background:#F3F4F6;border-radius:99px;height:6px;overflow:hidden;margin-bottom:14px}
-.usage-bar-fill{height:100%;border-radius:99px;background:#DC2626;transition:width .4s}
+.usage-bar-fill{height:100%;border-radius:99px;background:linear-gradient(90deg,var(--brand),var(--brand-d));transition:width .4s}
 .field{margin-bottom:16px}
 label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;
       letter-spacing:.04em;color:var(--muted);margin-bottom:5px}
 .hint{font-size:11px;color:var(--muted);margin-top:4px}
 .dropzone{border:2px dashed var(--border);border-radius:10px;padding:24px 14px;
           text-align:center;cursor:pointer;transition:all .2s;position:relative;background:var(--bg)}
-.dropzone:hover,.dropzone.drag{border-color:#DC2626;background:#FEF2F2}
+.dropzone:hover,.dropzone.drag{border-color:var(--brand);background:var(--brand-l)}
 .dropzone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;pointer-events:none}
 .dz-icon{font-size:26px;margin-bottom:6px}
 .dz-text{font-size:12px;color:var(--muted)}
-.dz-text strong{color:#DC2626}
+.dz-text strong{color:var(--brand-d)}
 .dz-file{font-size:12px;font-weight:600;color:var(--green);margin-top:5px;display:none}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 input[type=number],input[type=text]{width:100%;border:1.5px solid var(--border);
   border-radius:8px;padding:9px 12px;font-family:inherit;font-size:13px;
   color:var(--ink);background:var(--white);transition:border-color .2s;outline:none}
-input:focus{border-color:#DC2626}
-.btn{width:100%;background:#DC2626;color:#fff;border:none;border-radius:10px;
-     padding:12px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;
-     transition:background .2s;display:flex;align-items:center;justify-content:center;gap:8px}
-.btn:hover{background:#B91C1C}
-.btn:disabled{background:#FCA5A5;cursor:not-allowed}
+input:focus{border-color:var(--brand)}
+.btn{width:100%;background:linear-gradient(135deg,var(--brand),var(--brand-d));color:#fff;border:none;
+     border-radius:10px;padding:12px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;
+     transition:opacity .2s;display:flex;align-items:center;justify-content:center;gap:8px}
+.btn:hover{opacity:.88}
+.btn:disabled{opacity:.5;cursor:not-allowed}
 .spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.3);
          border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:none}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -7141,8 +7141,8 @@ input:focus{border-color:#DC2626}
 .steps li{display:flex;gap:10px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--border)}
 .steps li:last-child{border:none}
 .steps li::before{counter-increment:step;content:counter(step);min-width:24px;height:24px;
-                  background:#DC2626;color:#fff;border-radius:50%;display:flex;
-                  align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px}
+                  background:linear-gradient(135deg,var(--brand),var(--brand-d));color:#fff;border-radius:50%;
+                  display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:1px}
 .steps li strong{display:block;font-size:12px;font-weight:600;margin-bottom:2px}
 .steps li span{font-size:11px;color:var(--muted)}
 .limit-banner{max-width:640px;margin:0 auto;padding:0 24px}
@@ -7151,9 +7151,26 @@ input:focus{border-color:#DC2626}
 .limit-box h3{font-size:15px;font-weight:700;color:#991B1B;margin-bottom:8px}
 .limit-box p{font-size:13px;color:#7F1D1D;line-height:1.7;margin-bottom:10px}
 .limit-box a{color:var(--brand);font-weight:600;text-decoration:none}
-.info-box{background:#FFF7ED;border:1px solid #FED7AA;border-radius:10px;
-          padding:12px 16px;font-size:12px;color:#92400E;line-height:1.7;margin-bottom:16px}
-.info-box strong{color:#7C2D12}
+.info-box{background:var(--brand-l);border:1px solid var(--brand-m);border-radius:10px;
+          padding:12px 16px;font-size:12px;color:var(--brand-dk);line-height:1.7;margin-bottom:16px}
+.info-box strong{color:var(--brand-dk)}
+/* ── Output format preview ── */
+.preview-wrap{margin-top:4px}
+.preview-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+               color:var(--muted);margin-bottom:8px}
+.preview-table{width:100%;border-collapse:collapse;font-size:10.5px;border-radius:8px;overflow:hidden;
+               border:1px solid var(--border)}
+.preview-table th{background:var(--brand-d);color:#fff;padding:6px 8px;text-align:center;font-weight:600}
+.preview-table th.col-label{background:#374151;text-align:left}
+.preview-table td{padding:5px 8px;border-bottom:1px solid #F3F4F6;color:var(--ink)}
+.preview-table td.col-label{font-weight:500;color:#374151;background:#FAFAFA}
+.preview-table td.cy{background:#FFFDE7;color:#92400E;text-align:center;font-style:italic}
+.preview-table td.py{background:#F0FDF9;color:var(--brand-dk);text-align:center;font-weight:600}
+.preview-table td.formula{background:#EDE9FE;color:#5B21B6;text-align:center;font-size:10px}
+.preview-table tr:last-child td{border-bottom:none}
+.preview-legend{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.legend-item{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--muted)}
+.legend-dot{width:10px;height:10px;border-radius:3px;flex-shrink:0}
 @media(max-width:480px){.row2{grid-template-columns:1fr}}
 </style></head><body>
 
@@ -7180,9 +7197,9 @@ input:focus{border-color:#DC2626}
 </nav>
 
 <section class="hero">
-  <div class="hero-badge">&#128209; GD Singla Format &middot; T-Shape Converter</div>
-  <h1>T-Shaped BS &rarr; <em>Comparative Format</em><br/>Automatically</h1>
-  <p>Upload a GD Singla &amp; Co. T-shaped balance sheet (.xls) &mdash; the tool extracts every annexure and fills the PY column of the output template. CY column left blank for you to fill.</p>
+  <div class="hero-badge">&#128209; T-Shape &rarr; Comparative BS</div>
+  <h1>T-Shaped Balance Sheet &rarr;<br/><em>Comparative Format</em> Automatically</h1>
+  <p>Upload a T-shaped balance sheet (.xls) &mdash; the tool extracts every annexure and fills the PY column of the output template. CY column left blank (yellow) for you to fill.</p>
 </section>
 
 {% if uploads_left == 0 %}
@@ -7200,13 +7217,13 @@ input:focus{border-color:#DC2626}
   <div class="stat"><div class="stat-n">PY Auto</div><div class="stat-l">Filled from XLS</div></div>
   <div class="stat"><div class="stat-n">All annexures</div><div class="stat-l">Capital, debtors, creditors &amp; more</div></div>
   <div class="stat"><div class="stat-n">&lt;15 sec</div><div class="stat-l">Processing time</div></div>
-  <div class="stat"><div class="stat-n">.xls only</div><div class="stat-l">GD Singla format</div></div>
+  <div class="stat"><div class="stat-n">.xls input</div><div class="stat-l">.xlsx output</div></div>
 </div>
 
 <div class="main" id="tool">
   <div class="card">
     <div class="card-head">
-      <div class="icon" style="background:#FEE2E2">&#128209;</div>
+      <div class="icon" style="background:var(--brand-l)">&#128209;</div>
       <div>
         <h2>Convert T-Shaped Balance Sheet</h2>
         <p>{{ plan_label }} &middot; {{ uploads_left }} upload{{ 's' if uploads_left != 1 else '' }} remaining</p>
@@ -7221,14 +7238,14 @@ input:focus{border-color:#DC2626}
       </div>
       <div class="usage-bar-bg"><div class="usage-bar-fill" style="width:{{ bar_pct }}%"></div></div>
       <div class="info-box">
-        <strong>&#9888; GD Singla .xls format only.</strong> Upload the original T-shaped XLS from GD Singla &amp; Co. The tool auto-detects and converts it. Closing Year = year of the XLS (e.g. 2024). New Year = year of the output (e.g. 2025).
+        <strong>&#9432; .xls format only.</strong> Upload the original T-shaped XLS file. The tool auto-detects and converts it. Closing Year = year of the XLS (e.g. 2024). New Year = year of the output (e.g. 2025).
       </div>
       <div class="field">
         <label>Upload T-Shaped XLS</label>
         <div class="dropzone" id="dropzone">
           <div class="dz-icon">&#128196;</div>
           <div class="dz-text">Drag &amp; drop or <strong>click to browse</strong></div>
-          <div class="dz-text" style="margin-top:3px">.xls files only &middot; GD Singla format</div>
+          <div class="dz-text" style="margin-top:3px">.xls files only</div>
           <div class="dz-file" id="dzFile"></div>
           <input type="file" id="xlFile" accept=".xls">
         </div>
@@ -7259,24 +7276,64 @@ input:focus{border-color:#DC2626}
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-head">
-      <div class="icon" style="background:#FEE2E2">&#128218;</div>
-      <div><h2>How to Use</h2><p>Step-by-step guide</p></div>
-    </div>
-    <div class="card-body">
-      <ol class="steps">
-        <li><strong>Upload the .xls file</strong><span>Click or drag the GD Singla T-shaped XLS. Must be .xls (not .xlsx).</span></li>
-        <li><strong>Enter Closing Year</strong><span>The financial year of the XLS, e.g. 2024 for the year ending 31-03-2024.</span></li>
-        <li><strong>Enter New Year</strong><span>Auto-filled to closing + 1. This is the CY of your output (left blank for you to fill).</span></li>
-        <li><strong>Client Name (optional)</strong><span>Overrides the entity name auto-detected from the XLS. Leave blank if unsure.</span></li>
-        <li><strong>Click Convert</strong><span>Processing takes under 15 seconds. All annexures are read automatically.</span></li>
-        <li><strong>Download &amp; verify</strong><span>Open in Excel. PY column is filled. Yellow cells = CY inputs for you to enter.</span></li>
-      </ol>
-      <div style="background:#FEF2F2;border-radius:8px;padding:12px;font-size:11px;color:#7F1D1D;margin-top:4px;line-height:1.7">
-        <strong>What is extracted automatically:</strong> Capital account (opening, additions, withdrawals), unsecured loans, creditors &amp; advance from customers, other payables (TDS, salary, GST), sundry debtors, short-term loans &amp; advances, cash &amp; bank balances, fixed assets depreciation chart, P&amp;L (sales, purchases, expenses, gross profit).
+  <div style="display:flex;flex-direction:column;gap:24px">
+
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:var(--brand-l)">&#128218;</div>
+        <div><h2>How to Use</h2><p>Step-by-step guide</p></div>
+      </div>
+      <div class="card-body">
+        <ol class="steps">
+          <li><strong>Upload the .xls file</strong><span>Click or drag the T-shaped XLS. Must be .xls (not .xlsx).</span></li>
+          <li><strong>Enter Closing Year</strong><span>The financial year of the XLS, e.g. 2024 for year ending 31-03-2024.</span></li>
+          <li><strong>Enter New Year</strong><span>Auto-filled to closing + 1. This is the CY of your output (left blank for you to fill).</span></li>
+          <li><strong>Client Name (optional)</strong><span>Overrides the entity name auto-detected from the XLS.</span></li>
+          <li><strong>Click Convert</strong><span>Processing takes under 15 seconds. All annexures are read automatically.</span></li>
+          <li><strong>Download &amp; verify</strong><span>Open in Excel. PY column is filled. Yellow cells = CY inputs for you to enter.</span></li>
+        </ol>
       </div>
     </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="icon" style="background:#EDE9FE">&#128196;</div>
+        <div><h2>Output Format</h2><p>What the downloaded .xlsx looks like</p></div>
+      </div>
+      <div class="card-body">
+        <div class="preview-wrap">
+          <div class="preview-label">Sheet: notes to bs &mdash; sample structure</div>
+          <table class="preview-table">
+            <thead>
+              <tr>
+                <th class="col-label">Particulars</th>
+                <th>As at 31.03.2025 (CY)</th>
+                <th>As at 31.03.2024 (PY)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td class="col-label">Unsecured Loans</td><td class="cy">&#9618; blank</td><td class="py">24,32,471</td></tr>
+              <tr><td class="col-label">Sundry Creditors</td><td class="cy">&#9618; blank</td><td class="py">27,22,527</td></tr>
+              <tr><td class="col-label">Other Payables</td><td class="cy">&#9618; blank</td><td class="py">1,08,442</td></tr>
+              <tr><td class="col-label">Trade Receivables</td><td class="cy">&#9618; blank</td><td class="py">47,05,128</td></tr>
+              <tr><td class="col-label">Cash in Hand</td><td class="cy">&#9618; blank</td><td class="py">9,33,988</td></tr>
+              <tr><td class="col-label">HDFC Bank</td><td class="cy">&#9618; blank</td><td class="py">6,86,924</td></tr>
+              <tr><td class="col-label">Short-Term Loans</td><td class="cy">&#9618; blank</td><td class="py">5,19,473</td></tr>
+              <tr><td class="col-label"><em>Total (formula)</em></td><td class="formula">=SUM(D&hellip;)</td><td class="formula">=SUM(E&hellip;)</td></tr>
+            </tbody>
+          </table>
+          <div class="preview-legend">
+            <div class="legend-item"><div class="legend-dot" style="background:#FFFDE7;border:1px solid #FDE68A"></div>Yellow = CY inputs (you fill these)</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#F0FDF9;border:1px solid #99F6E4"></div>Green = PY auto-filled from XLS</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#EDE9FE;border:1px solid #C4B5FD"></div>Purple = formulas (preserved)</div>
+          </div>
+        </div>
+        <div style="margin-top:14px;background:var(--brand-l);border-radius:8px;padding:12px;font-size:11px;color:var(--brand-dk);line-height:1.7;border:1px solid var(--brand-m)">
+          <strong>Sheets in output:</strong> bs, p&amp;l, notes to accounts, capital, notes to bs, notes to p&amp;l, Fixed Assets C.Yr., Fixed Assets P.Yr., Details, GROSS PROFIT
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -7291,7 +7348,7 @@ if(dz&&fi){
 }
 function showFile(f){
   if(!f.name.toLowerCase().endsWith('.xls')||f.name.toLowerCase().endsWith('.xlsx')){
-    showStatus('error','Please upload a .xls file (not .xlsx). GD Singla T-shaped format only.');
+    showStatus('error','Please upload a .xls file (not .xlsx).');
     return;
   }
   dzFile.textContent='\\u2713 '+f.name;dzFile.style.display='block';
@@ -7309,7 +7366,7 @@ async function processFile(){
         dl=document.getElementById('dlBtn');
   if(!f){showStatus('error','Please select a .xls file first.');return;}
   if(!f.name.toLowerCase().endsWith('.xls')||f.name.toLowerCase().endsWith('.xlsx')){
-    showStatus('error','Only .xls files are supported. Upload the GD Singla T-shaped XLS.');return;}
+    showStatus('error','Only .xls files are supported.');return;}
   if(isNaN(cYr)){showStatus('error','Enter a valid closing year (e.g. 2024).');return;}
   btn.disabled=true;sp.style.display='block';bt.textContent='Converting\\u2026';
   dl.style.display='none';showStatus('','');
