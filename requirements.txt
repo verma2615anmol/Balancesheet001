@@ -6,3 +6,4 @@ xlrd>=2.0.0
 pdfplumber
 pymupdf>=1.23.0
 pyxlsb
+pandas>=2.0.0
