@@ -7611,13 +7611,29 @@ def _convert_xlsb_to_xlsx(xlsb_path: str, xlsx_path: str) -> None:
 # ── T-shaped balance sheet detection & routing ────────────────────────────────
 import sys as _sys
 import traceback as _traceback
-_app_dir = os.path.dirname(os.path.abspath(__file__))
-if _app_dir not in _sys.path:
-    _sys.path.insert(0, _app_dir)
+
+# Build a list of candidate directories to search for tshape_processor.py
+_search_dirs = []
+try:
+    _search_dirs.append(os.path.dirname(os.path.abspath(__file__)))
+except Exception:
+    pass
+_search_dirs += [
+    os.path.abspath('.'),
+    os.path.abspath(os.path.join('.', '..')),
+    '/opt/render/project/src',
+    '/opt/render/project',
+]
+for _d in _search_dirs:
+    if _d not in _sys.path and os.path.isfile(os.path.join(_d, 'tshape_processor.py')):
+        _sys.path.insert(0, _d)
+        print(f"[tshape] added to sys.path: {_d}", flush=True)
+        break
+
 try:
     from tshape_processor import process_tshape as _process_tshape
     _TSHAPE_AVAILABLE = True
-    print(f"[tshape] import OK — loaded from {_app_dir}", flush=True)
+    print("[tshape] import OK", flush=True)
 except Exception as _e:
     _TSHAPE_AVAILABLE = False
     print(f"[tshape] import FAILED: {type(_e).__name__}: {_e}", flush=True)
