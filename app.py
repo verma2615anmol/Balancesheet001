@@ -3881,8 +3881,14 @@ function computeForRegime(isNew) {
   normalTax = Math.max(0, normalTax - rebate87a);
 
   // ── Issue 2 fix: Guard negative CG inputs — user shouldn't enter negative here ──
-  // Current-year losses (entered as negative by user) are floored to 0.
-  // Losses are entered separately via B/F fields.
+  // Capture raw (possibly negative) values first so we can report current-year losses as C/F notes.
+  const raw_stcg111a = stcg111a;
+  const raw_stcgOther = stcgOther;
+  const raw_ltcg112a  = ltcg112a;
+  const raw_ltcgOther = ltcgOther;
+  // Current-year STCL = sum of all negative CG fields (absolute value = loss to c/f next year)
+  const cy_stcl = Math.max(0, -raw_stcg111a) + Math.max(0, -raw_stcgOther);
+  const cy_ltcl = Math.max(0, -raw_ltcg112a) + Math.max(0, -raw_ltcgOther);
   stcg111a  = Math.max(0, stcg111a);
   stcgOther = Math.max(0, stcgOther);
   ltcg112a  = Math.max(0, ltcg112a);
@@ -3993,6 +3999,7 @@ function computeForRegime(isNew) {
     stcg111aPreJuly, ltcg112aPreJuly, ltcg112aPreJulyExemptAmt, ltcgOtherPreJuly,
     otherIncome, winnings,
     bf_stcl, bf_ltcl, bf_stcl_utilised, bf_ltcl_utilised, bf_stcl_cf, bf_ltcl_cf,
+    cy_stcl, cy_ltcl,
     normalIncome:normalAfterLoss, totalDeductions, normalTaxable,
     slabResult,
     normalTax: normalTax + rebate87a, rebate87a,
@@ -4049,8 +4056,25 @@ function renderResult(r) {
   // B/F loss set-off display rows
   if (r.bf_stcl_utilised > 0) h += row('Less: B/F STCL set off u/s 74', fmt(-r.bf_stcl_utilised), 'sub');
   if (r.bf_ltcl_utilised > 0) h += row('Less: B/F LTCL set off u/s 74', fmt(-r.bf_ltcl_utilised), 'sub');
-  if (r.bf_stcl_cf > 0) h += row('B/F STCL still to carry forward', fmt(r.bf_stcl_cf), 'sub');
-  if (r.bf_ltcl_cf > 0) h += row('B/F LTCL still to carry forward', fmt(r.bf_ltcl_cf), 'sub');
+
+  // ── C/F note box: remaining B/F loss not absorbed + current-year fresh loss ──
+  {
+    const cfNotes = [];
+    if (r.bf_stcl_cf > 0)
+      cfNotes.push('Unadjusted B/F Short-Term Capital Loss of <strong>₹' + fmt(r.bf_stcl_cf) + '</strong> is still available to carry forward to the next year (can be set off against any capital gain).');
+    if (r.bf_ltcl_cf > 0)
+      cfNotes.push('Unadjusted B/F Long-Term Capital Loss of <strong>₹' + fmt(r.bf_ltcl_cf) + '</strong> is still available to carry forward to the next year (can only be set off against LTCG).');
+    if (r.cy_stcl > 0)
+      cfNotes.push('Current-year Short-Term Capital Loss of <strong>₹' + fmt(r.cy_stcl) + '</strong> will be carried forward to the next assessment year and can be set off against any capital gain (u/s 74). It can be carried forward for up to <strong>8 assessment years</strong>.');
+    if (r.cy_ltcl > 0)
+      cfNotes.push('Current-year Long-Term Capital Loss of <strong>₹' + fmt(r.cy_ltcl) + '</strong> will be carried forward to the next assessment year and can only be set off against Long-Term Capital Gains (u/s 74). It can be carried forward for up to <strong>8 assessment years</strong>.');
+    if (cfNotes.length > 0) {
+      h += '<div style="margin:10px 0 4px;padding:11px 14px;background:#FFF7ED;border:1.5px solid #FED7AA;border-radius:9px;font-size:12px;line-height:1.75;color:#92400E">'
+         + '<div style="font-weight:700;margin-bottom:6px;font-size:12px">📌 Capital Loss Carry-Forward Note</div>'
+         + cfNotes.map(n => '• ' + n).join('<br>')
+         + '</div>';
+    }
+  }
 
   h += row('Other Sources (Head 5)', fmt(r.otherIncome + r.winnings));
   if (r.winnings) h += row('Winnings @ 30%', fmt(r.winnings), 'sub');
