@@ -419,31 +419,24 @@ def _extract_capital(rows, result, log):
         is_prop_cap = is_prop_cap and 'PARTNER' not in label
 
         if is_prop_cap:
-            # Find name from the SAME row or adjacent
-            # Name is usually in col 0 or nearby; amount in annex col
-            # Try col 3 or 4 first (amount cols for Gupta/Ashok)
-            name = _s(row[0]).strip("`'\"")
-            if not name or name.upper() in ('', 'PROP. CAPITAL A/C', 'PROP CAPITAL ACCOUNT'):
-                # Look ahead for name
-                for k in range(i + 1, min(i + 4, len(rows))):
-                    n2 = _s(rows[k][0])
-                    if n2 and n2.upper() not in ('', 'PARTICULARS') and \
-                       not n2.upper().startswith('FIXED') and \
-                       not n2.upper().startswith('UNSECURED') and \
-                       not n2.upper().startswith('CURRENT') and \
-                       not n2.upper().startswith('SUNDRY'):
-                        name = n2
-                        break
-
             # Get amount — scan for the capital amount.
             # It should be in the FIRST few cols (liabilities side, cols 1-8)
             # NOT in the right half (which would be fixed assets etc.)
             # Look specifically in col 4 first (Gupta layout), then col 6, then scan 1-8
             amt = 0.0
+            amt_row_idx = i  # track which row the amount came from
+
+            _BS_LABEL_WORDS = ('LIABILIT', 'ASSET', 'TOTAL', 'FIXED', 'CURRENT',
+                                'SUNDRY', 'UNSECURED', 'STOCK', 'AMOUNT', 'PARTICUL',
+                                'CASH', 'BANK', 'LOAN', 'BALANCE SHEET')
+
+            def _is_capital_amount(v):
+                return isinstance(v, (int, float)) and not (isinstance(v, float) and str(v) == 'nan') and float(v) > 100000
+
             for j in [4, 3, 6, 5, 2, 1, 7, 8]:
                 if j < len(row):
                     v = _n(row[j])
-                    if v > 100000:   # Capital accounts are large
+                    if _is_capital_amount(v):
                         amt = v
                         break
 
@@ -453,9 +446,45 @@ def _extract_capital(rows, result, log):
                     for j in [4, 3, 6, 5, 2, 1, 7, 8]:
                         if j < len(rows[i+1]):
                             v = _n(rows[i+1][j])
-                            if v > 100000:
+                            if _is_capital_amount(v):
                                 amt = v
+                                amt_row_idx = i + 1
                                 break
+
+            # FIX 1: For Sachidanand-type layout, the `A'` marker and the amount
+            # are on DIFFERENT rows. Scan up to 8 rows ahead for the capital amount.
+            # ONLY scan cols 1-8 (liabilities side) to avoid picking up P&L amounts at col13.
+            if not amt:
+                for k in range(i, min(i + 9, len(rows))):
+                    r2 = rows[k]
+                    for j in [4, 3, 5, 6, 2, 1, 7, 8]:
+                        if j < len(r2):
+                            v = _n(r2[j])
+                            if _is_capital_amount(v):
+                                amt = v
+                                amt_row_idx = k
+                                break
+                    if amt:
+                        break
+
+            # Find name — first try the row where amount was found (col0),
+            # then scan nearby rows for a person name (not a BS label)
+            name = _s(rows[amt_row_idx][0]).strip("`'\"") if amt_row_idx < len(rows) else ''
+            _bad_names = ('', 'LIABILITIES', 'ASSETS', 'PARTICULARS', 'AMOUNT',
+                          'PROP. CAPITAL A/C', 'PROP CAPITAL ACCOUNT', 'PROP CAPITAL A/C')
+            if name.upper() in _bad_names or any(w in name.upper() for w in _BS_LABEL_WORDS):
+                name = ''
+            # Scan i..i+8 for a person name in col0 that's not a BS label
+            if not name:
+                for k in range(i, min(i + 9, len(rows))):
+                    n2 = _s(rows[k][0]).strip("`'\"")
+                    if n2 and n2.upper() not in _bad_names and \
+                       not any(w in n2.upper() for w in _BS_LABEL_WORDS) and \
+                       len(n2) >= 4:
+                        name = n2
+                        break
+            if not name:
+                name = 'PROP. CAPITAL A/C'
 
             if amt > 0:
                 # Look for opening, profit, withdrawals in vicinity
@@ -766,68 +795,83 @@ def _extract_creditor_annexure(rows, result, log):
     """
     Directly extract Annexure-C (Sundry Creditors & Advances) from the GD Singla XLS.
 
-    Layout (0-based col indices):
-      col45 = party name  (or section header like 'ADVANCES FROM CUSTOMER')
-      col49 = amount
-    Header row: col45 = 'SUNDRY CREDITORS & ADVANCES', col49 = 'ANNEXURE-C'
-    Stop at TOTAL row (col45 == 'TOTAL').
+    Layout A (Ashok Kumar): col45 = party name, col49 = amount
+    Layout B (Sachidanand): col33 = party name, col38 = amount
+    Header row triggers on 'SUNDRY CREDITOR' + 'ANNEXURE-C' in row.
+    Stop at TOTAL row or amount sum matches BS total.
     """
-    in_section = False
-    cred_items = []
-    adv_items  = []
-    in_advance = False
-    total_row_val = 0.0
+    bs_total = result.get('sundry_creditors', 0)
 
+    # GD Singla XLS can have up to 4 parallel creditor columns per page (B/F continuation).
+    # Each block: (prefix_col, name_col, amt_col)
+    # Block1: col32 (M/s.), col33 (name), col38 (amount)
+    # Block2: col39 (M/s.), col40 (name), col45 (amount)
+    # Block3: col46 (M/s.), col47 (name), col52 (amount)
+    # Block4: col25 (M/s.), col26 (name), col31 (amount)  ← Sachidanand continuation page
+    # Layout A (other clients): col45 (name), col49 (amount) — no separate prefix col
+
+    def _collect_creditor_block(rows, prefix_col, name_col, amt_col, start=8, end=None):
+        """Collect creditor entries from a single column block."""
+        items = []
+        end = end or len(rows)
+        for i in range(start, min(end, len(rows))):
+            row = rows[i]
+            if prefix_col is not None:
+                prefix = _s(row[prefix_col]).strip() if prefix_col < len(row) else ''
+                if prefix.lower() not in ('m/s.', 'm/s', 'm/s .', 'm/s. ', 'ms.'):
+                    continue
+            name_cell = _s(row[name_col]).strip() if name_col < len(row) else ''
+            amt_cell = row[amt_col] if amt_col < len(row) else None
+            if not name_cell or name_cell in ('nan', '') or len(name_cell) < 2:
+                continue
+            if not isinstance(amt_cell, (int, float)) or isinstance(amt_cell, float) and (str(amt_cell) == 'nan') or amt_cell <= 0:
+                continue
+            # Skip B/F continuation rows (large round numbers in first few rows)
+            if name_cell.upper() in ('B/F', 'C/F', 'TOTAL', 'B / F', 'C / F'):
+                continue
+            items.append({'name': name_cell, 'amount': float(amt_cell)})
+        return items
+
+    # Find the row range where creditors appear (after SUNDRY CREDITORS + ANNEXURE-C header)
+    cred_start = 8
     for i, row in enumerate(rows):
-        if 45 >= len(row):
-            continue
-        name_cell = _s(row[45]).strip()
-        amt_cell  = row[49] if 49 < len(row) else None
-
-        if not in_section:
-            rs = ' '.join(_s(v).upper() for v in row if v is not None)
-            if 'SUNDRY CREDITOR' in rs and 'ANNEXURE-C' in rs:
-                in_section = True
-            continue
-
-        name_upper = name_cell.upper()
-        if name_upper == 'TOTAL':
-            if isinstance(amt_cell, (int, float)) and amt_cell > 0:
-                total_row_val = amt_cell
+        rs = ' '.join(_s(v).upper() for v in row if v is not None)
+        if 'SUNDRY CREDITOR' in rs and 'ANNEXURE-C' in rs:
+            cred_start = i + 1
             break
 
-        if 'ADVANCE' in name_upper and 'CUSTOMER' in name_upper:
-            in_advance = True
-            continue
+    # Collect all 4 blocks and deduplicate by name
+    all_blocks = (
+        _collect_creditor_block(rows, 32, 33, 38, cred_start) +
+        _collect_creditor_block(rows, 39, 40, 45, cred_start) +
+        _collect_creditor_block(rows, 46, 47, 52, cred_start) +
+        _collect_creditor_block(rows, 25, 26, 31, cred_start)
+    )
 
-        if not name_cell or len(name_cell) < 2:
-            continue
+    # Fallback: if none of the M/s. prefix blocks found items, try name-only layout (col45/col49)
+    if not all_blocks:
+        all_blocks = _collect_creditor_block(rows, None, 45, 49, cred_start)
 
-        if not isinstance(amt_cell, (int, float)) or amt_cell <= 0:
-            continue
-
-        entry = {'name': name_cell, 'amount': amt_cell}
-        if in_advance:
-            adv_items.append(entry)
-        else:
-            cred_items.append(entry)
-
-    if not (cred_items or adv_items):
+    if not all_blocks:
+        log.append("Creditor Annexure-C: no items found in any layout")
         return
 
-    calc = sum(x['amount'] for x in cred_items) + sum(x['amount'] for x in adv_items)
-    # Only override when we got a meaningful total match (within 2%)
-    if total_row_val > 0 and abs(calc - total_row_val) / total_row_val > 0.02:
-        log.append(f"Creditor Annexure-C: sum {calc:.0f} != TOTAL {total_row_val:.0f} — skipping")
-        return
+    # Deduplicate by normalized name
+    seen_cred = set()
+    cred_items = []
+    for item in all_blocks:
+        key = item['name'].strip().upper()
+        if key not in seen_cred:
+            seen_cred.add(key)
+            cred_items.append(item)
 
+    calc = sum(x['amount'] for x in cred_items)
+
+    # If calc >> BS total, filter out OCL items (One97 Communications ₹62L is trade payable
+    # in this XLS but may need to stay — keep all items and let Details sheet handle it)
     result['sundry_creditor_parties'] = cred_items
-    if adv_items:
-        result['advance_from_customer_parties'] = adv_items
-    if total_row_val > 0:
-        result['sundry_creditors'] = total_row_val
-    log.append(f"Creditor Annexure-C: {len(cred_items)} creditors, "
-               f"{len(adv_items)} advance-from-customer, total={calc:,.0f}")
+    log.append(f"Creditor Annexure-C (multi-block): {len(cred_items)} creditors, total={calc:,.0f} "
+               f"(BS={bs_total:,.0f})")
 
 
 # ─── Loans & Advances Annexure (Annexure-G in GD Singla layout) ──────────────
@@ -865,48 +909,77 @@ def _extract_loans_annexure(rows, result, log):
     Short Term Loans — Loans to Others (CA instruction), so they are appended to
     loans_to_other_items.  result['investments'] is zeroed out accordingly.
     """
-    # ── Read Annexure-G (LOANS & ADVANCES) ───────────────────────────────────
-    in_section = False
+    # ── Read Annexure-G (LOANS & ADVANCES) — try multiple column layouts ──────
+    # Layout A (Ashok Kumar): name=col50, amount=col58
+    # Layout B (Sachidanand): name=col53, amount=col62
     items_g = []
     total_g  = 0.0
 
-    for i, row in enumerate(rows):
-        if 50 >= len(row):
-            continue
-        name_cell = _s(row[50]).strip()
-        amt_cell  = row[58] if 58 < len(row) else None
+    _STOP_HEADERS_LOANS = ('CASH & BANK', 'SUNDRY DEBTOR', 'SUNDRY CREDITOR',
+                            'FIXED ASSET', 'OTHER PAYABLE', 'TOTAL OF BALANCE')
 
-        if not in_section:
-            rs = ' '.join(_s(v).upper() for v in row if v is not None)
-            if ('LOANS & ADVANCE' in rs or 'LOAN & ADVANCE' in rs) and 'ANNEXURE' in rs:
-                in_section = True
-            continue
+    def _read_annexure_g(rows, name_col, amt_col):
+        in_sec = False
+        items = []
+        total = 0.0
+        for i, row in enumerate(rows):
+            if name_col >= len(row):
+                continue
+            name_cell = _s(row[name_col]).strip()
+            amt_cell  = row[amt_col] if amt_col < len(row) else None
+            if not in_sec:
+                rs = ' '.join(_s(v).upper() for v in row if v is not None)
+                if ('LOANS & ADVANCE' in rs or 'LOAN & ADVANCE' in rs) and 'ANNEXURE' in rs:
+                    in_sec = True
+                continue
+            # Stop on TOTAL row
+            if name_cell.upper() == 'TOTAL':
+                if isinstance(amt_cell, (int, float)) and amt_cell > 0:
+                    total = amt_cell
+                break
+            # Stop when a new section header appears at the name column
+            if any(kw in name_cell.upper() for kw in _STOP_HEADERS_LOANS):
+                break
+            if not name_cell or len(name_cell) < 2:
+                continue
+            if not isinstance(amt_cell, (int, float)) or amt_cell <= 0:
+                continue
+            # Skip annexure header values (text like 'ANNEXURE-H')
+            if 'ANNEXURE' in name_cell.upper():
+                continue
+            items.append({'name': name_cell, 'amount': amt_cell,
+                          'category': _classify_loan_item(name_cell)})
+        return items, total
 
-        if name_cell.upper() == 'TOTAL':
-            if isinstance(amt_cell, (int, float)) and amt_cell > 0:
-                total_g = amt_cell
+    # FIX 4: Try all layouts, prefer those giving real (non-NaN) amounts
+    items_g, total_g = [], 0.0
+    nc, ac = 50, 58  # defaults
+    for nc_try, ac_try in [(53, 62), (50, 58), (51, 59), (52, 61)]:
+        items_try, total_try = _read_annexure_g(rows, nc_try, ac_try)
+        # Filter out NaN amounts
+        items_try = [x for x in items_try
+                     if isinstance(x['amount'], (int, float)) and
+                     not (isinstance(x['amount'], float) and math.isnan(x['amount'])) and
+                     x['amount'] > 0]
+        if items_try:
+            items_g, total_g = items_try, total_try
+            nc, ac = nc_try, ac_try
+            log.append(f"Loans Annexure-G found at col{nc}/{ac}")
             break
-
-        if not name_cell or len(name_cell) < 2:
-            continue
-        if not isinstance(amt_cell, (int, float)) or amt_cell <= 0:
-            continue
-
-        items_g.append({
-            'name': name_cell,
-            'amount': amt_cell,
-            'category': _classify_loan_item(name_cell),
-        })
 
     # ── Read Annexure-F (INVESTMENT & SECURITY) ───────────────────────────────
     in_inv = False
     items_f = []
 
+    # Use the same name/amt cols that worked for Annexure-G (or fall back to 50/58)
+    _g_nc = nc
+    _g_ac = ac
+
     for i, row in enumerate(rows):
-        if 50 >= len(row):
+        if _g_nc >= len(row):
             continue
-        name_cell = _s(row[50]).strip()
-        amt_cell  = row[58] if 58 < len(row) else None
+        name_cell = _s(row[_g_nc]).strip()
+        amt_cell  = row[_g_ac] if _g_ac < len(row) else None
 
         if not in_inv:
             rs = ' '.join(_s(v).upper() for v in row if v is not None)
@@ -916,7 +989,7 @@ def _extract_loans_annexure(rows, result, log):
 
         if name_cell.upper() == 'TOTAL':
             break
-        # Stop if next major section header appears at col50
+        # Stop if next major section header appears
         if any(kw in name_cell.upper() for kw in ('LOANS', 'CASH', 'SUNDRY', 'OTHER PAYABLE')):
             break
 
@@ -1051,6 +1124,11 @@ def _extract_capital_annexure(rows, result, log):
       col42 = individual line amounts (Cheque/RTGS intro, each withdrawal item)
       col44 = running subtotals (opening, additions total, Less total, closing)
 
+    Sachidanand-type layout (alternative):
+      col25 = label text, col31 = amount
+      Rows: "Last Balance as on..." = opening, "Add Profit during the year" = profit,
+            "Less: Withdrawals" = withdrawals, "Closing balance as on..." = closing.
+
     Key rows (0-based row index from XLS):
       OPENING BALANCE row: col44 = 5,252,803.82
       Cheque/RTGS row:     col42 = 2,121,000  (cash intro, NOT profit)
@@ -1063,8 +1141,53 @@ def _extract_capital_annexure(rows, result, log):
     last_col44   = 0.0
     found_opening = False
 
+    # FIX 2a: Also scan for Sachidanand-type capital table at cols 25-31
+    sachi_opening = 0.0
+    sachi_profit = 0.0
+    sachi_withdrawals = 0.0
+    sachi_closing = 0.0
+    sachi_found = False
+
     for i, row in enumerate(rows):
         rs = ' '.join(_s(v).upper() for v in row if v is not None)
+
+        # FIX 2b: Sachidanand layout — scan for capital movement rows using cols 25-31
+        # "Last Balance as on" = opening; "Add Profit" = profit;
+        # "Less: Withdrawals" = withdrawals; "Closing balance" = closing
+        if not sachi_found:
+            lbl25 = _s(row[25]).upper() if 25 < len(row) else ''
+            lbl26 = _s(row[26]).upper() if 26 < len(row) else ''
+            lbl27 = _s(row[27]).upper() if 27 < len(row) else ''
+            combined_lbl = lbl25 + ' ' + lbl26 + ' ' + lbl27
+
+            if 'LAST BALANCE' in combined_lbl or 'OPENING BALANCE' in combined_lbl or \
+               ('BALANCE' in combined_lbl and ('01.04' in combined_lbl or 'AS ON' in combined_lbl)):
+                v31 = _n(row[31]) if 31 < len(row) else 0
+                if v31 > 0:
+                    sachi_opening = v31
+
+            if ('ADD PROFIT' in combined_lbl or 'ADD: PROFIT' in combined_lbl or
+                'PROFIT DURING' in combined_lbl or 'NET PROFIT' in combined_lbl):
+                v31 = _n(row[31]) if 31 < len(row) else 0
+                if v31 > 0:
+                    sachi_profit = v31
+
+            if 'ADDITION' in combined_lbl and sachi_opening > 0:
+                v31 = _n(row[31]) if 31 < len(row) else 0
+                if v31 > 0:
+                    additions_cash = v31
+
+            if 'WITHDRAWAL' in combined_lbl or 'DRAWING' in combined_lbl or \
+               ('LESS' in combined_lbl and sachi_opening > 0):
+                v31 = _n(row[31]) if 31 < len(row) else 0
+                if v31 > 0:
+                    sachi_withdrawals = v31
+
+            if 'CLOSING' in combined_lbl and 'BALANCE' in combined_lbl and sachi_opening > 0:
+                v31 = _n(row[31]) if 31 < len(row) else 0
+                if v31 > 0:
+                    sachi_closing = v31
+                    sachi_found = True
 
         if not in_section:
             if ('PROP CAPITAL ACCOUNT' in rs or 'PROPRIETOR CAPITAL' in rs) and 'ANNEXURE-A' in rs:
@@ -1072,11 +1195,17 @@ def _extract_capital_annexure(rows, result, log):
             continue
 
         # Opening balance row
-        if 'OPENING BALANCE' in rs:
+        if 'OPENING BALANCE' in rs or 'LAST BALANCE' in rs:
             v = row[44] if 44 < len(row) else None
             if isinstance(v, (int, float)) and v > 0:
                 opening = v
                 found_opening = True
+            elif not found_opening:
+                # Try col31 (Sachidanand layout within Annexure-A section)
+                v31 = row[31] if 31 < len(row) else None
+                if isinstance(v31, (int, float)) and v31 > 0:
+                    opening = v31
+                    found_opening = True
             continue
 
         # Closing row — stop and record withdrawals from last_col44
@@ -1096,6 +1225,15 @@ def _extract_capital_annexure(rows, result, log):
             v42 = row[42] if 42 < len(row) else None
             if isinstance(v42, (int, float)) and v42 > 0:
                 additions_cash += v42
+
+    # FIX 2c: Prefer Sachidanand-style values if found and col44 path failed
+    if sachi_found and sachi_opening > 0 and not (opening > 0 and last_col44 > 0):
+        opening = sachi_opening
+        last_col44 = sachi_withdrawals
+        found_opening = True
+        log.append(f"Capital Annexure-A (Sachidanand layout): opening={sachi_opening:,.2f}, "
+                   f"profit={sachi_profit:,.2f}, withdrawals={sachi_withdrawals:,.2f}, "
+                   f"closing={sachi_closing:,.2f}")
 
     if opening > 0:
         for cap in result.get('capital_accounts', []):
@@ -1427,52 +1565,76 @@ def _extract_cash_bank(rows, result, log):
     2. Generic scan of the BS section (fallback for non-GD-Singla layouts).
     """
 
-    # ── Pass 1: Annexure-H at col50 / col58 ──────────────────────────────────
-    in_h = False
-    cash_h  = 0.0
-    banks_h = []
-    total_h = 0.0
+    # ── Pass 1: Annexure-H — try multiple column layouts ─────────────────────
+    # Layout A (Ashok Kumar): name=col50, amount=col58
+    # Layout B (Sachidanand): name=col53, amount=col62
+    # Both are tried; whichever finds items wins.
 
-    for i, row in enumerate(rows):
-        if 50 >= len(row):
-            continue
-        name50 = _s(row[50]).strip()
-        amt58  = row[58] if 58 < len(row) else None
+    def _is_real_num(v):
+        return isinstance(v, (int, float)) and not (isinstance(v, float) and math.isnan(v)) and float(v) > 0
 
-        if not in_h:
-            rs = ' '.join(_s(v).upper() for v in row if v is not None)
-            if 'CASH' in rs and 'BANK' in rs and 'ANNEXURE-H' in rs:
-                in_h = True
-            continue
+    def _try_annexure_h(rows, name_col, amt_col):
+        """Try reading Annexure-H at the given name/amount column positions."""
+        in_h = False
+        cash_h = 0.0
+        banks_h = []
+        total_h = 0.0
 
-        n_up = name50.upper()
+        for i, row in enumerate(rows):
+            if name_col >= len(row):
+                continue
+            name_cell = _s(row[name_col]).strip()
+            amt_cell  = row[amt_col] if amt_col < len(row) else None
 
-        if n_up == 'TOTAL':
-            if isinstance(amt58, (int, float)) and amt58 > 0:
-                total_h = amt58
-            break
+            if not in_h:
+                rs = ' '.join(_s(v).upper() for v in row if v is not None)
+                if 'CASH' in rs and 'BANK' in rs and 'ANNEXURE-H' in rs:
+                    in_h = True
+                continue
 
-        if not name50 or len(name50) < 2:
-            continue
-        if not isinstance(amt58, (int, float)) or amt58 <= 0:
-            continue
+            n_up = name_cell.upper()
 
-        if 'CASH IN HAND' in n_up or 'CASH-IN-HAND' in n_up:
-            cash_h = amt58
-        elif any(bk in n_up for bk in _BANK_KEYWORDS) or 'BANK' in n_up:
-            banks_h.append({'name': name50, 'amount': amt58})
-        else:
-            # Unknown item — treat as bank account
-            banks_h.append({'name': name50, 'amount': amt58})
+            if n_up == 'TOTAL':
+                if _is_real_num(amt_cell):
+                    total_h = float(amt_cell)
+                break
 
-    if in_h and (cash_h > 0 or banks_h):
-        result['cash_in_hand'] = cash_h
-        result['bank_balances'] = banks_h
-        bank_sum = sum(x['amount'] for x in banks_h)
-        result['cash_bank'] = cash_h + bank_sum
-        log.append(f"Cash Annexure-H: hand={cash_h:,.0f}, "
-                   f"{len(banks_h)} bank(s)={bank_sum:,.0f}, total={result['cash_bank']:,.0f}")
-        return   # Annexure-H is authoritative — skip generic scan
+            # Stop if we hit a new section header at the name column
+            _CASH_STOP = ('SUNDRY DEBTOR', 'SUNDRY CREDITOR', 'LOAN & ADVANCE',
+                          'LOANS & ADVANCE', 'OTHER PAYABLE', 'FIXED ASSET', 'ANNEXURE-G')
+            if any(kw in n_up for kw in _CASH_STOP):
+                break
+
+            if not name_cell or len(name_cell) < 2:
+                continue
+            # CRITICAL: skip rows where amount is NaN or zero
+            if not _is_real_num(amt_cell):
+                continue
+
+            # Skip M/s. prefix-only rows (they are OCL entries at wrong column)
+            if n_up in ('M/S.', 'M/S', 'M/S .'):
+                continue
+
+            if 'CASH IN HAND' in n_up or 'CASH-IN-HAND' in n_up:
+                cash_h = float(amt_cell)
+            elif any(bk in n_up for bk in _BANK_KEYWORDS) or 'BANK' in n_up:
+                banks_h.append({'name': name_cell, 'amount': float(amt_cell)})
+            else:
+                banks_h.append({'name': name_cell, 'amount': float(amt_cell)})
+
+        return in_h, cash_h, banks_h, total_h
+
+    # FIX 3: Try all column layouts, accept first one with real (non-NaN) amounts
+    for name_col, amt_col in [(53, 62), (50, 58), (51, 59), (52, 61)]:
+        in_h, cash_h, banks_h, total_h = _try_annexure_h(rows, name_col, amt_col)
+        if in_h and (cash_h > 0 or any(_is_real_num(b['amount']) for b in banks_h)):
+            result['cash_in_hand'] = cash_h
+            result['bank_balances'] = [b for b in banks_h if _is_real_num(b['amount'])]
+            bank_sum = sum(b['amount'] for b in result['bank_balances'])
+            result['cash_bank'] = cash_h + bank_sum
+            log.append(f"Cash Annexure-H (col{name_col}/{amt_col}): hand={cash_h:,.0f}, "
+                       f"{len(result['bank_balances'])} bank(s)={bank_sum:,.0f}, total={result['cash_bank']:,.0f}")
+            return   # Annexure-H is authoritative — skip generic scan
 
     # ── Pass 2: Generic scan (fallback) ──────────────────────────────────────
     in_cash = False
@@ -2518,7 +2680,9 @@ _FA_ROW_MAP = {
     'scooter':                   21,
     'computer':                  24,
     'chair':                     27,
+    'furniture & fixture ':      28,
     'furniture & fixtures':      28,
+    'furniture & fixture':       28,
     'furniture':                 28,
     'building':                  31,
 }
@@ -2559,27 +2723,50 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
         sales     = item.get('sales', 0)
 
         safe_additions = round(additions)
+        total_val = round(opening) + safe_additions - round(sales)
 
         _write_num(ws, r, 2, round(opening))         # B: opening WDV
         _write_num(ws, r, 3, safe_additions)         # C: additions >180d
-        _write_num(ws, r, 4, 0)                      # D: additions <180d (parser doesn't split)
+        _write_num(ws, r, 4, 0)                      # D: additions <180d
         _write_num(ws, r, 5, round(sales))           # E: sales/disposals
 
-        # If template row has a static 0 for Total (col F=6) instead of a formula,
-        # write the total manually so H (dep) and I (WDV) formulas compute correctly.
+        # F(6): write total value directly so dep formula works
         existing_f = ws.cell(r, 6).value
-        if existing_f == 0 or existing_f is None:
-            # Only write if it's not already a formula
-            if not (isinstance(existing_f, str) and existing_f.startswith('=')):
-                total_val = round(opening) + safe_additions - round(sales)
-                _write_num(ws, r, 6, total_val)      # F: total (B+C+D-E)
-        # G(7) rate — only write if template already has 0 (don't overwrite existing rates)
-        rate = item.get('rate', 0)
+        if not (isinstance(existing_f, str) and existing_f.startswith('=')):
+            _write_num(ws, r, 6, total_val)          # F: total (B+C+D-E)
+
+        # G(7) rate — write always (needed for dep formula)
         if rate:
-            existing_rate = ws.cell(r, 7).value
-            if existing_rate in (0, None, ''):
-                _write(ws, r, 7, rate)
-        # F(6), H(8), I(9) are formulas — DO NOT WRITE
+            _write(ws, r, 7, rate)
+
+        # FIX 6: Write H(dep) and I(wdv) directly so PY sheet is self-contained
+        # dep = ROUND(total * rate / 100)
+        dep_val = round(total_val * rate / 100) if rate else item.get('dep', 0)
+        closing_wdv = total_val - dep_val
+        _write_num(ws, r, 8, dep_val)               # H: depreciation (direct value)
+        _write_num(ws, r, 9, closing_wdv)           # I: closing WDV (direct value)
+
+    # FIX 6b: Write Total row with correct sums so bs!I37 formula gets a real value
+    # Scan for the Total row in the sheet (row 37 per template comment, but verify)
+    total_opening = sum(it.get('opening_wdv', 0) for it in items)
+    total_additions = sum(it.get('additions', 0) for it in items)
+    total_sales = sum(it.get('sales', 0) for it in items)
+    total_f = round(total_opening + total_additions - total_sales)
+    total_dep = sum(round((round(it.get('opening_wdv',0)) + round(it.get('additions',0)) - round(it.get('sales',0))) * (it.get('rate',0) or 0) / 100) for it in items)
+    total_wdv = total_f - total_dep
+
+    # Write Total row at R37 (template fixed row) and also at R15 if that exists as Total
+    for total_row in [37, 15]:
+        cell_a = ws.cell(total_row, 1).value
+        if cell_a is not None and 'TOTAL' in str(cell_a).upper():
+            _write_num(ws, total_row, 2, round(total_opening))
+            _write_num(ws, total_row, 3, round(total_additions))
+            _write_num(ws, total_row, 4, 0)
+            _write_num(ws, total_row, 5, round(total_sales))
+            _write_num(ws, total_row, 6, total_f)
+            _write_num(ws, total_row, 8, total_dep)
+            _write_num(ws, total_row, 9, total_wdv)
+            log.append(f"FA P.Yr. Total row R{total_row}: WDV={total_wdv}")
 
     log.append(f'Fixed Assets P.Yr.: {len(items)} items processed ({len(written_rows)} rows written)')
 
@@ -2646,19 +2833,22 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
         'scooter':                   25,
         'computer':                  47,
         'chair':                     37,
+        'furniture & fixture ':      36,
+        'furniture & fixtures':      36,
         'furniture & fixture':       36,
         'furniture':                 36,
         'building':                  60,
     }
 
     count = 0
+    written_cy_rows = set()
     for item in items:
         name_lower = item['name'].strip().lower()
         # Find matching row (prefix match)
         r = None
-        for key, row in _FA_CY_ROW_MAP.items():
-            if name_lower.startswith(key):
-                r = row
+        for key, row_r in _FA_CY_ROW_MAP.items():
+            if name_lower.startswith(key) or key.startswith(name_lower):
+                r = row_r
                 break
         if r is None:
             continue
@@ -2667,13 +2857,29 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
         add_gt   = item.get('additions', 0)
         sales    = item.get('sales', 0)
         rate     = item.get('rate', 0) or 0
-        # Compute PY depreciation (same formula as FA P.Yr. sheet)
-        dep = round((opening + add_gt - sales) * rate / 100)
-        closing_wdv = opening + add_gt - sales - dep
+        # PY closing WDV becomes CY opening WDV
+        dep_py = round((opening + add_gt - sales) * rate / 100)
+        cy_opening_wdv = opening + add_gt - sales - dep_py
 
-        if closing_wdv > 0:
-            ws.cell(r, 2).value = round(closing_wdv)  # col B = opening WDV as at 01.04.CY-1
+        if cy_opening_wdv > 0:
+            ws.cell(r, 1).value = item['name'].strip()  # col A: asset name
+            ws.cell(r, 2).value = round(cy_opening_wdv) # col B: opening WDV
+            ws.cell(r, 7).value = rate                   # col G: rate (for CA to compute CY dep)
+            written_cy_rows.add(r)
             count += 1
+
+    # FIX 7b: Write CY Total row at R17 if it's labeled Total
+    cy_total_opening = sum(
+        round(it.get('opening_wdv',0) + it.get('additions',0) - it.get('sales',0)) -
+        round((it.get('opening_wdv',0) + it.get('additions',0) - it.get('sales',0)) * (it.get('rate',0) or 0) / 100)
+        for it in items
+    )
+    for total_row in [17, 15]:
+        cell_a = ws.cell(total_row, 1).value
+        if cell_a is not None and 'TOTAL' in str(cell_a).upper():
+            ws.cell(total_row, 2).value = cy_total_opening
+            log.append(f"FA C.Yr. Total row R{total_row}: opening WDV={cy_total_opening}")
+            break
 
     log.append(f"Fixed Assets C.Yr.: {count} opening WDV values written")
 
