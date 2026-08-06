@@ -2556,6 +2556,25 @@ nav.scrolled{box-shadow:0 4px 24px rgba(0,0,0,.10)}
             </div>
           </div>
 
+          <div id="bfLossSection" style="margin-top:4px;padding:12px 14px;background:#FFF7ED;border:1px solid #FED7AA;border-radius:10px">
+            <div style="font-size:11.5px;font-weight:700;color:#92400E;margin-bottom:10px;display:flex;align-items:center;gap:6px">
+              ↩️ Brought Forward Capital Losses (B/F C/F Losses)
+              <span style="font-size:10px;font-weight:500;color:#B45309;background:#FEF3C7;padding:2px 7px;border-radius:99px">Set-off u/s 74</span>
+            </div>
+            <div class="row2">
+              <div class="field">
+                <label>B/F Short-Term Capital Loss (STCL)</label>
+                <input type="number" id="bf_stcl" placeholder="0" min="0"/>
+                <p class="hint">Enter as positive. Can be set off against any STCG or LTCG.</p>
+              </div>
+              <div class="field">
+                <label>B/F Long-Term Capital Loss (LTCL)</label>
+                <input type="number" id="bf_ltcl" placeholder="0" min="0"/>
+                <p class="hint">Enter as positive. Can only be set off against LTCG.</p>
+              </div>
+            </div>
+          </div>
+
           <div class="section-title">📦 5. Income from Other Sources</div>
           <div class="row2">
             <div class="field">
@@ -3143,6 +3162,10 @@ function onAssesseeTypeChange() {
     dc.style.pointerEvents = currentRegime === 'new' ? 'none' : 'auto';
   }
 
+  // ── B/F Capital Loss fields — only for individuals / HUF / AOP (not co/firm/coop/local) ──
+  const bfLossEl = document.getElementById('bfLossSection');
+  if (bfLossEl) bfLossEl.style.display = (isInd) ? 'block' : 'none';
+
   // ── MAT / AMT card ───────────────────────────────────────────────
   const matCard = document.getElementById('matAmtCard');
   if (ac.canMat) {
@@ -3692,6 +3715,8 @@ function computeForRegime(isNew) {
   let stcg111aPreJuly=0, ltcg112aPreJuly=0, ltcgOtherPreJuly=0;
   let ltcg112aPreJulyExemptAmt=0;
   let otherIncome=0, winnings=0;
+  // B/F Capital Losses — Issue 1 fix: new inputs read here
+  let bf_stcl=0, bf_ltcl=0;
 
   if (isInd) {
     grossSalary  = v('grossSalary');
@@ -3716,6 +3741,9 @@ function computeForRegime(isNew) {
     }
     otherIncome  = v('otherIncome');
     winnings     = v('winningsIncome');
+    // Issue 1 fix: read B/F carry-forward losses (always positive from user)
+    bf_stcl      = Math.max(0, v('bf_stcl'));
+    bf_ltcl      = Math.max(0, v('bf_ltcl'));
 
   } else if (isCo) {
     businessIncome= v('co_businessIncome');
@@ -3852,16 +3880,82 @@ function computeForRegime(isNew) {
   }
   normalTax = Math.max(0, normalTax - rebate87a);
 
-  const taxSTCG111A = stcg111a * c.stcg111aRate;
+  // ── Issue 2 fix: Guard negative CG inputs — user shouldn't enter negative here ──
+  // Current-year losses (entered as negative by user) are floored to 0.
+  // Losses are entered separately via B/F fields.
+  stcg111a  = Math.max(0, stcg111a);
+  stcgOther = Math.max(0, stcgOther);
+  ltcg112a  = Math.max(0, ltcg112a);
+  ltcgOther = Math.max(0, ltcgOther);
+  if (isTrans) {
+    stcg111aPreJuly  = Math.max(0, stcg111aPreJuly);
+    ltcg112aPreJuly  = Math.max(0, ltcg112aPreJuly);
+    ltcgOtherPreJuly = Math.max(0, ltcgOtherPreJuly);
+  }
+
+  // ── Issue 1 fix: B/F Loss Set-off u/s 74 ──
+  // Rule: STCL c/f can be set off against ANY capital gain (STCG or LTCG).
+  //       LTCL c/f can ONLY be set off against LTCG.
+  // We apply set-off in the most tax-efficient order:
+  //   Step 1: Use B/F STCL against LTCG 112A first (highest-rate savings), then LTCG Other, then STCG 111A.
+  //   Step 2: Use B/F LTCL against remaining LTCG 112A, then LTCG Other.
+  // Gains are floored at 0 — losses cannot create negative taxable income under this head.
+  let stcl_remaining = bf_stcl;
+  let ltcl_remaining = bf_ltcl;
+
+  // STCL set-off: absorb into LTCG 112A first (reduces special-rate tax)
+  const stcl_vs_ltcg112a = Math.min(stcl_remaining, ltcg112a);
+  ltcg112a      -= stcl_vs_ltcg112a;
+  stcl_remaining -= stcl_vs_ltcg112a;
+  // Then into LTCG Other
+  const stcl_vs_ltcgOther = Math.min(stcl_remaining, ltcgOther);
+  ltcgOther      -= stcl_vs_ltcgOther;
+  stcl_remaining  -= stcl_vs_ltcgOther;
+  // Then into LTCG Other (Pre-July if transitional)
+  if (isTrans) {
+    const stcl_vs_ltcgOtherPJ = Math.min(stcl_remaining, ltcgOtherPreJuly);
+    ltcgOtherPreJuly -= stcl_vs_ltcgOtherPJ;
+    stcl_remaining   -= stcl_vs_ltcgOtherPJ;
+    const stcl_vs_ltcg112aPJ = Math.min(stcl_remaining, ltcg112aPreJuly);
+    ltcg112aPreJuly -= stcl_vs_ltcg112aPJ;
+    stcl_remaining  -= stcl_vs_ltcg112aPJ;
+  }
+  // Finally into STCG 111A
+  const stcl_vs_stcg111a = Math.min(stcl_remaining, stcg111a);
+  stcg111a       -= stcl_vs_stcg111a;
+  stcl_remaining  -= stcl_vs_stcg111a;
+
+  // LTCL set-off: only against LTCG
+  const ltcl_vs_ltcg112a = Math.min(ltcl_remaining, ltcg112a);
+  ltcg112a       -= ltcl_vs_ltcg112a;
+  ltcl_remaining  -= ltcl_vs_ltcg112a;
+  const ltcl_vs_ltcgOther = Math.min(ltcl_remaining, ltcgOther);
+  ltcgOther      -= ltcl_vs_ltcgOther;
+  ltcl_remaining  -= ltcl_vs_ltcgOther;
+  if (isTrans) {
+    const ltcl_vs_ltcgOtherPJ = Math.min(ltcl_remaining, ltcgOtherPreJuly);
+    ltcgOtherPreJuly -= ltcl_vs_ltcgOtherPJ;
+    ltcl_remaining   -= ltcl_vs_ltcgOtherPJ;
+    const ltcl_vs_ltcg112aPJ = Math.min(ltcl_remaining, ltcg112aPreJuly);
+    ltcg112aPreJuly -= ltcl_vs_ltcg112aPJ;
+    ltcl_remaining  -= ltcl_vs_ltcg112aPJ;
+  }
+  // Store how much B/F loss was actually utilised and remaining c/f
+  const bf_stcl_utilised = bf_stcl - stcl_remaining;
+  const bf_ltcl_utilised = bf_ltcl - ltcl_remaining;
+  const bf_stcl_cf = stcl_remaining;   // still to be carried forward
+  const bf_ltcl_cf = ltcl_remaining;
+
+  const taxSTCG111A = Math.max(0, stcg111a) * c.stcg111aRate;
   const taxLTCG112A = Math.max(0, ltcg112a - c.ltcg112aExempt) * c.ltcg112aRate;
-  const taxLTCGOther= ltcgOther * c.ltcgOtherRate;
+  const taxLTCGOther= Math.max(0, ltcgOther) * c.ltcgOtherRate;
   const taxWinnings = winnings * 0.30;
 
   let taxSTCG111APreJuly=0, taxLTCG112APreJuly=0, taxLTCGOtherPreJuly=0;
   if (isTrans) {
-    taxSTCG111APreJuly = stcg111aPreJuly * (c.stcg111aRateOld||0.15);
+    taxSTCG111APreJuly = Math.max(0, stcg111aPreJuly) * (c.stcg111aRateOld||0.15);
     taxLTCG112APreJuly = Math.max(0, ltcg112aPreJuly - ltcg112aPreJulyExemptAmt) * (c.ltcg112aRateOld||0.10);
-    taxLTCGOtherPreJuly= ltcgOtherPreJuly * (c.ltcgOtherRateOld||0.20);
+    taxLTCGOtherPreJuly= Math.max(0, ltcgOtherPreJuly) * (c.ltcgOtherRateOld||0.20);
   }
 
   const totalSpecialTax = taxSTCG111A + taxLTCG112A + taxLTCGOther + taxWinnings +
@@ -3898,6 +3992,7 @@ function computeForRegime(isNew) {
     stcg111a, stcgOther, ltcg112a, ltcg112aExemptAmt, ltcgOther,
     stcg111aPreJuly, ltcg112aPreJuly, ltcg112aPreJulyExemptAmt, ltcgOtherPreJuly,
     otherIncome, winnings,
+    bf_stcl, bf_ltcl, bf_stcl_utilised, bf_ltcl_utilised, bf_stcl_cf, bf_ltcl_cf,
     normalIncome:normalAfterLoss, totalDeductions, normalTaxable,
     slabResult,
     normalTax: normalTax + rebate87a, rebate87a,
@@ -3933,9 +4028,14 @@ function renderResult(r) {
   if (r.houseLossCapped < 0) h += row('Loss set-off (max ₹2L)', fmt(r.houseLossCapped), 'sub');
   h += row('Business Income (Head 3)', fmt(r.businessIncome));
 
-  if (r.stcg111a || r.stcgOther || r.ltcg112a || r.ltcgOther || r.stcg111aPreJuly || r.ltcg112aPreJuly || r.ltcgOtherPreJuly) {
-    const totalCG = r.stcg111a + r.stcgOther + r.ltcg112a + r.ltcgOther + r.stcg111aPreJuly + r.ltcg112aPreJuly + r.ltcgOtherPreJuly;
-    h += row('Capital Gains (Head 4)', fmt(totalCG));
+  // Determine whether any CG or BF loss exists
+  const _hasCG = r.stcg111a || r.stcgOther || r.ltcg112a || r.ltcgOther ||
+                 r.stcg111aPreJuly || r.ltcg112aPreJuly || r.ltcgOtherPreJuly ||
+                 r.bf_stcl || r.bf_ltcl;
+  if (_hasCG) {
+    const totalCG = r.stcg111a + r.stcgOther + r.ltcg112a + r.ltcgOther +
+                    r.stcg111aPreJuly + r.ltcg112aPreJuly + r.ltcgOtherPreJuly;
+    h += row('Capital Gains (Head 4) — Net after B/F set-off', fmt(totalCG));
   }
   if (r.isTrans && (r.stcg111aPreJuly || r.ltcg112aPreJuly || r.ltcgOtherPreJuly)) {
     if (r.stcg111aPreJuly) h += row('STCG 111A pre-July @ '+(c.stcg111aRateOld*100)+'%', fmt(r.stcg111aPreJuly), 'sub');
@@ -3946,6 +4046,11 @@ function renderResult(r) {
   if (r.stcgOther) h += row('STCG — Other (slab rate)', fmt(r.stcgOther), 'sub');
   if (r.ltcg112a) h += row((r.isTrans?'LTCG 112A post-July':'LTCG u/s 112A')+' (exempt ₹'+(c.ltcg112aExempt/100000)+'L)', fmt(r.ltcg112a), 'sub');
   if (r.ltcgOther) h += row((r.isTrans?'LTCG Other post-July':'LTCG — Other')+' @ '+c.ltcgOtherLabel, fmt(r.ltcgOther), 'sub');
+  // B/F loss set-off display rows
+  if (r.bf_stcl_utilised > 0) h += row('Less: B/F STCL set off u/s 74', fmt(-r.bf_stcl_utilised), 'sub');
+  if (r.bf_ltcl_utilised > 0) h += row('Less: B/F LTCL set off u/s 74', fmt(-r.bf_ltcl_utilised), 'sub');
+  if (r.bf_stcl_cf > 0) h += row('B/F STCL still to carry forward', fmt(r.bf_stcl_cf), 'sub');
+  if (r.bf_ltcl_cf > 0) h += row('B/F LTCL still to carry forward', fmt(r.bf_ltcl_cf), 'sub');
 
   h += row('Other Sources (Head 5)', fmt(r.otherIncome + r.winnings));
   if (r.winnings) h += row('Winnings @ 30%', fmt(r.winnings), 'sub');
