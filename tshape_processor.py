@@ -204,12 +204,19 @@ def parse_tshape_bs(filepath: str) -> dict:
     _scan_bs_totals(rows, bs_header_row, liab_amount_col, asset_amount_col, result, log)
 
     # ── Pass 2: detect entity type ────────────────────────────────────────────
-    full_text = ' '.join(_s(v) for row in rows for v in row if v)
     el = entity_name.lower()
     if 'huf' in el or '(huf)' in el or 'hindu' in el:
         result['entity_type'] = 'huf'
-    elif 'PARTNER' in full_text.upper():
-        result['entity_type'] = 'partnership'
+    else:
+        # Detect partnership only when "PARTNER'S CAPITAL" or "PARTNER CAPITAL" appears
+        # in col 0 (liabilities side) — NOT from "Partner" in the CA signing block.
+        # The full-text scan is too broad: CA firms sign as "Partner" even for proprietors.
+        for row in rows:
+            col0 = _s(row[0]).upper()
+            if ("PARTNER'S CAPITAL" in col0 or "PARTNER CAPITAL" in col0 or
+                    "PARTNERS CAPITAL" in col0):
+                result['entity_type'] = 'partnership'
+                break
 
     # ── Pass 3: extract capital accounts ─────────────────────────────────────
     _extract_capital(rows, result, log)
@@ -1160,11 +1167,17 @@ def _extract_capital_annexure(rows, result, log):
             lbl27 = _s(row[27]).upper() if 27 < len(row) else ''
             combined_lbl = lbl25 + ' ' + lbl26 + ' ' + lbl27
 
-            if 'LAST BALANCE' in combined_lbl or 'OPENING BALANCE' in combined_lbl or \
-               ('BALANCE' in combined_lbl and ('01.04' in combined_lbl or 'AS ON' in combined_lbl)):
-                v31 = _n(row[31]) if 31 < len(row) else 0
-                if v31 > 0:
-                    sachi_opening = v31
+            # Opening: match "Last Balance" or "Opening Balance" or "Balance as on 01.04..."
+            # IMPORTANT: 'AS ON' alone is too broad — it also matches the CLOSING row
+            # ("Closing balance as on 31.03.YYYY"). Only match if '01.04' is present
+            # (April 1 = start of financial year) OR the explicit 'LAST BALANCE'/'OPENING BALANCE' phrase.
+            # Also: do NOT overwrite sachi_opening once it's been set (first-hit wins).
+            if sachi_opening == 0:  # only set once
+                if 'LAST BALANCE' in combined_lbl or 'OPENING BALANCE' in combined_lbl or \
+                   ('BALANCE' in combined_lbl and '01.04' in combined_lbl):
+                    v31 = _n(row[31]) if 31 < len(row) else 0
+                    if v31 > 0:
+                        sachi_opening = v31
 
             if ('ADD PROFIT' in combined_lbl or 'ADD: PROFIT' in combined_lbl or
                 'PROFIT DURING' in combined_lbl or 'NET PROFIT' in combined_lbl):
@@ -1226,8 +1239,11 @@ def _extract_capital_annexure(rows, result, log):
             if isinstance(v42, (int, float)) and v42 > 0:
                 additions_cash += v42
 
-    # FIX 2c: Prefer Sachidanand-style values if found and col44 path failed
-    if sachi_found and sachi_opening > 0 and not (opening > 0 and last_col44 > 0):
+    # FIX 2c: Always prefer Sachidanand-style values when sachi_found=True.
+    # The col44 path often picks up wrong values for Sachidanand-style XLS
+    # (e.g. the closing row matches the 'AS ON' condition and overwrites opening).
+    # Sachi scan reads each movement row individually — more reliable.
+    if sachi_found and sachi_opening > 0:
         opening = sachi_opening
         last_col44 = sachi_withdrawals
         found_opening = True
@@ -1358,15 +1374,29 @@ def _extract_pl(rows, result, log):
                             if result['closing_stock'] == 0:
                                 result['closing_stock'] = amt
                         elif field in ('sales', '_sale_line'):
-                            result['sales'] += amt
+                            # Use first-hit-wins: 'By Sales GST 5%' row finds the TOTAL
+                            # via the multi-row max scan. Don't add again for GST5% Central.
+                            if result['sales'] == 0:
+                                result['sales'] = amt
                         elif field == '_purchase_line':
                             result['purchases'] += amt
                         elif field == 'opening_stock':
                             if result['opening_stock'] == 0:
                                 result['opening_stock'] = amt
                         elif field == 'purchases':
+                            # Accumulate purchase lines (GST5% + GST5% Central).
+                            # For Ashok/Gupta format the single 'To Purchase' row has the total.
+                            # For Sachidanand-style, purchases are split into two rows.
+                            # Use max(existing, new) to prefer the larger (= total) line,
+                            # then accumulate if it looks like a new independent purchase line.
                             if result['purchases'] == 0:
                                 result['purchases'] = amt
+                            elif amt > result['purchases'] * 1.5:
+                                # Much larger: likely the running total, replace
+                                result['purchases'] = amt
+                            elif amt > result['purchases'] * 0.1:
+                                # Similar scale: likely a second purchase category, add
+                                result['purchases'] += amt
                         elif field == 'gross_profit':
                             if result['gross_profit'] == 0:
                                 result['gross_profit'] = amt
@@ -1726,6 +1756,7 @@ def inject_into_template(parsed: dict, template_path: str, output_path: str,
     _inject_fixed_assets_cy_opening(wb, parsed, log)
     _inject_gross_profit_sheet(wb, parsed, client_name, cy_year, py_year, log)
     _update_headers(wb, client_name, cy_year, py_year)
+    _clear_ref_errors(wb, log)
 
     wb.save(output_path)
     log.append(f"Saved: {output_path}")
@@ -1871,6 +1902,24 @@ def _inject_capital_sheet(wb, parsed, client_name, cy_year, py_year, log):
         log.append(f'Capital sheet: PY rows written for {len(caps)} capital account(s)')
     else:
         log.append('Capital sheet: 1 account — Block 2 left as template default')
+
+    # FIX: Replace stale signing names in the capital sheet.
+    # Some templates have old CA/Proprietor names hardcoded (e.g. from a previous client).
+    # Scan all cells for known-stale placeholder patterns and replace with actual names.
+    prop_name = caps[0].get('name', '') if caps else ''
+    _STALE_PROP_NAMES = {'(DIMPAL JAIN)', 'DIMPAL JAIN', '(ASHWANI KUMAR)', 'PROP.'}
+    _STALE_CA_NAMES   = {'(Pushkal Soni)', 'PUSHKAL SONI', '(ARUN GUPTA)'}
+    from openpyxl.cell import MergedCell as _MC
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell, _MC) or not isinstance(cell.value, str):
+                continue
+            v = cell.value.strip()
+            if v.upper() in {n.upper() for n in _STALE_PROP_NAMES}:
+                # Replace old proprietor placeholder with actual name
+                if prop_name:
+                    cell.value = prop_name
+            # Don't auto-replace CA names — those should come from the template
 
 
 # ── Notes to BS ────────────────────────────────────────────────────────────────
@@ -2426,6 +2475,18 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
     PY = 5   # col E
     CY = 4   # col D
 
+    # FIX: Clear any #REF! formula cells in the sheet (broken cross-references from old templates).
+    # These appear in col F and other columns as ='notes to bs'!#REF! etc.
+    # We clear them to 0 so they don't show ugly #REF! errors in the output.
+    from openpyxl.cell import MergedCell as _MC2
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell, _MC2):
+                continue
+            if isinstance(cell.value, str) and '#REF!' in cell.value:
+                cell.value = None  # clear the broken formula
+    log.append('Details sheet: cleared #REF! formula cells')
+
     # ── Unsecured loan related parties (R7-R12, 6 slots) ─────────────────────
     # T-shaped BS parser mixes OCL items and debtor names into unsecured_loan_parties.
     # Strategy: filter, deduplicate by normalized name, then sort by amount desc
@@ -2688,6 +2749,33 @@ _FA_ROW_MAP = {
 }
 
 
+def _build_fa_row_map_from_sheet(ws):
+    """
+    Auto-detect asset row positions by scanning col A of the FA P.Yr. sheet.
+    Returns dict: asset_name_lower -> row_number (1-indexed openpyxl).
+    Falls back to _FA_ROW_MAP constants if detection fails.
+    """
+    detected = {}
+    for row in ws.iter_rows():
+        cell_a = row[0]
+        if cell_a.value is None:
+            continue
+        name = str(cell_a.value).strip().lower()
+        if not name or name in ('particulars', 'total', 'plant & machinery',
+                                'vehciles', 'vehicles', 'furniture and fixtures',
+                                'furniture & fixtures', 'computers', 'building',
+                                'land', 'detail of fixed assets', 'amount in rs.'):
+            continue
+        # Skip header/section rows (no numeric data in cols B-I)
+        has_data = any(
+            isinstance(row[c].value, (int, float))
+            for c in range(1, min(9, len(row)))
+        )
+        if has_data:
+            detected[name] = cell_a.row
+    return detected if detected else {}
+
+
 def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
     if 'Fixed Assets P. Yr.' not in wb.sheetnames:
         return
@@ -2701,10 +2789,22 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
     # F(6)=TOTAL formula, H(8)=DEP formula, I(9)=WDV formula — DO NOT WRITE
     written_rows = set()
 
+    # Auto-detect row positions from template (handles both old R37 and compact R15 layouts)
+    detected_map = _build_fa_row_map_from_sheet(ws)
+    log.append(f"FA P.Yr. detected rows: {detected_map}")
+
     for item in items:
         nm_lower = item['name'].strip().lower()
-        # Try exact match, then partial
-        r = _FA_ROW_MAP.get(nm_lower)
+        # Try auto-detected map first (exact, then partial)
+        r = detected_map.get(nm_lower)
+        if r is None:
+            for key, row in detected_map.items():
+                if key in nm_lower or nm_lower in key:
+                    r = row
+                    break
+        # Fall back to hard-coded map if detection failed
+        if r is None:
+            r = _FA_ROW_MAP.get(nm_lower)
         if r is None:
             for key, row in _FA_ROW_MAP.items():
                 if key in nm_lower or nm_lower in key:
@@ -2755,17 +2855,27 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
     total_dep = sum(round((round(it.get('opening_wdv',0)) + round(it.get('additions',0)) - round(it.get('sales',0))) * (it.get('rate',0) or 0) / 100) for it in items)
     total_wdv = total_f - total_dep
 
-    # Write Total row at R37 (template fixed row) and also at R15 if that exists as Total
+    # Write Total row at R37 (old template) and also at R15 if that exists as Total.
+    # IMPORTANT: Only write INPUT columns (B,C,D,E = opening/add/add/sales).
+    # DO NOT write F,G,H,I — those have SUM formulas in compact templates and
+    # overwriting them breaks the formula chain. The formulas will auto-sum correctly.
     for total_row in [37, 15]:
         cell_a = ws.cell(total_row, 1).value
         if cell_a is not None and 'TOTAL' in str(cell_a).upper():
-            _write_num(ws, total_row, 2, round(total_opening))
-            _write_num(ws, total_row, 3, round(total_additions))
-            _write_num(ws, total_row, 4, 0)
-            _write_num(ws, total_row, 5, round(total_sales))
-            _write_num(ws, total_row, 6, total_f)
-            _write_num(ws, total_row, 8, total_dep)
-            _write_num(ws, total_row, 9, total_wdv)
+            _write_num(ws, total_row, 2, round(total_opening))   # B: total opening
+            _write_num(ws, total_row, 3, round(total_additions))  # C: total add>180
+            # D,E,F,G,H,I: DO NOT write — preserve SUM formulas in compact templates
+            # For old templates (R37) these were hardcoded; for compact (R15) they are formulas.
+            # Check if F(col6) is a formula — if so skip; if plain value, write it.
+            f_cell = ws.cell(total_row, 6)
+            if not (isinstance(f_cell.value, str) and f_cell.value.startswith('=')):
+                _write_num(ws, total_row, 6, total_f)            # F: total (only if not formula)
+            h_cell = ws.cell(total_row, 8)
+            if not (isinstance(h_cell.value, str) and h_cell.value.startswith('=')):
+                _write_num(ws, total_row, 8, total_dep)           # H: total dep (only if not formula)
+            i_cell = ws.cell(total_row, 9)
+            if not (isinstance(i_cell.value, str) and i_cell.value.startswith('=')):
+                _write_num(ws, total_row, 9, total_wdv)           # I: total WDV (only if not formula)
             log.append(f"FA P.Yr. Total row R{total_row}: WDV={total_wdv}")
 
     log.append(f'Fixed Assets P.Yr.: {len(items)} items processed ({len(written_rows)} rows written)')
@@ -2809,12 +2919,10 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
 
     import math
 
-    # Mapping: asset name (lower) → FA C.Yr. row
-    # Plant & Machinery items occupy rows 11-21 in C.Yr. sheet
-    # Vehicles: Car=R24, Motor Cycle & Scooter=R25
-    # Furniture & Fixtures: Furniture & Fixture=R36
-    # Computer: R47
-    # Building: R60
+    # Auto-detect asset row positions from the C.Yr. sheet by scanning col A.
+    # This handles both old (many rows) and compact (few rows) templates.
+    # Rows that have formula =('Fixed Assets P. Yr.'!A..) in col A are asset rows.
+    # Also scan for rows that already have asset names written (formula or literal).
     _FA_CY_ROW_MAP = {
         'camera & dvr':              11,
         'digital moisture meter':    12,
@@ -2840,16 +2948,45 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
         'building':                  60,
     }
 
+    # Build auto-detected map from the sheet's formula references
+    # Formula cells like ='Fixed Assets P. Yr.'!A11 tell us which row this is
+    detected_cy_map = {}
+    for row in ws.iter_rows():
+        cell_a = row[0]
+        v = cell_a.value
+        if v is None:
+            continue
+        if isinstance(v, str) and "'Fixed Assets P. Yr.'!A" in v:
+            # Extract the P.Yr row number from the formula
+            try:
+                py_row_ref = int(v.split("!A")[1])
+                # Now look up what asset is at that row in P.Yr
+                py_ws = wb.get('Fixed Assets P. Yr.') or wb.get('Fixed Assets P. Yr.')
+                if py_ws:
+                    py_cell_a = py_ws.cell(py_row_ref, 1).value
+                    if py_cell_a and isinstance(py_cell_a, str):
+                        detected_cy_map[py_cell_a.strip().lower()] = cell_a.row
+            except (ValueError, IndexError):
+                pass
+
+    if detected_cy_map:
+        log.append(f"FA C.Yr. auto-detected rows: {detected_cy_map}")
+
     count = 0
     written_cy_rows = set()
     for item in items:
         name_lower = item['name'].strip().lower()
-        # Find matching row (prefix match)
+        # Find matching row — try auto-detected map first, then fall back to hard-coded
         r = None
-        for key, row_r in _FA_CY_ROW_MAP.items():
+        for key, row_r in detected_cy_map.items():
             if name_lower.startswith(key) or key.startswith(name_lower):
                 r = row_r
                 break
+        if r is None:
+            for key, row_r in _FA_CY_ROW_MAP.items():
+                if name_lower.startswith(key) or key.startswith(name_lower):
+                    r = row_r
+                    break
         if r is None:
             continue
 
@@ -2868,7 +3005,8 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
             written_cy_rows.add(r)
             count += 1
 
-    # FIX 7b: Write CY Total row at R17 if it's labeled Total
+    # FIX 7b: Write CY Total row at R17 if it's labeled Total.
+    # Only write col B (opening WDV total) if it's not a formula cell.
     cy_total_opening = sum(
         round(it.get('opening_wdv',0) + it.get('additions',0) - it.get('sales',0)) -
         round((it.get('opening_wdv',0) + it.get('additions',0) - it.get('sales',0)) * (it.get('rate',0) or 0) / 100)
@@ -2877,8 +3015,12 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
     for total_row in [17, 15]:
         cell_a = ws.cell(total_row, 1).value
         if cell_a is not None and 'TOTAL' in str(cell_a).upper():
-            ws.cell(total_row, 2).value = cy_total_opening
-            log.append(f"FA C.Yr. Total row R{total_row}: opening WDV={cy_total_opening}")
+            b_cell = ws.cell(total_row, 2)
+            if not (isinstance(b_cell.value, str) and b_cell.value.startswith('=')):
+                b_cell.value = cy_total_opening
+                log.append(f"FA C.Yr. Total row R{total_row}: opening WDV={cy_total_opening}")
+            else:
+                log.append(f"FA C.Yr. Total row R{total_row}: col B is formula, not overwriting")
             break
 
     log.append(f"Fixed Assets C.Yr.: {count} opening WDV values written")
@@ -2937,6 +3079,27 @@ def _inject_gross_profit_sheet(wb, parsed, client_name, cy_year, py_year, log):
 
 
 # ── Update headers ─────────────────────────────────────────────────────────────
+
+def _clear_ref_errors(wb, log):
+    """
+    Clear all #REF! broken formula cells across all sheets.
+    These arise from template cross-references to deleted/renamed ranges
+    (e.g. PPE rows 33-42, Details col F, GROSS PROFIT col C).
+    Clearing them to None removes the ugly #REF! display in Excel.
+    """
+    from openpyxl.cell import MergedCell as _MCR
+    count = 0
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell, _MCR):
+                    continue
+                if isinstance(cell.value, str) and '#REF!' in cell.value:
+                    cell.value = None
+                    count += 1
+    if count:
+        log.append(f'Cleared {count} #REF! formula cells across all sheets')
+
 
 def _update_headers(wb, client_name, cy_year, py_year):
     """Replace M/S XYZ CO., year references, and accounting policy text."""
