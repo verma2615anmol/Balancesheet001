@@ -227,6 +227,7 @@ def parse_tshape_bs(filepath: str) -> dict:
     # ── Pass 5: extract P&L ───────────────────────────────────────────────────
     _extract_capital_annexure(rows, result, log)
     _extract_ocl_annexure(rows, result, log)
+    _extract_unsecured_annexure_b(rows, result, log)  # Pass 5d: Annexure-B unsecured loans (FIX S10)
     _extract_debtor_annexure(rows, result, log)
     _extract_creditor_annexure(rows, result, log)   # Pass 5b: Annexure-C creditors
     _extract_loans_annexure(rows, result, log)       # Pass 5c: Annexure-G loans
@@ -1070,8 +1071,13 @@ def _extract_ocl_annexure(rows, result, log):
     name_col = None
     amt_col  = None
     other_pay_total = result.get('other_payables', 0)
-    _OCL_NAME_KEYS = ('payable', 'tds', 'gst', 'provision', 'salary',
-                      'accrued', 'outstanding', 'due to', 'liability', 'advance from')
+    # FIX S10: Only genuinely-payable items qualify as OCL.
+    # 'gst' alone is too broad — trade creditors with GST in name would bleed in.
+    # 'ch.issued', 'cheque issued', 'but yet clear' are also OCL items.
+    _OCL_NAME_KEYS = ('payable', 'tds', 'provision', 'salary',
+                      'accrued', 'outstanding', 'due to', 'liability',
+                      'advance from', 'ch.issued', 'cheque issued', 'yet clear',
+                      'charges payable', 'fees payable')
 
     for i, row in enumerate(rows):
         rs = ' '.join(_s(v).upper() for v in row if v is not None)
@@ -1112,6 +1118,13 @@ def _extract_ocl_annexure(rows, result, log):
         amt = row[amt_col] if amt_col < len(row) else None
         if nm and len(nm) > 2 and isinstance(amt, (int, float)) and amt > 0:
             nm_lower = nm.lower()
+            # FIX S10: Reject trade creditor names (M/s. company names)
+            _TRADE_REJECT = ('m/s', 'pvt', 'ltd', 'textile', 'fabrics', 'fashion',
+                             'silk', 'creation', 'impex', 'enterprises', 'house',
+                             'communication', 'print', 'embroidery', 'stores',
+                             'industries', 'international', 'sons', 'bros')
+            if any(tr in nm_lower for tr in _TRADE_REJECT):
+                continue  # skip trade company names — they belong in creditors not OCL
             if any(kw in nm_lower for kw in _OCL_NAME_KEYS):
                 items.append({'name': nm, 'amount': amt})
 
@@ -1124,6 +1137,136 @@ def _extract_ocl_annexure(rows, result, log):
             result['other_payable_items'] = new_items
             log.append(f"OCL annexure: {len(new_items)} items extracted "
                        f"({[it['name'] for it in new_items]})")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Pass 4d — Unsecured Loan Annexure-B direct extraction  (FIX S10)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _extract_unsecured_annexure_b(rows, result, log):
+    """
+    Directly extract UNSECURED LOAN (Annexure-B) lender parties.
+
+    The _extract_annexure_parties() section-assignment logic often fails for
+    Sachidanand-style layouts because:
+      - Lender names (Rohit Vig, Smt.Santosh Rani…) appear at the same
+        col-pair (25/26, 31) as the creditor B/F continuation block.
+      - Depending on row ordering, they get mis-assigned to 'creditor'.
+
+    This function scans directly between the ANNEXURE-B header and the next
+    section header (OTHER PAYABLE / SUNDRY CREDITOR / ANNEXURE-C / ANNEXURE-D),
+    collecting person names and amounts.
+
+    Layout (Sachidanand, 0-based cols):
+      Header row: contains 'UNSECURED LOAN' + 'ANNEXURE-B'
+      Name col: detected dynamically (first text col with a person name)
+      Amt col:  first numeric col after name col
+
+    Applies to GD Singla T-shaped XLS only; no-ops if unsecured_loan_parties
+    already has parties whose sum matches the BS total.
+    """
+    bs_total = result.get('unsecured_loans', 0)
+    existing = result.get('unsecured_loan_parties', [])
+    if existing:
+        existing_sum = sum(p['amount'] for p in existing)
+        if bs_total > 0 and abs(existing_sum - bs_total) / bs_total < 0.05:
+            return  # already accurate
+
+    _STOP_HEADERS = ('SUNDRY CREDITOR', 'ANNEXURE-C', 'ANNEXURE-D', 'OTHER PAYABLE',
+                     'SUNDRY DEBTOR', 'CASH & BANK', 'FIXED ASSET')
+    _SKIP_NAMES = {'PARTICULARS', 'TOTAL', 'SUB TOTAL', 'ANNEXURE', 'NIL',
+                   'UNSECURED LOAN', 'FROM RELATED', 'FROM OTHER'}
+
+    in_section = False
+    name_col = None
+    amt_col  = None
+    items = []
+    found_total = 0.0
+
+    for i, row in enumerate(rows):
+        rs = ' '.join(_s(v).upper() for v in row if v is not None)
+
+        if not in_section:
+            if ('UNSECURED LOAN' in rs or 'UN-SECURED LOAN' in rs) and \
+               ('ANNEXURE-B' in rs or "'B'" in rs):
+                in_section = True
+                continue
+            continue
+
+        # Stop at next section
+        if any(kw in rs for kw in _STOP_HEADERS):
+            break
+
+        # Detect name_col + amt_col from first real name row
+        if name_col is None:
+            for ci, v in enumerate(row):
+                sv = _s(v).strip()
+                if not sv or len(sv) < 3:
+                    continue
+                svu = sv.upper()
+                if svu in _SKIP_NAMES or svu.startswith('ANNEXURE'):
+                    continue
+                # Must look like a person/firm name (not a number, not a label)
+                try:
+                    float(sv.replace(',', ''))
+                    continue  # skip numbers
+                except ValueError:
+                    pass
+                # Try to find amount col nearby
+                for ac in range(ci + 1, min(ci + 10, len(row))):
+                    av = row[ac]
+                    if isinstance(av, (int, float)) and not (isinstance(av, float) and math.isnan(av)) and av > 1000:
+                        name_col = ci
+                        amt_col = ac
+                        break
+                if name_col is not None:
+                    break
+            if name_col is None:
+                continue
+
+        # Read name + amount
+        nm_cell = _s(row[name_col]).strip() if name_col < len(row) else ''
+        amt_cell = row[amt_col] if amt_col < len(row) else None
+
+        nmu = nm_cell.upper()
+        if not nm_cell or nmu in _SKIP_NAMES or nmu.startswith('ANNEXURE'):
+            continue
+        try:
+            float(nm_cell.replace(',', ''))
+            continue  # numeric name = skip
+        except ValueError:
+            pass
+
+        # Check for TOTAL row
+        if nmu == 'TOTAL' or nmu.startswith('TOTAL'):
+            if isinstance(amt_cell, (int, float)) and amt_cell > 0:
+                found_total = float(amt_cell)
+            break
+
+        if not isinstance(amt_cell, (int, float)) or \
+           (isinstance(amt_cell, float) and math.isnan(amt_cell)) or \
+           amt_cell <= 0:
+            continue
+
+        items.append({'name': nm_cell, 'amount': float(amt_cell)})
+
+    if not items:
+        return
+
+    calc = sum(x['amount'] for x in items)
+    log.append(f"Unsecured Annexure-B: {len(items)} parties, total={calc:,.2f} "
+               f"(BS={bs_total:,.2f})")
+
+    # Accept if matches BS total (within 2%) or if we have a found_total match
+    if bs_total > 0 and abs(calc - bs_total) / bs_total > 0.10 and \
+       (found_total == 0 or abs(calc - found_total) / max(found_total, 1) > 0.10):
+        log.append("Unsecured Annexure-B: sum mismatch > 10%, keeping existing parties")
+        return
+
+    result['unsecured_loan_parties'] = items
+    if not result.get('unsecured_loans') or result['unsecured_loans'] == 0:
+        result['unsecured_loans'] = calc
+    log.append(f"Unsecured Annexure-B: written {len(items)} parties")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1193,10 +1336,10 @@ def _extract_capital_annexure(rows, result, log):
                     additions_cash = v31
 
             if 'WITHDRAWAL' in combined_lbl or 'DRAWING' in combined_lbl or \
-               ('LESS' in combined_lbl and sachi_opening > 0):
+               ('LESS' in combined_lbl and sachi_opening > 0 and 'CLOSING' not in combined_lbl):
                 v31 = _n(row[31]) if 31 < len(row) else 0
                 if v31 > 0:
-                    sachi_withdrawals = v31
+                    sachi_withdrawals = v31  # subtotal row amount
 
             if 'CLOSING' in combined_lbl and 'BALANCE' in combined_lbl and sachi_opening > 0:
                 v31 = _n(row[31]) if 31 < len(row) else 0
@@ -1243,6 +1386,48 @@ def _extract_capital_annexure(rows, result, log):
 
     # FIX 2c: Prefer Sachidanand-style values if found and col44 path failed
     if sachi_found and sachi_opening > 0 and not (opening > 0 and last_col44 > 0):
+        # FIX 1 (S10): Also scan for individual withdrawal sub-items.
+        # In Sachidanand layout "Less Withdrawals 446,405" is the main item,
+        # then sub-items like "Mediuclaim 43,749" appear on the next rows at col25/31.
+        # The TOTAL withdrawals = subtotal row + all named sub-items below it.
+        # Strategy: after we find the "WITHDRAWAL" row, scan forward rows where:
+        #   - col31 has a positive number
+        #   - col25/26 has a name (not a section header like CLOSING/UNSECURED/OTHER)
+        #   - no new section header has appeared
+        # Sum these sub-items into sachi_withdrawals.
+        _in_with_section = False
+        _with_sub_total = 0.0
+        _WITH_STOP_KEYS = ('CLOSING', 'UNSECURED', 'OTHER PAYABLE', 'SUNDRY',
+                           'FIXED ASSET', 'CASH', 'LOAN', 'TOTAL')
+        for _row in rows:
+            _lbl25 = _s(_row[25]).upper() if 25 < len(_row) else ''
+            _lbl26 = _s(_row[26]).upper() if 26 < len(_row) else ''
+            _lbl27 = _s(_row[27]).upper() if 27 < len(_row) else ''
+            _comb = _lbl25 + ' ' + _lbl26 + ' ' + _lbl27
+
+            if not _in_with_section:
+                if 'WITHDRAWAL' in _comb or 'DRAWING' in _comb or \
+                   ('LESS' in _comb and 'CLOSING' not in _comb and sachi_opening > 0):
+                    _in_with_section = True
+                continue
+
+            # Stop at next section header
+            if any(k in _comb for k in _WITH_STOP_KEYS):
+                break
+
+            _v31 = _n(_row[31]) if 31 < len(_row) else 0
+            # Must have a name AND a positive amount to be a sub-item
+            _nm = (_s(_row[25]) or _s(_row[26]) or _s(_row[27])).strip()
+            if _v31 > 0 and _nm and len(_nm) >= 3:
+                _with_sub_total += _v31
+                log.append(f"Capital withdrawal sub-item: {_nm} = {_v31:,.2f}")
+
+        # If we found sub-items, total withdrawals = sachi_withdrawals + sub-items
+        # (sachi_withdrawals already has the "Less 446,405" subtotal line)
+        if _with_sub_total > 0:
+            sachi_withdrawals = sachi_withdrawals + _with_sub_total
+            log.append(f"Capital withdrawals total (incl. sub-items): {sachi_withdrawals:,.2f}")
+
         opening = sachi_opening
         last_col44 = sachi_withdrawals
         found_opening = True
@@ -1762,7 +1947,8 @@ def inject_into_template(parsed: dict, template_path: str, output_path: str,
     _inject_capital_sheet(wb, parsed, client_name, cy_year, py_year, log)
     _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log)
     _inject_notes_pl(wb, parsed, client_name, cy_year, py_year, log)
-    _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log)
+    details_shifts = _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log)
+    _fix_details_formula_refs(wb, details_shifts, log)   # FIX S10: repair cross-sheet refs
     _inject_fixed_assets_py(wb, parsed, client_name, py_year, log)
     _inject_fixed_assets_cy_opening(wb, parsed, log)
     _inject_gross_profit_sheet(wb, parsed, client_name, cy_year, py_year, log)
@@ -1986,21 +2172,30 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
     # Parser puts OCL items in other_payable_items when found correctly.
     # For T-shaped BS they often bleed into unsecured_loan_parties.
     # Detect payable/TDS/GST type names and rescue them into OCL.
-    _OCL_KEYWORDS = ('payable', 'tds', 'gst', 'provision', 'accrued',
+    _OCL_KEYWORDS = ('payable', 'tds', 'provision', 'accrued',
                      'outstanding', 'due to', 'liability')
-    # Merge both sources:
-    # 1. other_payable_items (from dedicated OCL annexure parser — Salary Payable, TDS etc.)
-    # 2. unsecured_loan_parties entries with OCL keywords (Audit Fees, GST, Electricity etc.)
-    # Deduplicate by AMOUNT (same amount = same item regardless of name variant).
+    # STRICT OCL filter: only items that are CLEARLY payable/TDS/provision type.
+    # Do NOT include trade creditor names (M/s., company names, fabric/textile firms).
+    # 'gst' is removed from keywords because GST creditors are trade payables, not OCL.
+    # FIX S10: Only pull from other_payable_items (direct Annexure-D parser).
+    # Do NOT bleed unsecured_loan_parties into OCL — those are lender names,
+    # and if wrongly classified they corrupt the OCL total (Bug 4: One97 etc.).
     ocl_items = list(p.get('other_payable_items', []))
-    existing_ocl_amounts = {round(it['amount']) for it in ocl_items}
-    for party in p.get('unsecured_loan_parties', []):
-        nm_l = party['name'].strip().lower()
+    # Validate OCL items: reject any item whose name looks like a trade creditor
+    # (long company names, M/s prefix, fabric/textile keywords, etc.)
+    _TRADE_SIGNALS = ('m/s', 'pvt', 'ltd', 'textile', 'fabrics', 'fashion', 'silk',
+                      'creation', 'impex', 'enterprise', 'house', 'industries',
+                      'communication', 'comm.', 'print', 'embroidery')
+    validated_ocl = []
+    for item in ocl_items:
+        nm_l = item['name'].strip().lower()
+        # Keep if it has a clear OCL keyword
         if any(kw in nm_l for kw in _OCL_KEYWORDS):
-            amt_key = round(party['amount'])
-            if amt_key not in existing_ocl_amounts:
-                ocl_items.append(party)
-                existing_ocl_amounts.add(amt_key)
+            validated_ocl.append(item)
+        # Reject if it looks like a trade company name
+        elif not any(ts in nm_l for ts in _TRADE_SIGNALS):
+            validated_ocl.append(item)
+    ocl_items = validated_ocl
 
     # Deduplicate OCL items by normalized name.
     # e.g. "GST- Reverse Charges" and "GST REVERSE CHARGE PAYABLE" are the same item
@@ -2598,27 +2793,47 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
                    if 'advance' in cp['name'].lower() or 'customer' in cp['name'].lower()]
     cred_only   = [cp for cp in good_crp if cp not in adv_parties]
 
-    for i in range(33):
-        r = 23 + i
-        if i < len(cred_only):
-            cp = cred_only[i]
-            pfx, bare = _split_prefix(cp['name'])
-            _write(ws, r, 1, pfx or 'M/s.')
-            _write(ws, r, 2, bare)
-            _py(ws, r, PY, cp['amount']); _cy(ws, r, CY)
-        else:
-            _write(ws, r, 1, '')
-            _write(ws, r, 2, '')
-            _py(ws, r, PY, 0); _cy(ws, r, CY)
+    # FIX S10: Write ALL creditors, inserting extra rows if needed.
+    # Template has 33 fixed slots (R23-R55). If we have more, insert rows BEFORE R56.
+    # All downstream row references (R56 onwards) shift accordingly.
+    CRED_START = 23
+    CRED_TEMPLATE_SLOTS = 33  # R23-R55
+    n_cred = len(cred_only)
+    extra_rows_cred = max(0, n_cred - CRED_TEMPLATE_SLOTS)
 
-    # Advance from Customers — prefer Annexure-C dedicated list, then fallback
+    if extra_rows_cred > 0:
+        # Insert extra_rows_cred rows before R56 (after the last template creditor slot)
+        ws.insert_rows(CRED_START + CRED_TEMPLATE_SLOTS, extra_rows_cred)
+        log.append(f"Details: inserted {extra_rows_cred} creditor rows (total={n_cred})")
+
+    # Now write all creditors
+    for i, cp in enumerate(cred_only):
+        r = CRED_START + i
+        pfx, bare = _split_prefix(cp['name'])
+        _write(ws, r, 1, pfx or 'M/s.')
+        _write(ws, r, 2, bare)
+        _py(ws, r, PY, cp['amount']); _cy(ws, r, CY)
+
+    # Clear any remaining template slots beyond what we wrote
+    for i in range(len(cred_only), CRED_TEMPLATE_SLOTS + extra_rows_cred):
+        r = CRED_START + i
+        _write(ws, r, 1, '')
+        _write(ws, r, 2, '')
+        _py(ws, r, PY, 0); _cy(ws, r, CY)
+
+    # All downstream row numbers shift by extra_rows_cred after creditor insertion.
+    # Compute dynamic base rows for all sections below.
+    _shift = extra_rows_cred  # rows inserted before R56
+
+    # ── Advance from Customers (template R57-R61, 5 slots) ────────────────────
     adv_from_annexure = p.get('advance_from_customer_parties', [])
     if not adv_parties and adv_from_annexure:
         adv_parties = adv_from_annexure
     adv_total = p.get('advance_from_customers', 0)
 
+    ADV_START = 57 + _shift
     for i in range(5):
-        r = 57 + i
+        r = ADV_START + i
         if i < len(adv_parties):
             cp = adv_parties[i]
             pfx, bare = _split_prefix(cp['name'])
@@ -2632,112 +2847,222 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
         else:
             _write(ws, r, 1, '')
             _py(ws, r, PY, 0); _cy(ws, r, CY)
-    # R62 = SUM formula, R68 = SUM, R69 = TOTAL — skip
 
-    # ── Trade receivables >6 months (R74-R128, 55 slots) ─────────────────────
-    # If creditors were extracted from front of debtor list (sum-match fallback),
-    # skip those entries when building the debtors list.
+    # ── Trade receivables >6 months ─────────────────────────────────────────
+    # FIX S10: Write ALL debtors, inserting extra rows if needed.
+    # Template has 43 debtor slots (R74-R116 after shift). If we have more, insert rows.
     deb_raw_all = p.get('sundry_debtor_parties', [])
-    # Detect if we used the fallback (creditors not in original cred_parties_raw)
-    fallback_used = bool(good_crp) and not any(
-        cp['name'] in [x['name'] for x in cred_parties_raw] for cp in good_crp
-        if cred_parties_raw
-    )
-    # Simpler check: if good_crp names match the start of deb_raw_all, skip them
-    # Check if sundry_debtor_parties came from Annexure-I (exact match with BS total)
     bs_debtor_total = p.get('sundry_debtors', 0)
     debtor_list_total = sum(x['amount'] for x in deb_raw_all)
-    annexure_i_exact = (bs_debtor_total > 0 and
-                        abs(debtor_list_total - bs_debtor_total) / bs_debtor_total < 0.001)
+    annexure_i_exact = (bs_debtor_total > 0 and debtor_list_total > 0 and
+                        abs(debtor_list_total - bs_debtor_total) / bs_debtor_total < 0.05)
 
     skip_count = 0
     if not annexure_i_exact and good_crp and deb_raw_all:
-        # Only apply skip_count when Annexure-I did NOT provide exact data
-        for i, gc in enumerate(good_crp):
-            if i < len(deb_raw_all) and deb_raw_all[i]['name'] == gc['name']:
+        for idx, gc in enumerate(good_crp):
+            if idx < len(deb_raw_all) and deb_raw_all[idx]['name'] == gc['name']:
                 skip_count += 1
             else:
                 break
-    # Build normalized set of lender name tokens to exclude from debtor list.
-    # We use token-level matching because the same person may appear as
-    # "Amar Nath Aggarwal [HUF]" in one list and "Sh. Amar Nath Aggarwal [HUF]" in another,
-    # or "Garima Aggarwal" vs just "Garima".
-    _stop_tokens = {'sh', 'smt', 'mr', 'mrs', 'ms', 'm/s', 'shri', 'huf', 'prop',
-                    'the', 'of', 'and', '&', 'co', 'ltd', 'pvt', 'sons', 'bros'}
-    def _name_tokens(nm):
-        """Return significant lowercase tokens from a name."""
-        toks = re.split(r'[\s\.,\[\]\(\)\/\-]+', nm.lower())
-        return {t for t in toks if len(t) >= 3 and t not in _stop_tokens}
 
-    lender_token_sets = []
-    for ul in p.get('unsecured_loan_parties', []):
-        toks = _name_tokens(ul['name'])
-        if toks:
-            lender_token_sets.append(toks)
-    # Also build flat set of normalized full names for exact matching
     lender_names = {ul['name'].strip().lower() for ul in p.get('unsecured_loan_parties', [])}
 
-    def _is_lender(nm):
-        """True if the name matches any known lender by token overlap."""
-        if nm.strip().lower() in lender_names:
-            return True
-        deb_toks = _name_tokens(nm)
-        # Require at least 2 meaningful tokens to avoid generic false positives
-        # (e.g. {'food','products'} matches too broadly)
-        if len(deb_toks) < 2:
-            return False
-        for lender_toks in lender_token_sets:
-            # Only flag as lender if debtor tokens are a non-trivially specific subset:
-            # intersection must cover ALL debtor tokens AND debtor must have ≥ 2 tokens
-            # AND there must be a unique token (not just generic words like food/products).
-            intersection = deb_toks & lender_toks
-            if intersection == deb_toks and len(deb_toks) >= 2:
-                # Reject if all tokens are generic business words
-                _generic = {'food', 'products', 'traders', 'store', 'shop',
-                            'bakery', 'house', 'enterprises', 'agency', 'services'}
-                non_generic = deb_toks - _generic
-                if non_generic:  # at least one specific/proper-noun token
-                    return True
-        return False
-
     if annexure_i_exact:
-        # Annexure-I gave us the exact correct list — use all of them directly
         deb_parties = deb_raw_all
     else:
+        _stop_tokens = {'sh', 'smt', 'mr', 'mrs', 'ms', 'm/s', 'shri', 'huf', 'prop',
+                        'the', 'of', 'and', '&', 'co', 'ltd', 'pvt', 'sons', 'bros'}
+        def _name_tokens(nm):
+            toks = re.split(r'[\s\.,\[\]\(\)\/\-]+', nm.lower())
+            return {t for t in toks if len(t) >= 3 and t not in _stop_tokens}
+
+        lender_token_sets = [_name_tokens(ul['name'])
+                             for ul in p.get('unsecured_loan_parties', [])
+                             if _name_tokens(ul['name'])]
+
+        def _is_lender(nm):
+            if nm.strip().lower() in lender_names:
+                return True
+            deb_toks = _name_tokens(nm)
+            if len(deb_toks) < 2:
+                return False
+            for lt in lender_token_sets:
+                inter = deb_toks & lt
+                if inter == deb_toks:
+                    _generic = {'food','products','traders','store','shop',
+                                'bakery','house','enterprises','agency','services'}
+                    if deb_toks - _generic:
+                        return True
+            return False
+
         deb_parties = [x for x in deb_raw_all[skip_count:]
                        if _is_debtor_party(x['name'], lender_names) and not _is_lender(x['name'])]
 
-    for i in range(55):
-        r = 74 + i
-        if i < len(deb_parties):
-            dp = deb_parties[i]
-            # Avoid double "M/s." prefix
-            dname = dp['name']
-            if dname.lower().startswith('m/s.') or dname.lower().startswith('m/s '):
-                _write(ws, r, 1, 'M/s.')
-                _write(ws, r, 2, dname[4:].strip().lstrip('.')  .strip())
-            else:
-                _write(ws, r, 1, 'M/s.')
-                _write(ws, r, 2, dname)
-            _py(ws, r, PY, dp['amount']); _cy(ws, r, CY)
-        else:
-            _write(ws, r, 2, '')
-            _py(ws, r, PY, 0); _cy(ws, r, CY)
-    # R129 col E: template has =SUM(E77:E128) but debtors start at R74.
-    # Overwrite with corrected formula =SUM(E74:E128).
-    ws.cell(129, 5).value = '=SUM(E74:E128)'
+    DEB_START_TMPL = 74   # template debtor start before any shifts
+    DEB_TMPL_SLOTS = 43   # R74-R116 in template (43 rows)
+    DEB_START = DEB_START_TMPL + _shift
+    n_deb = len(deb_parties)
+    extra_rows_deb = max(0, n_deb - DEB_TMPL_SLOTS)
 
-    # ── Trade receivables <6 months (R134-R135, 2 slots) ─────────────────────
-    _py(ws, 134, PY, 0); _cy(ws, 134, CY)
-    _py(ws, 135, PY, 0); _cy(ws, 135, CY)
-    # R136 = SUM — formula, skip
+    if extra_rows_deb > 0:
+        ws.insert_rows(DEB_START + DEB_TMPL_SLOTS, extra_rows_deb)
+        _shift += extra_rows_deb
+        log.append(f"Details: inserted {extra_rows_deb} debtor rows (total={n_deb})")
+
+    for i, dp in enumerate(deb_parties):
+        r = DEB_START + i
+        dname = dp['name']
+        if dname.lower().startswith('m/s.') or dname.lower().startswith('m/s '):
+            _write(ws, r, 1, 'M/s.')
+            _write(ws, r, 2, dname[4:].strip().lstrip('.').strip())
+        else:
+            _write(ws, r, 1, 'M/s.')
+            _write(ws, r, 2, dname)
+        _py(ws, r, PY, dp['amount']); _cy(ws, r, CY)
+
+    # Clear remaining template debtor slots
+    for i in range(n_deb, DEB_TMPL_SLOTS + extra_rows_deb):
+        r = DEB_START + i
+        _write(ws, r, 2, '')
+        _py(ws, r, PY, 0); _cy(ws, r, CY)
+
+    # Write corrected SUM formula for debtor total (accounts for dynamic row count)
+    deb_last = DEB_START + max(n_deb, DEB_TMPL_SLOTS + extra_rows_deb) - 1
+    deb_total_row = deb_last + 1
+    # Find the TOTAL row label in the sheet (scan near expected position)
+    for _tr in range(deb_total_row, deb_total_row + 5):
+        try:
+            _cv = ws.cell(_tr, 1).value
+            if _cv and 'TOTAL' in str(_cv).upper():
+                deb_total_row = _tr
+                break
+        except Exception:
+            pass
+    ws.cell(deb_total_row, 5).value = f'=SUM(E{DEB_START}:E{deb_last})'
+    log.append(f"Details: debtor SUM =SUM(E{DEB_START}:E{deb_last})")
+
+    # ── Trade receivables <6 months ───────────────────────────────────────────
+    _lt6_start = deb_total_row + 4   # TOTAL row + header rows
+    _py(ws, _lt6_start,     PY, 0); _cy(ws, _lt6_start,     CY)
+    _py(ws, _lt6_start + 1, PY, 0); _cy(ws, _lt6_start + 1, CY)
 
     log.append(
         f'Details: {len(unsec_parties)} unsecured, {len(cred_only)} creditors, '
         f'{len(deb_parties)} debtors'
     )
 
+    # Return actual row numbers for cross-sheet formula repair.
+    # Template original rows: creditor_sum=62, msme_sum=68, deb_gt6_total=129, deb_lt6_total=136
+    # After row insertion these shift. We track them precisely via DEB_START and deb_total_row.
+    _extra_cred = extra_rows_cred           # rows inserted for creditor overflow
+    _extra_deb  = extra_rows_deb            # rows inserted for debtor overflow
+    _cred_sum_row     = 62 + _extra_cred    # Details row that has =SUM(creditor amounts)
+    _msme_sum_row     = 68 + _extra_cred    # Details row with MSME SUM
+    _deb_gt6_total    = deb_total_row       # actual TOTAL row for debtors >6m
+    _deb_lt6_total    = _lt6_start + 2      # approximate TOTAL row for debtors <6m
 
+    return {
+        'cred_sum_row':  _cred_sum_row,
+        'msme_sum_row':  _msme_sum_row,
+        'deb_gt6_total': _deb_gt6_total,
+        'deb_lt6_total': _deb_lt6_total,
+        'extra_cred':    _extra_cred,
+        'extra_deb':     _extra_deb,
+    }
+
+
+# ── Fix cross-sheet formula references after Details row insertion ─────────────
+# openpyxl does NOT update cross-sheet formula strings when insert_rows() is called.
+# After we insert rows in the Details sheet, formulas in 'notes to bs' that reference
+# specific Details row numbers become stale and point to the wrong cells.
+#
+# Template cross-sheet references (notes to bs → Details):
+#   R15 D/E  → Details!R13   (unsecured FROM RELATED PARTIES SUM)  ← never shifts
+#   R38 D/E  → Details!R62   (trade payable others = creditor SUM)  ← shifts by extra_cred
+#   R39 D/E  → Details!R68   (trade payable MSME SUM)               ← shifts by extra_cred
+#   R91 D/E  → Details!R129  (debtors >6 months TOTAL)              ← shifts by both
+#   R97 D/E  → Details!R136  (debtors <6 months TOTAL)              ← shifts by both
+#
+# This function rewrites those formula strings to the correct new row numbers.
+
+def _fix_details_formula_refs(wb, shifts, log):
+    """
+    Repair 'notes to bs' formulas that reference Details rows which moved
+    after dynamic row insertion in _inject_details_sheet().
+
+    Parameters
+    ----------
+    shifts : dict returned by _inject_details_sheet(), containing:
+        cred_sum_row  - actual row in Details for creditor SUM (template: 62)
+        msme_sum_row  - actual row in Details for MSME SUM    (template: 68)
+        deb_gt6_total - actual row in Details for debtor >6m TOTAL (template: 129)
+        deb_lt6_total - actual row in Details for debtor <6m TOTAL (template: 136)
+        extra_cred    - how many creditor rows were inserted
+        extra_deb     - how many debtor rows were inserted
+    """
+    if 'notes to bs' not in wb.sheetnames:
+        return
+
+    extra_cred = shifts.get('extra_cred', 0)
+    extra_deb  = shifts.get('extra_deb', 0)
+
+    # If no rows were inserted, nothing to fix
+    if extra_cred == 0 and extra_deb == 0:
+        log.append('Details formula refs: no row insertion, nothing to fix')
+        return
+
+    ws = wb['notes to bs']
+
+    # Map: (notes_to_bs_row, col_idx) → new Details row number
+    # Template original rows in Details: 62=credSUM, 68=MSME, 129=deb>6, 136=deb<6
+    cred_sum = shifts.get('cred_sum_row',  62 + extra_cred)
+    msme_sum = shifts.get('msme_sum_row',  68 + extra_cred)
+    deb_gt6  = shifts.get('deb_gt6_total', 129 + extra_cred + extra_deb)
+    deb_lt6  = shifts.get('deb_lt6_total', 136 + extra_cred + extra_deb)
+
+    # Build replacement map: old_formula_fragment → new_formula
+    replacements = {}
+    if extra_cred > 0:
+        replacements['Details!D62'] = f'Details!D{cred_sum}'
+        replacements['Details!E62'] = f'Details!E{cred_sum}'
+        replacements['Details!D68'] = f'Details!D{msme_sum}'
+        replacements['Details!E68'] = f'Details!E{msme_sum}'
+    if extra_cred > 0 or extra_deb > 0:
+        replacements['Details!D129'] = f'Details!D{deb_gt6}'
+        replacements['Details!E129'] = f'Details!E{deb_gt6}'
+        replacements['Details!D136'] = f'Details!D{deb_lt6}'
+        replacements['Details!E136'] = f'Details!E{deb_lt6}'
+
+    # Also handle without '!' prefix variation just in case
+    extra_replacements = {}
+    for old, new in replacements.items():
+        # Some formula writers use single-quoted sheet name
+        old2 = old.replace('Details!', "'Details'!")
+        new2 = new.replace('Details!', "'Details'!")
+        extra_replacements[old2] = new2
+    replacements.update(extra_replacements)
+
+    count = 0
+    from openpyxl.cell import MergedCell as _MCF
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell, _MCF):
+                continue
+            v = cell.value
+            if not isinstance(v, str) or 'Details' not in v:
+                continue
+            new_v = v
+            for old_frag, new_frag in replacements.items():
+                if old_frag in new_v:
+                    new_v = new_v.replace(old_frag, new_frag)
+            if new_v != v:
+                cell.value = new_v
+                count += 1
+                log.append(f"  Fixed formula [{ws.title}] R{cell.row}C{cell.column}: "
+                           f"{v!r} → {new_v!r}")
+
+    log.append(f"Details formula refs: {count} formula(s) updated "
+               f"(extra_cred={extra_cred}, extra_deb={extra_deb})")
 
 
 # ── Fixed Assets P. Yr. ───────────────────────────────────────────────────────
