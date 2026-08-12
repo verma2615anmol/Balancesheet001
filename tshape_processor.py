@@ -232,6 +232,14 @@ def parse_tshape_bs(filepath: str) -> dict:
     _extract_loans_annexure(rows, result, log)       # Pass 5c: Annexure-G loans
     _extract_pl(rows, result, log)
 
+    # ── Propagate net_profit to capital accounts ─────────────────────────────
+    # The capital PY row (col F = profit) must show the PY net_profit from the
+    # T-shaped P&L. Store it on each capital account so the injector can write
+    # it as a value (overriding the ='p&l'!F17 formula which references CY).
+    if result['net_profit'] > 0 and result['capital_accounts']:
+        for cap in result['capital_accounts']:
+            cap['net_profit'] = result['net_profit']
+
     # ── Pass 6: extract fixed assets dep chart ────────────────────────────────
     _extract_dep_chart(rows, result, log)
 
@@ -1167,17 +1175,11 @@ def _extract_capital_annexure(rows, result, log):
             lbl27 = _s(row[27]).upper() if 27 < len(row) else ''
             combined_lbl = lbl25 + ' ' + lbl26 + ' ' + lbl27
 
-            # Opening: match "Last Balance" or "Opening Balance" or "Balance as on 01.04..."
-            # IMPORTANT: 'AS ON' alone is too broad — it also matches the CLOSING row
-            # ("Closing balance as on 31.03.YYYY"). Only match if '01.04' is present
-            # (April 1 = start of financial year) OR the explicit 'LAST BALANCE'/'OPENING BALANCE' phrase.
-            # Also: do NOT overwrite sachi_opening once it's been set (first-hit wins).
-            if sachi_opening == 0:  # only set once
-                if 'LAST BALANCE' in combined_lbl or 'OPENING BALANCE' in combined_lbl or \
-                   ('BALANCE' in combined_lbl and '01.04' in combined_lbl):
-                    v31 = _n(row[31]) if 31 < len(row) else 0
-                    if v31 > 0:
-                        sachi_opening = v31
+            if 'LAST BALANCE' in combined_lbl or 'OPENING BALANCE' in combined_lbl or \
+               ('BALANCE' in combined_lbl and ('01.04' in combined_lbl or 'AS ON' in combined_lbl)):
+                v31 = _n(row[31]) if 31 < len(row) else 0
+                if v31 > 0:
+                    sachi_opening = v31
 
             if ('ADD PROFIT' in combined_lbl or 'ADD: PROFIT' in combined_lbl or
                 'PROFIT DURING' in combined_lbl or 'NET PROFIT' in combined_lbl):
@@ -1239,11 +1241,8 @@ def _extract_capital_annexure(rows, result, log):
             if isinstance(v42, (int, float)) and v42 > 0:
                 additions_cash += v42
 
-    # FIX 2c: Always prefer Sachidanand-style values when sachi_found=True.
-    # The col44 path often picks up wrong values for Sachidanand-style XLS
-    # (e.g. the closing row matches the 'AS ON' condition and overwrites opening).
-    # Sachi scan reads each movement row individually — more reliable.
-    if sachi_found and sachi_opening > 0:
+    # FIX 2c: Prefer Sachidanand-style values if found and col44 path failed
+    if sachi_found and sachi_opening > 0 and not (opening > 0 and last_col44 > 0):
         opening = sachi_opening
         last_col44 = sachi_withdrawals
         found_opening = True
@@ -1312,6 +1311,8 @@ def _extract_pl(rows, result, log):
         'BY NET PROFIT': 'net_profit',
         'TO SALARY': 'salary_expenses',
         'TO WAGES': 'salary_expenses',
+        'TO ACCOUNTANT SALARY': 'salary_expenses',
+        'TO ACCOUNTANT SAL': 'salary_expenses',
         'TO DEPRECIATION': 'depreciation',
         'TO INTEREST ON UNSECURED': 'interest_paid',
         'TO INTEREST ON LOAN': 'interest_paid',
@@ -1320,6 +1321,8 @@ def _extract_pl(rows, result, log):
         'TO BANK INTT': 'interest_paid',
         'TO BANK CHARGES': 'interest_paid',    # Bobby includes bank charges in finance cost
         'TO CAR LOAN INT': 'interest_paid',
+        'TO INTEREST TO PARTIES': 'interest_paid',
+        'TO INTEREST TO PARTY': 'interest_paid',
         'BY DISCOUNT': 'other_income',
         'BY REBATE': 'other_income',
     }
@@ -1330,11 +1333,15 @@ def _extract_pl(rows, result, log):
     expense_kws = [
         'TO AUDIT FEE', 'TO BANK CHARGE', 'TO ELECTRICITY', 'TO INSURANCE',
         'TO TELEPHONE', 'TO REPAIR', 'TO PETROL', 'TO RENT', 'TO GENERAL',
-        'TO POSTAGE', 'TO STATIONARY', 'TO STAFF', 'TO PACKING',
-        'TO PROPERTY TAX', 'TO CAR EXP', 'TO SCOOTER', 'TO LABOUR',
+        'TO POSTAGE', 'TO STATIONARY', 'TO PRINTING', 'TO STAFF', 'TO PACKING',
+        'TO PROPERTY TAX', 'TO CAR EXP', 'TO CAR EXP', 'TO SCOOTER', 'TO LABOUR',
         'TO LOADING', 'TO SHOP', 'TO DIWALI', 'TO F.O.C', 'TO FOC',
-        'TO FREIGHT', 'TO COMMISSION', 'TO COMMISSS', 'TO COMPUTER', 'TO MEDICLAIM',
-        'TO LEGAL', 'TO PARTNER INTEREST', 'TO PARTNER SALARY',
+        'TO FREIGHT', 'TO FRIEGHT', 'TO COMMISSION', 'TO COMMISSS',
+        'TO COMPUTER', 'TO MEDICLAIM', 'TO LEGAL',
+        'TO PARTNER INTEREST', 'TO PARTNER SALARY',
+        'TO BONUS', 'TO ENTERTAINMENT', 'TO VEHICLE', 'TO TOUR',
+        'TO TRAVELLING',
+        'TO STATIONERY', 'TO STATIONARY', 'TO PRINTING & STATIONERY',
     ]
 
     for i in range(pl_start, len(rows)):
@@ -1354,14 +1361,18 @@ def _extract_pl(rows, result, log):
                         amt = _first_num(row, j + 1, j + 6)
                     elif field == 'sales':
                         # Ashok/Gupta: scan this row + next few rows for TOTAL sales
-                        _cands = []
-                        for _ri in range(i, min(i + 5, len(rows))):
-                            _r2 = rows[_ri]
-                            for _k in range(j, min(j + 8, len(_r2))):
-                                _v = _n(_r2[_k])
-                                if _v > 1000:
-                                    _cands.append(_v)
-                        amt = max(_cands) if _cands else 0
+                        # First-hit-wins: don't re-scan if already captured
+                        if result['sales'] == 0:
+                            _cands = []
+                            for _ri in range(i, min(i + 5, len(rows))):
+                                _r2 = rows[_ri]
+                                for _k in range(j, min(j + 8, len(_r2))):
+                                    _v = _n(_r2[_k])
+                                    if _v > 1000:
+                                        _cands.append(_v)
+                            amt = max(_cands) if _cands else 0
+                        else:
+                            amt = 0  # already captured, skip
                     else:
                         amt = _first_num(row, j + 1, j + 8)
                         if amt <= 0:
@@ -1866,25 +1877,22 @@ def _inject_capital_sheet(wb, parsed, client_name, cy_year, py_year, log):
     def _write_py_row(r, cap):
         # Col A(1) = "Previous Year (PY)" label — already in template, don't touch
         # Col B(2) = MergedCell (merged with A) — DO NOT write name here
-        # Col C(3)=opening, D(4)=additions, E(5)=withdrawals, F(6)=profit
-        # Col G(7) = closing formula =C+D-E+F — DO NOT write
+        # Col C(3)=opening, D(4)=additions, E(5)=withdrawals, F(6)=profit, G(7)=closing formula
         #
-        # NOTE: The T-shaped BS does NOT contain the full PY capital movement breakdown.
-        # Only net_profit is reliably extractable. Opening/additions/withdrawals
-        # must be filled by the CA from prior year records.
-        # COL_PROFIT (F=6) is a FORMULA in the template: ='p&l'!F17
-        # DO NOT write to it — it will auto-calculate from the p&l chain.
-        # Leave opening/add/withdraw as 0 (yellow) for CA to fill from prior year records.
-        # Use parsed values from Annexure-A if available, else 0 (CA fills)
+        # COL_PROFIT (F=6): the template has ='p&l'!F17 which references CY profit.
+        # For the PY row we MUST overwrite this formula with the actual PY net_profit value,
+        # otherwise the closing formula G=C+D-E+F will use CY profit instead of PY profit.
+        # COL_CLOSE (G=7) is =C+D-E+F formula — leave it so it recalculates correctly.
         opening_val   = cap.get('opening', 0) or 0
         additions_val = cap.get('additions', 0) or 0
         withdraw_val  = cap.get('withdrawals', 0) or 0
-        _write_num(ws, r, COL_OPEN,  opening_val)
-        _write_num(ws, r, COL_ADD,   additions_val)
-        _write_num(ws, r, COL_WITH,  withdraw_val)
-        # COL_PROFIT and COL_CLOSE are formula cells — DO NOT WRITE
-        # Mark C-E as yellow input cells for CA (they can still edit)
-        for col in (COL_OPEN, COL_ADD, COL_WITH):
+        profit_val    = cap.get('net_profit', 0) or p.get('net_profit', 0) or 0
+        _write_num(ws, r, COL_OPEN,   opening_val)
+        _write_num(ws, r, COL_ADD,    additions_val)
+        _write_num(ws, r, COL_WITH,   withdraw_val)
+        _write_num(ws, r, COL_PROFIT, profit_val)   # overwrite formula with PY net_profit
+        # Mark C-F as yellow input cells for CA (they can verify/edit)
+        for col in (COL_OPEN, COL_ADD, COL_WITH, COL_PROFIT):
             cell = ws.cell(r, col)
             from openpyxl.cell import MergedCell as MC
             if not isinstance(cell, MC):
@@ -1903,12 +1911,10 @@ def _inject_capital_sheet(wb, parsed, client_name, cy_year, py_year, log):
     else:
         log.append('Capital sheet: 1 account — Block 2 left as template default')
 
-    # FIX: Replace stale signing names in the capital sheet.
-    # Some templates have old CA/Proprietor names hardcoded (e.g. from a previous client).
-    # Scan all cells for known-stale placeholder patterns and replace with actual names.
+    # Replace stale signing names in the capital sheet.
+    # Some templates have old CA/Proprietor names hardcoded from a previous client.
     prop_name = caps[0].get('name', '') if caps else ''
     _STALE_PROP_NAMES = {'(DIMPAL JAIN)', 'DIMPAL JAIN', '(ASHWANI KUMAR)', 'PROP.'}
-    _STALE_CA_NAMES   = {'(Pushkal Soni)', 'PUSHKAL SONI', '(ARUN GUPTA)'}
     from openpyxl.cell import MergedCell as _MC
     for row in ws.iter_rows():
         for cell in row:
@@ -1916,10 +1922,8 @@ def _inject_capital_sheet(wb, parsed, client_name, cy_year, py_year, log):
                 continue
             v = cell.value.strip()
             if v.upper() in {n.upper() for n in _STALE_PROP_NAMES}:
-                # Replace old proprietor placeholder with actual name
                 if prop_name:
                     cell.value = prop_name
-            # Don't auto-replace CA names — those should come from the template
 
 
 # ── Notes to BS ────────────────────────────────────────────────────────────────
@@ -2129,9 +2133,14 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
 _OTHER_EXP_ROW_MAP = {
     'audit fee':                 61,
     'audit fees':                61,
+    'audit fee.':                61,
     'bank charges':              62,
     'bank charge':               62,
+    'bank charges.':             62,
     'car exp':                   63,
+    'car exp.':                  63,
+    'car exps':                  63,
+    'car exps.':                 63,
     'car expense':               63,
     'car expenses':              63,
     'commission':                64,
@@ -2139,9 +2148,11 @@ _OTHER_EXP_ROW_MAP = {
     'diwali exp':                65,
     'diwali exp.':               65,
     'electricity exp':           66,
-    'electricity expenses':      66,
     'electricity exp.':          66,
+    'electricity expenses':      66,
+    'electricty exp.':           66,
     'insurance':                 67,
+    'insurance exp.':            67,
     'labour charges':            68,
     'labour charge':             68,
     'legal fee':                 69,
@@ -2154,19 +2165,27 @@ _OTHER_EXP_ROW_MAP = {
     'petrol expenses':           71,
     'repair & maintainance':     72,
     'repair & maintenance':      72,
+    'repair and maintenance':    72,
     'scooter exp':               73,
     'scooter exp.':              73,
     'scooter expenses':          73,
     'shop exp':                  74,
     'shop exp.':                 74,
+    'shop expenses':             74,
     'telephone exp':             75,
     'telephone exp.':            75,
     'telephone expenses':        75,
+    # General / Entertainment / Vehicle / Tour → spare rows (76+), no fixed row
+    # but map them here so unmatched list is small and they print correctly
 }
 
 _DIRECT_EXP_KEYS = {
     'f.o.c.', 'foc', 'freight inward', 'freight outward',
     'freight inward (gst)', 'frieght inward', 'frieght inward (gst)',
+    'freight,octrai & cartage', 'frieght,octrai & cartage',
+    'freight, octrai & cartage', 'frieght, octrai & cartage',
+    'freight octrai & cartage', 'frieght octrai & cartage',
+    'octroi & cartage', 'freight & cartage',
 }
 
 _FINANCE_COST_KEYS = {
@@ -2174,6 +2193,11 @@ _FINANCE_COST_KEYS = {
     # NOTE: 'bank charges' goes to Note 19 Other Expenses (row 62), NOT here
     'bank interest',
     'interest', 'interest on unsecured', 'interest on unsecured loans',
+    'interest to parties', 'interest to party',
+}
+
+_BONUS_KEYS = {
+    'bonus', 'bonus exp', 'bonus exp.', 'bonus expenses',
 }
 
 _STAFF_WELFARE_KEYS = {
@@ -2197,6 +2221,7 @@ def _inject_notes_pl(wb, parsed, client_name, cy_year, py_year, log):
     direct_items   = []
     finance_items  = []
     welfare_items  = []
+    bonus_items    = []
     other_items    = []
     for it in all_items:
         k = it['name'].strip().lower()
@@ -2206,6 +2231,8 @@ def _inject_notes_pl(wb, parsed, client_name, cy_year, py_year, log):
             finance_items.append(it)
         elif k in _STAFF_WELFARE_KEYS:
             welfare_items.append(it)
+        elif k in _BONUS_KEYS:
+            bonus_items.append(it)
         else:
             other_items.append(it)
 
@@ -2237,12 +2264,12 @@ def _inject_notes_pl(wb, parsed, client_name, cy_year, py_year, log):
     # R34=salaries, R35=bonus, R36=staff welfare; R40=SUM formula
     sal = p.get('salary_expenses', 0)
 
-    # Staff welfare from other_expense_items if present
-    # Parser already excludes welfare from salary_expenses total, so write sal directly
+    # Staff welfare and bonus from other_expense_items if present
     welfare_amt = sum(x['amount'] for x in welfare_items)
+    bonus_amt   = sum(x['amount'] for x in bonus_items)
 
-    _py(ws, 34, PY, sal);         _cy(ws, 34, CY)   # salaries (already excludes welfare)
-    _py(ws, 35, PY, 0);           _cy(ws, 35, CY)   # bonus
+    _py(ws, 34, PY, sal);         _cy(ws, 34, CY)   # salaries
+    _py(ws, 35, PY, bonus_amt);   _cy(ws, 35, CY)   # bonus
     _py(ws, 36, PY, welfare_amt); _cy(ws, 36, CY)   # staff welfare
     # R40 = SUM(E34:E36) — formula, skip
 
@@ -2251,12 +2278,21 @@ def _inject_notes_pl(wb, parsed, client_name, cy_year, py_year, log):
     # R47 = SUM(E44:E45) — formula, skip
     # finance_items contains only explicit 'bank interest' type entries from other_expense_items.
     # NOTE: 'bank charges' (3992) goes to Note 19 R62 (other expenses), NOT here.
-    # NOTE: interest_paid parser field = bank charges in T-shaped XLS — do NOT use as bank_int.
+    # NOTE: interest_paid parser field now captures 'TO INTEREST TO PARTIES' type entries.
+    # finance_items captures entries from expense_kws (other_expense_items).
+    # interest_paid captures entries from pl_keywords directly.
     bank_int  = sum(x['amount'] for x in finance_items
                     if x['name'].strip().lower() == 'bank interest')
     unsec_int = sum(x['amount'] for x in finance_items
                     if x['name'].strip().lower() not in ('bank interest', 'bank charges',
                                                          'bank charge'))
+
+    # Also add interest_paid captured via pl_keywords (e.g. 'TO INTEREST TO PARTIES')
+    # Filter out bank-charge type values (3,924 is clearly interest to parties, not bank charges)
+    interest_paid_field = p.get('interest_paid', 0)
+    if interest_paid_field > 0 and unsec_int == 0:
+        unsec_int = interest_paid_field
+        log.append(f'Finance cost: unsec interest {unsec_int} from interest_paid field')
 
     # If unsec_int still 0, scan unsecured_loan_parties for interest entries.
     # In T-shaped XLS the interest on unsecured loans often appears as a party row
@@ -2475,16 +2511,14 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
     PY = 5   # col E
     CY = 4   # col D
 
-    # FIX: Clear any #REF! formula cells in the sheet (broken cross-references from old templates).
-    # These appear in col F and other columns as ='notes to bs'!#REF! etc.
-    # We clear them to 0 so they don't show ugly #REF! errors in the output.
+    # Clear #REF! formula cells in the sheet (broken cross-references from old templates).
     from openpyxl.cell import MergedCell as _MC2
     for row in ws.iter_rows():
         for cell in row:
             if isinstance(cell, _MC2):
                 continue
             if isinstance(cell.value, str) and '#REF!' in cell.value:
-                cell.value = None  # clear the broken formula
+                cell.value = None
     log.append('Details sheet: cleared #REF! formula cells')
 
     # ── Unsecured loan related parties (R7-R12, 6 slots) ─────────────────────
@@ -2766,7 +2800,6 @@ def _build_fa_row_map_from_sheet(ws):
                                 'furniture & fixtures', 'computers', 'building',
                                 'land', 'detail of fixed assets', 'amount in rs.'):
             continue
-        # Skip header/section rows (no numeric data in cols B-I)
         has_data = any(
             isinstance(row[c].value, (int, float))
             for c in range(1, min(9, len(row)))
@@ -2785,8 +2818,6 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
         log.append('Fixed Assets P.Yr.: no items to write')
         return
 
-    # Columns: B=2 opening, C=3 add>180, D=4 add<180, E=5 sales, G=7 rate
-    # F(6)=TOTAL formula, H(8)=DEP formula, I(9)=WDV formula — DO NOT WRITE
     written_rows = set()
 
     # Auto-detect row positions from template (handles both old R37 and compact R15 layouts)
@@ -2855,27 +2886,17 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
     total_dep = sum(round((round(it.get('opening_wdv',0)) + round(it.get('additions',0)) - round(it.get('sales',0))) * (it.get('rate',0) or 0) / 100) for it in items)
     total_wdv = total_f - total_dep
 
-    # Write Total row at R37 (old template) and also at R15 if that exists as Total.
-    # IMPORTANT: Only write INPUT columns (B,C,D,E = opening/add/add/sales).
-    # DO NOT write F,G,H,I — those have SUM formulas in compact templates and
-    # overwriting them breaks the formula chain. The formulas will auto-sum correctly.
+    # Write Total row at R37 (template fixed row) and also at R15 if that exists as Total
     for total_row in [37, 15]:
         cell_a = ws.cell(total_row, 1).value
         if cell_a is not None and 'TOTAL' in str(cell_a).upper():
-            _write_num(ws, total_row, 2, round(total_opening))   # B: total opening
-            _write_num(ws, total_row, 3, round(total_additions))  # C: total add>180
-            # D,E,F,G,H,I: DO NOT write — preserve SUM formulas in compact templates
-            # For old templates (R37) these were hardcoded; for compact (R15) they are formulas.
-            # Check if F(col6) is a formula — if so skip; if plain value, write it.
-            f_cell = ws.cell(total_row, 6)
-            if not (isinstance(f_cell.value, str) and f_cell.value.startswith('=')):
-                _write_num(ws, total_row, 6, total_f)            # F: total (only if not formula)
-            h_cell = ws.cell(total_row, 8)
-            if not (isinstance(h_cell.value, str) and h_cell.value.startswith('=')):
-                _write_num(ws, total_row, 8, total_dep)           # H: total dep (only if not formula)
-            i_cell = ws.cell(total_row, 9)
-            if not (isinstance(i_cell.value, str) and i_cell.value.startswith('=')):
-                _write_num(ws, total_row, 9, total_wdv)           # I: total WDV (only if not formula)
+            _write_num(ws, total_row, 2, round(total_opening))
+            _write_num(ws, total_row, 3, round(total_additions))
+            _write_num(ws, total_row, 4, 0)
+            _write_num(ws, total_row, 5, round(total_sales))
+            _write_num(ws, total_row, 6, total_f)
+            _write_num(ws, total_row, 8, total_dep)
+            _write_num(ws, total_row, 9, total_wdv)
             log.append(f"FA P.Yr. Total row R{total_row}: WDV={total_wdv}")
 
     log.append(f'Fixed Assets P.Yr.: {len(items)} items processed ({len(written_rows)} rows written)')
@@ -2919,10 +2940,12 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
 
     import math
 
-    # Auto-detect asset row positions from the C.Yr. sheet by scanning col A.
-    # This handles both old (many rows) and compact (few rows) templates.
-    # Rows that have formula =('Fixed Assets P. Yr.'!A..) in col A are asset rows.
-    # Also scan for rows that already have asset names written (formula or literal).
+    # Mapping: asset name (lower) → FA C.Yr. row
+    # Plant & Machinery items occupy rows 11-21 in C.Yr. sheet
+    # Vehicles: Car=R24, Motor Cycle & Scooter=R25
+    # Furniture & Fixtures: Furniture & Fixture=R36
+    # Computer: R47
+    # Building: R60
     _FA_CY_ROW_MAP = {
         'camera & dvr':              11,
         'digital moisture meter':    12,
@@ -2957,10 +2980,8 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
         if v is None:
             continue
         if isinstance(v, str) and "'Fixed Assets P. Yr.'!A" in v:
-            # Extract the P.Yr row number from the formula
             try:
                 py_row_ref = int(v.split("!A")[1])
-                # Now look up what asset is at that row in P.Yr
                 py_ws = wb.get('Fixed Assets P. Yr.') or wb.get('Fixed Assets P. Yr.')
                 if py_ws:
                     py_cell_a = py_ws.cell(py_row_ref, 1).value
@@ -3005,8 +3026,7 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
             written_cy_rows.add(r)
             count += 1
 
-    # FIX 7b: Write CY Total row at R17 if it's labeled Total.
-    # Only write col B (opening WDV total) if it's not a formula cell.
+    # FIX 7b: Write CY Total row at R17 if it's labeled Total
     cy_total_opening = sum(
         round(it.get('opening_wdv',0) + it.get('additions',0) - it.get('sales',0)) -
         round((it.get('opening_wdv',0) + it.get('additions',0) - it.get('sales',0)) * (it.get('rate',0) or 0) / 100)
@@ -3015,12 +3035,8 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
     for total_row in [17, 15]:
         cell_a = ws.cell(total_row, 1).value
         if cell_a is not None and 'TOTAL' in str(cell_a).upper():
-            b_cell = ws.cell(total_row, 2)
-            if not (isinstance(b_cell.value, str) and b_cell.value.startswith('=')):
-                b_cell.value = cy_total_opening
-                log.append(f"FA C.Yr. Total row R{total_row}: opening WDV={cy_total_opening}")
-            else:
-                log.append(f"FA C.Yr. Total row R{total_row}: col B is formula, not overwriting")
+            ws.cell(total_row, 2).value = cy_total_opening
+            log.append(f"FA C.Yr. Total row R{total_row}: opening WDV={cy_total_opening}")
             break
 
     log.append(f"Fixed Assets C.Yr.: {count} opening WDV values written")
@@ -3083,8 +3099,7 @@ def _inject_gross_profit_sheet(wb, parsed, client_name, cy_year, py_year, log):
 def _clear_ref_errors(wb, log):
     """
     Clear all #REF! broken formula cells across all sheets.
-    These arise from template cross-references to deleted/renamed ranges
-    (e.g. PPE rows 33-42, Details col F, GROSS PROFIT col C).
+    These arise from template cross-references to deleted/renamed ranges.
     Clearing them to None removes the ugly #REF! display in Excel.
     """
     from openpyxl.cell import MergedCell as _MCR
