@@ -9998,32 +9998,37 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
             # formula to reference that row instead.
             import re as _re_cyfix
             for r in range(1, ws_cy.max_row + 1):
-                b_cell = ws_cy.cell(r, 2)  # B column = opening WDV
                 from openpyxl.cell import MergedCell as _MC5
-                if isinstance(b_cell, _MC5):
-                    continue
-                bval = b_cell.value
-                if not (isinstance(bval, str) and bval.startswith('=')
-                        and py_sn.lower() in bval.lower()):
-                    continue
-                # Extract referenced PY row number
-                m = _re_cyfix.search(r'!I(\d+)', bval)
-                if not m:
-                    continue
-                old_py_row = int(m.group(1))
-                # The CY asset name at this row
-                cy_a = ws_cy_do.cell(r, 1).value
-                if not cy_a:
-                    cy_a = ws_cy.cell(r, 1).value
-                if not cy_a or str(cy_a).startswith('='):
-                    continue
-                cy_a_norm = str(cy_a).strip().lower()
-                # Find the correct row in the NEW PY sheet for this asset.
-                # Since new PY = copy of CY, the asset is at the same row.
-                new_py_row = r  # new PY row = CY row
-                if new_py_row != old_py_row:
-                    new_formula = bval.replace(f'!I{old_py_row}', f'!I{new_py_row}')
-                    b_cell.value = new_formula
+
+                # B column: opening WDV formula e.g. ='Fixed Assets P. Yr.'!I9
+                b_cell = ws_cy.cell(r, 2)
+                if not isinstance(b_cell, _MC5):
+                    bval = b_cell.value
+                    if (isinstance(bval, str) and bval.startswith('=')
+                            and py_sn.lower() in bval.lower()):
+                        m = _re_cyfix.search(r'!I(\d+)', bval)
+                        if m:
+                            old_py_row = int(m.group(1))
+                            new_py_row = r  # new PY = copy of CY, same row
+                            if new_py_row != old_py_row:
+                                b_cell.value = bval.replace(
+                                    f'!I{old_py_row}', f'!I{new_py_row}')
+
+                # A column: asset name formula e.g. ='Fixed Assets P. Yr.'!A9
+                # FIX: remap A-col refs the same way as B-col so asset names
+                # resolve correctly in the restructured PY sheet.
+                a_cell = ws_cy.cell(r, 1)
+                if not isinstance(a_cell, _MC5):
+                    aval = a_cell.value
+                    if (isinstance(aval, str) and aval.startswith('=')
+                            and py_sn.lower() in aval.lower()):
+                        m_a = _re_cyfix.search(r'!A(\d+)', aval)
+                        if m_a:
+                            old_a_row = int(m_a.group(1))
+                            new_a_row = r  # new PY row = CY row
+                            if new_a_row != old_a_row:
+                                a_cell.value = aval.replace(
+                                    f'!A{old_a_row}', f'!A{new_a_row}')
 
             # 1c) Fix bs sheet cross-references after PY restructure.
             #
@@ -10038,9 +10043,11 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
             # Also: bs!F8 = '=capital!G11' (PY capital) and similar cross-
             # sheet references can be replaced by plain values by
             # processor.process — restore them from the source file.
-            if 'bs' in wb.sheetnames and src_wb and 'bs' in src_wb.sheetnames:
-                ws_bs = wb['bs']
-                ws_bs_src = src_wb['bs']
+            _bs_sn     = next((s for s in wb.sheetnames      if s.lower() == 'bs'), None)
+            _bs_src_sn = next((s for s in src_wb.sheetnames  if s.lower() == 'bs'), None) if src_wb else None
+            if _bs_sn and _bs_src_sn:
+                ws_bs = wb[_bs_sn]
+                ws_bs_src = src_wb[_bs_src_sn]
 
                 # Find the new Total row in the new PY sheet
                 new_py_total_row = None
