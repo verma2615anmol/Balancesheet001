@@ -9883,173 +9883,86 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                     elif v in ("%", "rate", "rate %"): rt_col = ci
                     elif "w.d.v" in v and ci > 5: cl_col = ci
 
-        # 1) Mirror source CY sheet → output PY sheet as a direct row-by-row copy.
+        # 1) Update output PY sheet IN-PLACE with CY closing values.
         #
-        # The PY sheet should be a COMPLETE HISTORICAL RECORD of the uploaded
-        # CY year — including all additions (Camera DVR, Steel Angle, Car
-        # additions etc.) and any sales (Property sale). This is the factual
-        # data for the prior year and must not be filtered or omitted.
+        # APPROACH (2026-08-13 rewrite): preserve the OLD PY sheet's row
+        # structure exactly — same asset names at the same row numbers —
+        # and only overwrite the numeric data columns (B-I) per row using
+        # the CLOSING VALUES from the source CY sheet.
         #
-        # Approach: copy every cell from src_cy_ws directly into ws_py,
-        # row-for-row, column-for-column. For formula cells, write the
-        # RESOLVED VALUE (from src_cy_ws_do) rather than the formula text,
-        # since the PY sheet is a value-snapshot, not a live calculation sheet.
-        # Exception: same-sheet formulas that have NO cross-sheet refs and
-        # whose resolved value would be None (e.g. =B8+C8... on a section
-        # header row) are left as None (blank), matching the source display.
+        # This is correct because FA C.Yr. already has cross-sheet formulas
+        # like ='Fixed Assets P. Yr.'!A9 and ='Fixed Assets P. Yr.'!I9 that
+        # reference SPECIFIC ROW NUMBERS in the PY sheet (matching the old PY
+        # layout). Changing those row numbers (by copying CY rows into PY)
+        # breaks those formula references. The fix: keep PY rows where they
+        # are and just update the values, so all existing C.Yr. formulas
+        # continue to resolve correctly with no remapping needed.
         copied = 0
         if py_sn:
             ws_py = wb[py_sn]
 
-            # First, blank the entire PY sheet so stale data from the old
-            # prior-prior-year template doesn't bleed through.
-            merged_children_py = set()
-            for merged in ws_py.merged_cells.ranges:
-                min_col, min_row, max_col, max_row = merged.bounds
-                for rr in range(min_row, max_row + 1):
-                    for cc in range(min_col, max_col + 1):
-                        if (rr, cc) != (min_row, min_col):
-                            merged_children_py.add((rr, cc))
+            # Build asset-name → full row data map from source CY
+            # (data_only gives us resolved values for formula cells)
+            from openpyxl.cell import MergedCell as _MC2
+            cy_asset_map = {}  # name_lower → {col_num: value} for cols 2-9
+            for _r in range(1, src_cy_ws_do.max_row + 1):
+                _a_cell = src_cy_ws_do.cell(_r, 1)
+                if isinstance(_a_cell, _MC2):
+                    continue
+                _a = _a_cell.value
+                if not _a or (isinstance(_a, str) and _a.strip().startswith('=')):
+                    continue
+                _name = str(_a).strip()
+                _row_data = {}
+                for _c in range(2, 10):
+                    _v = src_cy_ws_do.cell(_r, _c).value
+                    if _v is not None:
+                        _row_data[_c] = _v
+                cy_asset_map[_name.lower()] = _row_data
 
-            for r in range(1, ws_py.max_row + 1):
-                for c in range(1, min(ws_py.max_column, src_cy_ws.max_column) + 1):
-                    if (r, c) in merged_children_py:
+            # Update each PY data row in-place: find the matching CY asset
+            # by name and overwrite cols B-I with the CY closing-year values.
+            for _r in range(1, ws_py.max_row + 1):
+                _a_cell = ws_py.cell(_r, 1)
+                if isinstance(_a_cell, _MC2):
+                    continue
+                _a = _a_cell.value
+                if not _a or (isinstance(_a, str) and _a.strip().startswith('=')):
+                    continue
+                _name = str(_a).strip()
+                _match = cy_asset_map.get(_name.lower())
+                if _match is None:
+                    # Try partial match (e.g. "SCOOTER " vs "SCOOTER")
+                    for _k, _v in cy_asset_map.items():
+                        if _k.strip() == _name.lower().strip():
+                            _match = _v
+                            break
+                if _match is None:
+                    continue  # header/section row with no CY equivalent — leave
+                for _c in range(2, 10):
+                    _tgt = ws_py.cell(_r, _c)
+                    if isinstance(_tgt, _MC2):
                         continue
-                    from openpyxl.cell import MergedCell as _MC2
-                    tgt = ws_py.cell(r, c)
-                    if isinstance(tgt, _MC2):
-                        continue
-                    tgt.value = None
-
-            # Copy source CY → output PY row-by-row, cell-by-cell.
-            # Find the last row that belongs to the FA table: the last row
-            # that has EITHER a non-empty col A (asset/section name or Total)
-            # OR a numeric rate value in col G (the Rate % column).
-            # This excludes stray formula-overflow values that appear below
-            # the table boundary in columns B-I with no corresponding label.
-            src_last_row = 1
-            for _r in range(src_cy_ws.max_row, 0, -1):
-                _a = src_cy_ws_do.cell(_r, 1).value
-                _g = src_cy_ws_do.cell(_r, rt_col).value
-                if _a is not None or isinstance(_g, (int, float)):
-                    src_last_row = _r
-                    break
-
-            for r in range(1, src_last_row + 1):
-                for c in range(1, 10):  # strictly cols 1-9 only
-                    src_cell_f = src_cy_ws.cell(r, c)
-                    from openpyxl.cell import MergedCell as _MC3
-                    if isinstance(src_cell_f, _MC3):
-                        continue
-                    val = src_cy_ws_do.cell(r, c).value
-                    if val is None:
-                        raw = src_cell_f.value
-                        if not (isinstance(raw, str) and raw.startswith('=')):
-                            val = raw
-                    from openpyxl.cell import MergedCell as _MC4
-                    tgt = ws_py.cell(r, c)
-                    if isinstance(tgt, _MC4):
-                        continue
-                    tgt.value = val
-                    # Copy cell formatting (border, font, fill, alignment,
-                    # number_format) so the table borders render correctly
-                    # in Excel — without this, the Total row's medium border
-                    # is missing and it appears outside the table visually.
-                    import copy
-                    if src_cell_f.has_style:
-                        tgt.border    = copy.copy(src_cell_f.border)
-                        tgt.font      = copy.copy(src_cell_f.font)
-                        tgt.fill      = copy.copy(src_cell_f.fill)
-                        tgt.alignment = copy.copy(src_cell_f.alignment)
-                        tgt.number_format = src_cell_f.number_format
-                    if val is not None:
+                    new_val = _match.get(_c)
+                    if new_val is not None:
+                        _tgt.value = new_val
                         copied += 1
+                    elif isinstance(_tgt.value, (int, float)):
+                        # CY has no value for this col but PY has old numeric →
+                        # clear it so stale figures don't persist
+                        _tgt.value = None
 
-            # Copy column widths from source CY so PY columns match
-            import copy
-            for col_letter, col_dim in src_cy_ws.column_dimensions.items():
-                ws_py.column_dimensions[col_letter].width = col_dim.width
-                ws_py.column_dimensions[col_letter].hidden = col_dim.hidden
-            # Copy row heights for rows we've written
-            for row_num in range(1, src_last_row + 1):
-                if row_num in src_cy_ws.row_dimensions:
-                    src_rd = src_cy_ws.row_dimensions[row_num]
-                    ws_py.row_dimensions[row_num].height = src_rd.height
-                    ws_py.row_dimensions[row_num].hidden = src_rd.hidden
+            log.append(f"✓ FA PY: updated '{py_sn}' with CY closing values ({copied} cells)")
 
-            log.append(f"✓ FA PY: copied source CY sheet into '{py_sn}' ({copied} cells)")
-
-            # 1b) Fix CY opening-WDV formulas after PY restructure.
-            #
-            # The CY sheet's B column contains cross-sheet formulas like
-            # ='Fixed Assets P. Yr.'!I9 that pull the opening WDV from the
-            # original PY sheet. Those row numbers were hardcoded to the
-            # OLD PY layout (e.g. Battery was at PY row 9). Now that we've
-            # replaced the PY sheet with a copy of the CY sheet, the same
-            # assets appear at the SAME row numbers as in CY (Battery is
-            # now at PY row 10, matching CY row 10). The old formula
-            # ='Fixed Assets P. Yr.'!I9 now picks up a section-header
-            # (PLANT & MACHINERY, I=blank) instead of Battery's closing WDV.
-            #
-            # Fix: for each CY B-column cross-sheet formula referencing PY,
-            # check whether the referenced PY row in the NEW PY sheet still
-            # holds the correct asset name. If not, find the correct row in
-            # the new PY (same row as the CY asset row) and update the
-            # formula to reference that row instead.
-            import re as _re_cyfix
-            for r in range(1, ws_cy.max_row + 1):
-                b_cell = ws_cy.cell(r, 2)  # B column = opening WDV
-                from openpyxl.cell import MergedCell as _MC5
-                if isinstance(b_cell, _MC5):
-                    continue
-                bval = b_cell.value
-                if not (isinstance(bval, str) and bval.startswith('=')
-                        and py_sn.lower() in bval.lower()):
-                    continue
-                # Extract referenced PY row number
-                m = _re_cyfix.search(r'!I(\d+)', bval)
-                if not m:
-                    continue
-                old_py_row = int(m.group(1))
-                # The CY asset name at this row
-                cy_a = ws_cy_do.cell(r, 1).value
-                if not cy_a:
-                    cy_a = ws_cy.cell(r, 1).value
-                if not cy_a or str(cy_a).startswith('='):
-                    continue
-                cy_a_norm = str(cy_a).strip().lower()
-                # Find the correct row in the NEW PY sheet for this asset.
-                # Since new PY = copy of CY, the asset is at the same row.
-                new_py_row = r  # new PY row = CY row
-                if new_py_row != old_py_row:
-                    new_formula = bval.replace(f'!I{old_py_row}', f'!I{new_py_row}')
-                    b_cell.value = new_formula
-
-            # 1c) Fix bs sheet cross-references after PY restructure.
-            #
-            # The bs sheet contains formulas that reference specific row
-            # numbers in the FA P.Yr sheet — e.g. ='Fixed Assets P. Yr.'!I38
-            # which pointed to the TOTAL row in the ORIGINAL PY sheet (R38).
-            # After our rollover, the new PY sheet is a copy of the CY sheet
-            # where the Total row is at a DIFFERENT row (e.g. R42 for Chetan
-            # Textiles). The old formula now references the wrong row (Property
-            # data row = 0 instead of the Total = 183,827).
-            #
-            # Also: bs!F8 = '=capital!G11' (PY capital) and similar cross-
-            # sheet references can be replaced by plain values by
-            # processor.process — restore them from the source file.
+            # 1c) Restore BS cross-sheet formulas that processor.py may have
+            # cleared as cached values. Since PY sheet now keeps its original
+            # row structure, no row-number remapping is needed here — the
+            # existing BS formulas (e.g. ='Fixed Assets P. Yr.'!I21) still
+            # point to the correct total row. Only restore formulas that were
+            # converted to plain values.
             if 'bs' in wb.sheetnames and src_wb and 'bs' in src_wb.sheetnames:
                 ws_bs = wb['bs']
                 ws_bs_src = src_wb['bs']
-
-                # Find the new Total row in the new PY sheet
-                new_py_total_row = None
-                for _r in range(1, ws_py.max_row + 1):
-                    _a = str(ws_py.cell(_r, 1).value or "").strip().lower()
-                    if _a == "total":
-                        new_py_total_row = _r
-                        break
-
                 import re as _re_bs
                 for r in range(1, ws_bs.max_row + 1):
                     for c in range(1, ws_bs.max_column + 1):
@@ -10057,27 +9970,9 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                         cur_val = ws_bs.cell(r, c).value
                         if not (isinstance(src_val, str) and src_val.startswith('=')):
                             continue
-                        # If the source had a formula but the generated output
-                        # has a plain number, restore the formula (fixes capital
-                        # reference bs!F8='=capital!G11' being replaced by value)
+                        # Restore formula if processor replaced it with a plain value
                         if not (isinstance(cur_val, str) and cur_val.startswith('=')):
                             ws_bs.cell(r, c).value = src_val
-                            cur_val = src_val
-                        # Fix FA P.Yr row references in bs formulas
-                        if py_sn and py_sn in cur_val and new_py_total_row:
-                            # Find the old PY total row from the SOURCE bs formula
-                            m = _re_bs.search(
-                                r"'Fixed Assets P\. Yr\.'!I(\d+)",
-                                cur_val
-                            )
-                            if m:
-                                old_ref_row = int(m.group(1))
-                                if old_ref_row != new_py_total_row:
-                                    new_formula = cur_val.replace(
-                                        f'!I{old_ref_row}',
-                                        f'!I{new_py_total_row}'
-                                    )
-                                    ws_bs.cell(r, c).value = new_formula
 
 
         cy_data_rows = set()
