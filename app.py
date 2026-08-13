@@ -8178,14 +8178,14 @@ function gstDragLeave(e,dzId){
 
             <!-- Excel upload toggle (optional) -->
       <div style="margin-bottom:14px;text-align:center">
-        <a href="javascript:void(0)" id="excel-toggle-btn" onclick="toggleExcelMode()"
-          style="font-size:12px;color:var(--brand);text-decoration:underline;cursor:pointer">
-          Prefer uploading an Excel file instead? Click here
-        </a>
+        <button type="button" id="excel-toggle-btn" onclick="toggleExcelMode()"
+          style="background:var(--brand-l);border:1px solid var(--brand);border-radius:8px;padding:8px 18px;font-size:12px;font-weight:600;color:var(--brand-d);cursor:pointer;font-family:inherit">
+          Or upload an Excel file instead &#8594;
+        </button>
       </div>
 
       <!-- Excel upload (hidden by default) -->
-      <div id="excel-upload-section" style="display:none">
+      <div id="excel-upload-section" style="display:none;border-top:2px solid var(--brand);padding-top:14px;margin-top:4px">
         <div class="field">
           <label>Sales Summary (Excel)</label>
           <div class="dropzone" id="dz-sales" ondragover="gstDragOver(event,'dz-sales')" ondragleave="gstDragLeave(event,'dz-sales')" ondrop="gstDrop(event,'dz-sales','file-sales','sf-sales')">
