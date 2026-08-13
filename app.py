@@ -8141,8 +8141,8 @@ function gstDragLeave(e,dzId){
         <label>Financial Year</label>
         <select id="fy-select" onchange="buildMonthInputs()"
           style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px 12px;font-size:13px;font-family:inherit;outline:none">
-          <option value="2025-26">2025-26 (Apr 2025 – Mar 2026)</option>
           <option value="2026-27" selected>2026-27 (Apr 2026 – Mar 2027)</option>
+          <option value="2025-26">2025-26 (Apr 2025 – Mar 2026)</option>
           <option value="2024-25">2024-25 (Apr 2024 – Mar 2025)</option>
           <option value="2023-24">2023-24 (Apr 2023 – Mar 2024)</option>
         </select>
@@ -8351,7 +8351,7 @@ function buildMonthInputs() {
       + m.label + ' ' + m.yr + '</label>'
       + '<input type="number" min="0" step="0.01" id="ms_' + key + '" placeholder="0.00"'
       + ' style="border:1.5px solid var(--border);border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit;outline:none;width:100%;box-sizing:border-box"'
-      + ' onfocus="this.style.borderColor='var(--brand)'" onblur="this.style.borderColor='var(--border)'">';
+      + '>';
     grid.appendChild(div);
   });
 }
@@ -9113,13 +9113,11 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path,
         cell.alignment = center
         cell.border = border
 
-    # Ensure col_headers is always defined (only populated in Excel mode)
-    if 'col_headers' not in dir() or col_headers is None:
-        col_headers = {}
-
     # ── Detect consolidated vs split-by-location mode ──────────────────────
     # In manual_sales mode, always treat as consolidated (one figure per month)
     _is_manual = manual_sales is not None
+    if _is_manual and 'col_headers' not in dir():
+        col_headers = {}
     forced_consolidated = _is_manual or ("__consolidated__" in mappings)
     consolidated_hint   = mappings.pop("__consolidated__", "") if (not _is_manual and "__consolidated__" in mappings) else ""
     non_empty_cols = [v.strip() for v in mappings.values() if v and v.strip()]
