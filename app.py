@@ -8162,7 +8162,7 @@ function gstDragLeave(e,dzId){
           ✅ <strong>Consolidated mode:</strong> One total sales figure per month, compared against sum of all GSTR 3B states.
         </div>
         <div id="split-hint" style="margin-top:8px;padding:8px 12px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:12px;color:#065F46">
-          📍 <strong>Consolidated mode:</strong> Enter total sales per month below.
+          📍 <strong>Location-wise mode:</strong> Upload Excel and map each state column below.
         </div>
       </div>
 
@@ -8209,12 +8209,7 @@ function gstDragLeave(e,dzId){
           <a href="/gst-template/consolidated" style="color:var(--brand);font-weight:600">Consolidated</a> ·
           <a href="/gst-template/branchwise" style="color:var(--brand);font-weight:600">Branch-wise</a>
         </div>
-      </div>
-        </div>
-        <div style="font-size:11px;color:#065F46;margin-top:6px">
-          Fill in your figures and upload. Do not change column headers or row order.
-        </div>
-      </div>
+      </div><!-- /excel-upload-section -->
 
       <div class="field">
         <label>GSTR 3B PDFs (ZIP file)</label>
@@ -8389,8 +8384,8 @@ function collectManualSales() {
   return hasAny ? result : null;
 }
 
-// Build on load
-window.addEventListener('DOMContentLoaded', function() { buildMonthInputs(); });
+// Build month inputs immediately (script runs after DOM in template)
+buildMonthInputs();
 
 // Drag-and-drop for GST upload zones
 // pointer-events:none on the input passes drags to the .dropzone div.
@@ -8482,10 +8477,14 @@ async function detectStateCodes(file) {
 
 function onConsolidatedChange(){
   const chk = document.getElementById('consolidated-chk').checked;
-  document.getElementById('consolidated-hint').style.display      = chk ? 'block' : 'none';
-  document.getElementById('split-hint').style.display             = chk ? 'none'  : 'block';
-  document.getElementById('mapping-field').style.display          = chk ? 'none'  : 'block';
-  document.getElementById('consolidated-col-field').style.display = chk ? 'block' : 'none';
+  document.getElementById('consolidated-hint').style.display = chk ? 'block' : 'none';
+  document.getElementById('split-hint').style.display        = chk ? 'none'  : 'block';
+  // mapping-field and consolidated-col-field are inside excel-upload-section
+  // only toggle them when in Excel mode
+  var mf  = document.getElementById('mapping-field');
+  var ccf = document.getElementById('consolidated-col-field');
+  if (mf)  mf.style.display  = chk ? 'none'  : 'block';
+  if (ccf) ccf.style.display = chk ? 'block' : 'none';
 }
 
 function addMapping(code,col){
