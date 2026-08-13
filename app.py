@@ -8323,46 +8323,46 @@ var _excelMode = false;
 var _fyMonths = [];
 
 function buildMonthInputs() {
-  var fy = document.getElementById('fy-select').value;        // e.g. "2026-27"
-  var fyStart = parseInt(fy.split('-')[0], 10);               // 2026
-  document.getElementById('fy-label').textContent = fy;
-  var months = [
-    {label:'April',    abbr:'apr', yr: fyStart},
-    {label:'May',      abbr:'may', yr: fyStart},
-    {label:'June',     abbr:'jun', yr: fyStart},
-    {label:'July',     abbr:'jul', yr: fyStart},
-    {label:'August',   abbr:'aug', yr: fyStart},
-    {label:'September',abbr:'sep', yr: fyStart},
-    {label:'October',  abbr:'oct', yr: fyStart},
-    {label:'November', abbr:'nov', yr: fyStart},
-    {label:'December', abbr:'dec', yr: fyStart},
-    {label:'January',  abbr:'jan', yr: fyStart+1},
-    {label:'February', abbr:'feb', yr: fyStart+1},
-    {label:'March',    abbr:'mar', yr: fyStart+1},
+  var sel = document.getElementById('fy-select');
+  if (!sel) return;
+  var fy = sel.value;
+  var fyStart = parseInt(fy.split('-')[0], 10);
+  var lbl = document.getElementById('fy-label');
+  if (lbl) lbl.textContent = fy;
+  var MONTHS = [
+    ['April','apr',0],['May','may',0],['June','jun',0],
+    ['July','jul',0],['August','aug',0],['September','sep',0],
+    ['October','oct',0],['November','nov',0],['December','dec',0],
+    ['January','jan',1],['February','feb',1],['March','mar',1]
   ];
-  _fyMonths = months;
   var grid = document.getElementById('month-inputs-grid');
+  if (!grid) return;
   grid.innerHTML = '';
-  months.forEach(function(m) {
-    var key = m.abbr + '-' + String(m.yr).slice(-2);
-    var div = document.createElement('div');
-    div.style.cssText = 'display:flex;flex-direction:column;gap:3px';
-    div.innerHTML = '<label style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase">'
-      + m.label + ' ' + m.yr + '</label>'
-      + '<input type="number" min="0" step="0.01" id="ms_' + key + '" placeholder="0.00"'
-      + ' style="border:1.5px solid var(--border);border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit;outline:none;width:100%;box-sizing:border-box"'
-      + '>';
-    grid.appendChild(div);
+  MONTHS.forEach(function(m) {
+    var yr = fyStart + m[2];
+    var key = m[1] + '-' + String(yr).slice(-2);
+    var mlbl = document.createElement('label');
+    mlbl.style.cssText = 'font-size:10px;font-weight:600;color:#4B6A72;text-transform:uppercase;display:block;margin-bottom:3px';
+    mlbl.textContent = m[0] + ' ' + yr;
+    var inp = document.createElement('input');
+    inp.type = 'number'; inp.min = '0'; inp.step = '0.01';
+    inp.id = 'ms_' + key; inp.placeholder = '0.00';
+    inp.style.cssText = 'border:1.5px solid #E0F2EE;border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit;outline:none;width:100%;box-sizing:border-box';
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;flex-direction:column;gap:3px';
+    wrap.appendChild(mlbl); wrap.appendChild(inp);
+    grid.appendChild(wrap);
   });
 }
 
 function toggleExcelMode() {
   _excelMode = !_excelMode;
-  document.getElementById('excel-upload-section').style.display = _excelMode ? 'block' : 'none';
-  document.getElementById('manual-entry-section').style.display = _excelMode ? 'none' : 'block';
-  document.getElementById('excel-toggle-btn').textContent = _excelMode
-    ? '✏️ Back to manual entry'
-    : '📂 Prefer uploading an Excel file instead? Click here';
+  var eu = document.getElementById('excel-upload-section');
+  var me = document.getElementById('manual-entry-section');
+  var tb = document.getElementById('excel-toggle-btn');
+  if (eu) eu.style.display = _excelMode ? 'block' : 'none';
+  if (me) me.style.display = _excelMode ? 'none' : 'block';
+  if (tb) tb.textContent = _excelMode ? 'Back to manual entry' : 'Prefer uploading an Excel file instead? Click here';
 }
 
 function collectManualSales() {
@@ -8384,8 +8384,8 @@ function collectManualSales() {
   return hasAny ? result : null;
 }
 
-// Build month inputs immediately (script runs after DOM in template)
-buildMonthInputs();
+// Build month inputs after DOM paint
+setTimeout(function(){ buildMonthInputs(); }, 0);
 
 // Drag-and-drop for GST upload zones
 // pointer-events:none on the input passes drags to the .dropzone div.
