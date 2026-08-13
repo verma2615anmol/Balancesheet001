@@ -8132,52 +8132,87 @@ function gstDragLeave(e,dzId){
     <div class="card-body">
 
       <div class="info-box">
-        <strong>📊 Sales Summary:</strong> Month in col A, sales value in col B (or separate column per branch/state).<br>
-        <strong>📁 GSTR 3B ZIP:</strong> ZIP with sub-folders named by 2-digit state code (e.g. 05/, 09/). GSTR 3B PDFs inside. Reads Table 3.1 A+B+C+E only (excludes D — reverse charge).
+        <strong>✏️ Sales Entry:</strong> Select financial year and type your monthly sales figures directly — no Excel needed.<br>
+        <strong>📁 GSTR 3B ZIP:</strong> Upload your ZIP of GSTR-3B PDFs. No sub-folder structure required — state code is auto-detected from filename or PDF. Reads Table 3.1 A+B+C+E only.
       </div>
 
-      <div style="padding:12px 14px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;margin-bottom:16px">
-        <div style="font-size:12px;font-weight:700;color:#065F46;margin-bottom:8px">⬇ Download Sales Format Template</div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <a href="/gst-template/consolidated"
-             style="display:inline-flex;align-items:center;gap:6px;padding:7px 14px;background:#059669;color:#fff;border-radius:6px;font-size:12px;font-weight:600;text-decoration:none">
-            📥 Consolidated Template
-          </a>
-          <a href="/gst-template/branchwise"
-             style="display:inline-flex;align-items:center;gap:6px;padding:7px 14px;background:#0284C7;color:#fff;border-radius:6px;font-size:12px;font-weight:600;text-decoration:none">
-            📥 Branch / State-wise Template
-          </a>
-        </div>
-        <div style="font-size:11px;color:#065F46;margin-top:6px">
-          Fill in your figures and upload. Do not change column headers or row order.
-        </div>
+      <!-- ── FY Selector + Manual Month Entry (default) ── -->
+      <div class="field" style="margin-bottom:10px">
+        <label>Financial Year</label>
+        <select id="fy-select" onchange="buildMonthInputs()"
+          style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:9px 12px;font-size:13px;font-family:inherit;outline:none">
+          <option value="2025-26">2025-26 (Apr 2025 – Mar 2026)</option>
+          <option value="2026-27" selected>2026-27 (Apr 2026 – Mar 2027)</option>
+          <option value="2024-25">2024-25 (Apr 2024 – Mar 2025)</option>
+          <option value="2023-24">2023-24 (Apr 2023 – Mar 2024)</option>
+        </select>
       </div>
 
-      <!-- CONSOLIDATED CHECKBOX -->
-      <div class="field" style="margin-bottom:14px">
+      <!-- Consolidated / Split toggle -->
+      <div class="field" style="margin-bottom:10px">
         <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;font-weight:600;text-transform:none;letter-spacing:0">
           <input type="checkbox" id="consolidated-chk" onchange="onConsolidatedChange()"
             style="width:18px;height:18px;accent-color:var(--brand);cursor:pointer;flex-shrink:0"/>
           <span>
             <strong>Consolidated Sales Data</strong>
-            <span style="font-weight:400;color:var(--muted);margin-left:6px">— tick if your Excel has ONE total column for all branches combined</span>
+            <span style="font-weight:400;color:var(--muted);margin-left:6px">— tick if you have ONE total figure per month (all states combined)</span>
           </span>
         </label>
         <div id="consolidated-hint" style="display:none;margin-top:8px;padding:8px 12px;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;font-size:12px;color:#1E40AF">
-          ✅ <strong>Consolidated mode:</strong> Tool will compare your single total sales figure against the <em>sum of all GSTR 3B states</em> combined. No column mapping needed.
+          ✅ <strong>Consolidated mode:</strong> One total sales figure per month, compared against sum of all GSTR 3B states.
         </div>
         <div id="split-hint" style="margin-top:8px;padding:8px 12px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;font-size:12px;color:#065F46">
-          📍 <strong>Location-wise mode:</strong> Map each state code to its column header in your Excel below.
+          📍 <strong>Consolidated mode:</strong> Enter total sales per month below.
         </div>
       </div>
 
-      <div class="field">
-        <label>Sales Summary (Excel)</label>
-        <div class="dropzone" id="dz-sales" ondragover="gstDragOver(event,'dz-sales')" ondragleave="gstDragLeave(event,'dz-sales')" ondrop="gstDrop(event,'dz-sales','file-sales','sf-sales')">
-          <div class="dz-icon">📊</div>
-          <div class="dz-text"><strong>Click or drag</strong> your sales summary .xlsx</div>
-          <div class="dz-file" id="sf-sales"></div>
-          <input type="file" id="file-sales" accept=".xlsx,.xls" onchange="pickFile(this,'sf-sales')">
+      <!-- Manual month entry grid -->
+      <div id="manual-entry-section">
+        <label style="display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:8px">
+          Monthly Sales (₹) — <span id="fy-label">2026-27</span>
+        </label>
+        <div id="month-inputs-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px"></div>
+      </div>
+
+      <!-- Excel upload toggle (optional) -->
+      <div style="margin-bottom:14px">
+        <button type="button" onclick="toggleExcelMode()"
+          id="excel-toggle-btn"
+          style="background:none;border:1px dashed var(--border2);border-radius:8px;padding:8px 14px;font-size:12px;color:var(--muted);cursor:pointer;width:100%">
+          📂 Prefer uploading an Excel file instead? Click here
+        </button>
+      </div>
+
+      <!-- Excel upload (hidden by default) -->
+      <div id="excel-upload-section" style="display:none">
+        <div class="field">
+          <label>Sales Summary (Excel)</label>
+          <div class="dropzone" id="dz-sales" ondragover="gstDragOver(event,'dz-sales')" ondragleave="gstDragLeave(event,'dz-sales')" ondrop="gstDrop(event,'dz-sales','file-sales','sf-sales')">
+            <div class="dz-icon">📊</div>
+            <div class="dz-text"><strong>Click or drag</strong> your sales summary .xlsx</div>
+            <div class="dz-file" id="sf-sales"></div>
+            <input type="file" id="file-sales" accept=".xlsx,.xls" onchange="pickFile(this,'sf-sales')">
+          </div>
+        </div>
+        <div style="padding:8px 12px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;margin-bottom:10px;font-size:12px">
+          <strong>Excel column mapping:</strong>
+          <div id="mapping-field" style="margin-top:8px">
+            <div id="mapping-container"></div>
+            <button id="add-mapping" onclick="addMapping()">+ Add Mapping</button>
+          </div>
+          <div id="consolidated-col-field" style="display:none;margin-top:8px">
+            <input type="text" id="consolidated-col-input" placeholder="Sales column header — leave blank to auto-detect"/>
+          </div>
+        </div>
+        <div style="margin-bottom:8px;font-size:12px;color:var(--muted)">
+          ⬇ Templates:
+          <a href="/gst-template/consolidated" style="color:var(--brand);font-weight:600">Consolidated</a> ·
+          <a href="/gst-template/branchwise" style="color:var(--brand);font-weight:600">Branch-wise</a>
+        </div>
+      </div>
+        </div>
+        <div style="font-size:11px;color:#065F46;margin-top:6px">
+          Fill in your figures and upload. Do not change column headers or row order.
         </div>
       </div>
 
@@ -8189,21 +8224,6 @@ function gstDragLeave(e,dzId){
           <div class="dz-file" id="sf-gst"></div>
           <input type="file" id="file-gst" accept=".zip" onchange="pickFile(this,'sf-gst')">
         </div>
-      </div>
-
-      <div class="field" id="mapping-field">
-        <label>State Code → Sales Column Mapping</label>
-        <p class="hint" style="margin-bottom:8px">
-          Enter the exact column header from your Excel for each state code (e.g. DRH/LDH, HOSUR, RUDRAPUR).
-        </p>
-        <div id="mapping-container"></div>
-        <button id="add-mapping" onclick="addMapping()">+ Add Mapping</button>
-      </div>
-
-      <div class="field" id="consolidated-col-field" style="display:none">
-        <label>Column Name in your Excel (Sales column header)</label>
-        <input type="text" id="consolidated-col-input" placeholder="e.g. Total Sales, Sales, ALL PLANTS — leave blank to auto-detect first numeric column"/>
-        <p class="hint">Enter the exact header of the column containing total sales. Leave blank to auto-detect.</p>
       </div>
 
       <div class="field">
@@ -8302,6 +8322,75 @@ function pickFile(inp, sfId){
   if(inp.files.length){sf.textContent='✓ '+inp.files[0].name;sf.style.display='block';}
   if(sfId==='sf-gst' && inp.files[0]){detectStateCodes(inp.files[0]);}
 }
+
+// ── Financial Year → Month inputs ───────────────────────────────────────
+var _excelMode = false;
+var _fyMonths = [];
+
+function buildMonthInputs() {
+  var fy = document.getElementById('fy-select').value;        // e.g. "2026-27"
+  var fyStart = parseInt(fy.split('-')[0], 10);               // 2026
+  document.getElementById('fy-label').textContent = fy;
+  var months = [
+    {label:'April',    abbr:'apr', yr: fyStart},
+    {label:'May',      abbr:'may', yr: fyStart},
+    {label:'June',     abbr:'jun', yr: fyStart},
+    {label:'July',     abbr:'jul', yr: fyStart},
+    {label:'August',   abbr:'aug', yr: fyStart},
+    {label:'September',abbr:'sep', yr: fyStart},
+    {label:'October',  abbr:'oct', yr: fyStart},
+    {label:'November', abbr:'nov', yr: fyStart},
+    {label:'December', abbr:'dec', yr: fyStart},
+    {label:'January',  abbr:'jan', yr: fyStart+1},
+    {label:'February', abbr:'feb', yr: fyStart+1},
+    {label:'March',    abbr:'mar', yr: fyStart+1},
+  ];
+  _fyMonths = months;
+  var grid = document.getElementById('month-inputs-grid');
+  grid.innerHTML = '';
+  months.forEach(function(m) {
+    var key = m.abbr + '-' + String(m.yr).slice(-2);
+    var div = document.createElement('div');
+    div.style.cssText = 'display:flex;flex-direction:column;gap:3px';
+    div.innerHTML = '<label style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase">'
+      + m.label + ' ' + m.yr + '</label>'
+      + '<input type="number" min="0" step="0.01" id="ms_' + key + '" placeholder="0.00"'
+      + ' style="border:1.5px solid var(--border);border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit;outline:none;width:100%;box-sizing:border-box"'
+      + ' onfocus="this.style.borderColor='var(--brand)'" onblur="this.style.borderColor='var(--border)'">';
+    grid.appendChild(div);
+  });
+}
+
+function toggleExcelMode() {
+  _excelMode = !_excelMode;
+  document.getElementById('excel-upload-section').style.display = _excelMode ? 'block' : 'none';
+  document.getElementById('manual-entry-section').style.display = _excelMode ? 'none' : 'block';
+  document.getElementById('excel-toggle-btn').textContent = _excelMode
+    ? '✏️ Back to manual entry'
+    : '📂 Prefer uploading an Excel file instead? Click here';
+}
+
+function collectManualSales() {
+  // Returns {norm_month_key: float} or null if all blank
+  var result = {};
+  var fy = document.getElementById('fy-select').value;
+  var fyStart = parseInt(fy.split('-')[0], 10);
+  var months = ['apr','may','jun','jul','aug','sep','oct','nov','dec','jan','feb','mar'];
+  var yrs = [fyStart,fyStart,fyStart,fyStart,fyStart,fyStart,fyStart,fyStart,fyStart,fyStart+1,fyStart+1,fyStart+1];
+  var hasAny = false;
+  months.forEach(function(abbr, i) {
+    var key = abbr + '-' + String(yrs[i]).slice(-2);
+    var el = document.getElementById('ms_' + key);
+    if (el && el.value.trim() !== '' && parseFloat(el.value) > 0) {
+      result[key] = parseFloat(el.value);
+      hasAny = true;
+    }
+  });
+  return hasAny ? result : null;
+}
+
+// Build on load
+window.addEventListener('DOMContentLoaded', function() { buildMonthInputs(); });
 
 // Drag-and-drop for GST upload zones
 // pointer-events:none on the input passes drags to the .dropzone div.
@@ -8419,52 +8508,47 @@ function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t
 async function doProcess(){
   const btn=document.getElementById('proc-btn'),sp=document.getElementById('sp'),bt=document.getElementById('bt');
   const dl=document.getElementById('dl-link');
-  const salesFile=document.getElementById('file-sales').files[0];
   const gstFile=document.getElementById('file-gst').files[0];
-  if(!salesFile){showStatus('error','✗ Please upload your Sales Summary Excel file.');return;}
   if(!gstFile){showStatus('error','✗ Please upload your GSTR 3B ZIP file.');return;}
 
-  // Check consolidated mode
-  const chkEl=document.getElementById('consolidated-chk');
-  const isConsolidated = chkEl && chkEl.checked;
-
-  // Collect state-column mappings (location-wise mode only)
-  const mappings={};
-  if(!isConsolidated){
-    const rows=document.querySelectorAll('.mapping-row');
-    for(const r of rows){
-      const code=r.querySelector('.map-code').value.trim();
-      const col=r.querySelector('.map-col').value.trim();
-      if(code&&col)mappings[code]=col;
-    }
-    if(Object.keys(mappings).length===0){
-      // FIX Bug 2: Check if rows exist but have empty column values (auto-detect case).
-      const allRows = document.querySelectorAll('.mapping-row');
-      const hasIncomplete = Array.from(allRows).some(r => r.querySelector('.map-code').value.trim() && !r.querySelector('.map-col').value.trim());
-      const msg = hasIncomplete
-        ? '✗ Please fill in the <strong>Column Header</strong> field for each state row (the second input box, e.g. "DRH/LDH", "Total Sales").'
-        : '✗ Please add at least one State Code → Column mapping, or tick Consolidated Sales.';
-      showStatus('error', msg);
-      // Scroll the error message into view so user can see it
-      const statusEl = document.getElementById('status');
-      if(statusEl) statusEl.scrollIntoView({behavior:'smooth', block:'center'});
-      return;
-    }
-  }
-
-  // Build FormData FIRST, then append all fields
   const fd=new FormData();
-  fd.append('sales_file',salesFile);
   fd.append('gst_file',gstFile);
-  fd.append('mappings',JSON.stringify(mappings));
   fd.append('output_name',document.getElementById('output-name').value.trim());
 
-  // Consolidated params
-  if(isConsolidated){
-    const colInputEl=document.getElementById('consolidated-col-input');
-    const colName=(colInputEl?colInputEl.value:'').trim();
-    fd.append('consolidated_mode','true');
-    fd.append('consolidated_col',colName);
+  if(!_excelMode){
+    // Manual entry mode (default)
+    const manualSales=collectManualSales();
+    if(!manualSales){showStatus('error','✗ Please enter at least one month\'s sales value.');return;}
+    fd.append('manual_sales',JSON.stringify(manualSales));
+    fd.append('mappings',JSON.stringify({}));
+  } else {
+    // Excel upload mode
+    const salesFile=document.getElementById('file-sales').files[0];
+    if(!salesFile){showStatus('error','✗ Please upload your Sales Summary Excel file.');return;}
+    fd.append('sales_file',salesFile);
+    const chkEl=document.getElementById('consolidated-chk');
+    const isConsolidated=chkEl&&chkEl.checked;
+    const mappings={};
+    if(!isConsolidated){
+      const rows=document.querySelectorAll('.mapping-row');
+      for(const r of rows){
+        const code=r.querySelector('.map-code').value.trim();
+        const col=r.querySelector('.map-col').value.trim();
+        if(code&&col)mappings[code]=col;
+      }
+      if(Object.keys(mappings).length===0){
+        const allRows=document.querySelectorAll('.mapping-row');
+        const hasIncomplete=Array.from(allRows).some(r=>r.querySelector('.map-code').value.trim()&&!r.querySelector('.map-col').value.trim());
+        showStatus('error',hasIncomplete?'✗ Please fill in the Column Header for each state row.':'✗ Please add at least one State Code → Column mapping, or tick Consolidated Sales.');
+        return;
+      }
+    }
+    fd.append('mappings',JSON.stringify(mappings));
+    if(isConsolidated){
+      const colName=(document.getElementById('consolidated-col-input')||{value:''}).value.trim();
+      fd.append('consolidated_mode','true');
+      fd.append('consolidated_col',colName);
+    }
   }
 
   btn.disabled=true;sp.style.display='inline-block';bt.textContent='Processing…';
@@ -8697,8 +8781,10 @@ def _month_key(period_name, fy_str):
     return f"{abbr}-{str(yr)[2:]}"
 
 
-def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path):
-    """Process GST reconciliation and generate output Excel."""
+def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path, manual_sales=None):
+    """Process GST reconciliation and generate output Excel.
+    If manual_sales is provided (dict of norm_month_key: float), skip reading sales_path.
+    """
     from openpyxl import load_workbook as lb
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
@@ -8708,87 +8794,88 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
     log = []
 
     # --- 1. Read Sales Summary ---
-    wb_sales = lb(sales_path, read_only=True, data_only=True)
-    ws = wb_sales[wb_sales.sheetnames[0]]
-    rows = list(ws.iter_rows(min_row=1, max_row=500, values_only=False))
-    wb_sales.close()
+    # manual_sales bypasses Excel reading: {norm_month: total_float}
+    if manual_sales is not None:
+        sales_data = {k: {'__manual__': v} for k, v in manual_sales.items() if v and v > 0}
+        log.append(f"Manual sales: {', '.join(sales_data.keys())}")
+    else:
+        wb_sales = lb(sales_path, read_only=True, data_only=True)
+        ws = wb_sales[wb_sales.sheetnames[0]]
+        rows = list(ws.iter_rows(min_row=1, max_row=500, values_only=False))
+        wb_sales.close()
 
-    # Find header row (first row with "Month" in col A or similar)
-    header_idx = None
-    for i, row in enumerate(rows):
-        a_val = str(row[0].value or '').strip().lower()
-        if a_val in ('month', 'months', 'period'):
-            header_idx = i
-            break
-    if header_idx is None:
-        # Try: any row with 1+ non-empty cells where at least one is a text header (non-numeric)
+        # Find header row (first row with "Month" in col A or similar)
+        header_idx = None
         for i, row in enumerate(rows):
-            non_empty = [c for c in row if c.value is not None]
-            has_text = any(
-                isinstance(c.value, str) and c.value.strip()
-                and c.value.strip().lower() not in ('total', 'grand total', 'subtotal')
-                for c in non_empty
-            )
-            has_numeric = any(isinstance(c.value, (int, float)) for c in non_empty)
-            if len(non_empty) >= 1 and has_text and not has_numeric:
+            a_val = str(row[0].value or '').strip().lower()
+            if a_val in ('month', 'months', 'period'):
                 header_idx = i
                 break
-    if header_idx is None:
-        # Final fallback: first row with any non-empty cell
-        for i, row in enumerate(rows):
-            if any(c.value is not None for c in row):
-                header_idx = i
-                break
-    if header_idx is None:
-        return {'status': 'error', 'message': 'Could not find header row in sales file.'}
+        if header_idx is None:
+            for i, row in enumerate(rows):
+                non_empty = [c for c in row if c.value is not None]
+                has_text = any(
+                    isinstance(c.value, str) and c.value.strip()
+                    and c.value.strip().lower() not in ('total', 'grand total', 'subtotal')
+                    for c in non_empty
+                )
+                has_numeric = any(isinstance(c.value, (int, float)) for c in non_empty)
+                if len(non_empty) >= 1 and has_text and not has_numeric:
+                    header_idx = i
+                    break
+        if header_idx is None:
+            for i, row in enumerate(rows):
+                if any(c.value is not None for c in row):
+                    header_idx = i
+                    break
+        if header_idx is None:
+            return {'status': 'error', 'message': 'Could not find header row in sales file.'}
 
-    header_row = rows[header_idx]
-    col_headers = {str(c.value).strip(): c.column - 1 for c in header_row if c.value}
-    log.append(f"Sales columns found: {', '.join(col_headers.keys())}")
+        header_row = rows[header_idx]
+        col_headers = {str(c.value).strip(): c.column - 1 for c in header_row if c.value}
+        log.append(f"Sales columns found: {', '.join(col_headers.keys())}")
 
-    # FIX: Find Month column dynamically (not hardcoded to col 0)
-    month_col_idx = 0
-    for hdr, idx in col_headers.items():
-        if hdr.lower() in ('month', 'months', 'period'):
-            month_col_idx = idx
-            break
-
-    def _parse_sales_val(val):
-        if val is None: return 0.0
-        if isinstance(val, (int, float)): return float(val)
-        s = str(val).strip().replace(',', '')
-        try: return float(s)
-        except: return 0.0
-
-    # Read month-wise sales data
-    _DT_MNAMES = {1:'January',2:'February',3:'March',4:'April',5:'May',6:'June',
-                  7:'July',8:'August',9:'September',10:'October',11:'November',12:'December'}
-    sales_data = {}
-    for row in rows[header_idx + 1:]:
-        month_val = row[month_col_idx].value if len(row) > month_col_idx else None
-        if month_val is None:
-            continue
-        if hasattr(month_val, 'month') and hasattr(month_val, 'year'):
-            month_val = f"{_DT_MNAMES[month_val.month]}-{str(month_val.year)[2:]}"
-        ms = str(month_val).strip()
-        if 'total' in ms.lower() or 'grand' in ms.lower():
-            continue
-        row_data = {}
+        month_col_idx = 0
         for hdr, idx in col_headers.items():
             if hdr.lower() in ('month', 'months', 'period'):
-                continue
-            try:
-                val = row[idx].value if len(row) > idx else None
-                row_data[hdr] = _parse_sales_val(val)
-            except:
-                row_data[hdr] = 0.0
-        if ms not in sales_data:
-            sales_data[ms] = row_data
-        else:
-            if sum(abs(v) for v in row_data.values()) > sum(abs(v) for v in sales_data[ms].values()):
-                sales_data[ms] = row_data
+                month_col_idx = idx
+                break
 
-    log.append(f"Sales months found: {', '.join(sales_data.keys())}")
+        def _parse_sales_val(val):
+            if val is None: return 0.0
+            if isinstance(val, (int, float)): return float(val)
+            s = str(val).strip().replace(',', '')
+            try: return float(s)
+            except: return 0.0
+
+        _DT_MNAMES = {1:'January',2:'February',3:'March',4:'April',5:'May',6:'June',
+                      7:'July',8:'August',9:'September',10:'October',11:'November',12:'December'}
+        sales_data = {}
+        for row in rows[header_idx + 1:]:
+            month_val = row[month_col_idx].value if len(row) > month_col_idx else None
+            if month_val is None:
+                continue
+            if hasattr(month_val, 'month') and hasattr(month_val, 'year'):
+                month_val = f"{_DT_MNAMES[month_val.month]}-{str(month_val.year)[2:]}"
+            ms = str(month_val).strip()
+            if 'total' in ms.lower() or 'grand' in ms.lower():
+                continue
+            row_data = {}
+            for hdr, idx in col_headers.items():
+                if hdr.lower() in ('month', 'months', 'period'):
+                    continue
+                try:
+                    val = row[idx].value if len(row) > idx else None
+                    row_data[hdr] = _parse_sales_val(val)
+                except:
+                    row_data[hdr] = 0.0
+            if ms not in sales_data:
+                sales_data[ms] = row_data
+            else:
+                if sum(abs(v) for v in row_data.values()) > sum(abs(v) for v in sales_data[ms].values()):
+                    sales_data[ms] = row_data
+
+        log.append(f"Sales months found: {', '.join(sales_data.keys())}")
 
     # --- 2. Extract GSTR 3B data from ZIP ---
     gst_data = {}  # {state_code: {month_key: {taxable, igst, cgst, sgst, cess, total_tax}}}
@@ -8847,7 +8934,19 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
                     continue
 
                 if result and not result.get('state_code'):
-                    result['state_code'] = _folder_sc_hint.get(entry_path)
+                    _sc = _folder_sc_hint.get(entry_path)
+                    # Feature 2: If no folder hint, extract state code from GSTIN
+                    # embedded in filename e.g. GSTR3B_03AACCV3855D1ZM_042026.pdf
+                    if not _sc:
+                        import re as _rg
+                        _gm = _rg.search(r'GSTR3?B_([0-9]{2}[A-Z0-9]{13})_', fname, _rg.IGNORECASE)
+                        if _gm:
+                            _gstin = _gm.group(1)
+                            if _gstin[:2].isdigit():
+                                _sc = _gstin[:2]
+                                if _sc not in _sc_display_name:
+                                    _sc_display_name[_sc] = _gstin
+                    result['state_code'] = _sc
 
                 if result and result['state_code'] and result['period']:
                     sc = result['state_code']
@@ -9015,14 +9114,24 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
         cell.alignment = center
         cell.border = border
 
+    # Ensure col_headers is always defined (only populated in Excel mode)
+    if 'col_headers' not in dir() or col_headers is None:
+        col_headers = {}
+
     # ── Detect consolidated vs split-by-location mode ──────────────────────
-    forced_consolidated = "__consolidated__" in mappings
-    consolidated_hint   = mappings.pop("__consolidated__", "") if forced_consolidated else ""
+    # In manual_sales mode, always treat as consolidated (one figure per month)
+    _is_manual = manual_sales is not None
+    forced_consolidated = _is_manual or ("__consolidated__" in mappings)
+    consolidated_hint   = mappings.pop("__consolidated__", "") if (not _is_manual and "__consolidated__" in mappings) else ""
     non_empty_cols = [v.strip() for v in mappings.values() if v and v.strip()]
     is_consolidated = forced_consolidated or (not non_empty_cols or len(set(c.lower() for c in non_empty_cols)) == 1)
 
     consolidated_col = None
-    if is_consolidated:
+    if _is_manual:
+        # Manual mode: sales_data keys are month keys, value dict has '__manual__' key
+        consolidated_col = "__manual__"
+        log.append(f"✅ Manual sales entry mode — {len(sales_data)} months with data")
+    elif is_consolidated:
         if forced_consolidated and consolidated_hint and consolidated_hint != "__auto__":
             matched = next((h for h in col_headers if h.lower()==consolidated_hint.lower()), consolidated_hint)
             non_empty_cols = [matched]
@@ -9051,7 +9160,7 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
         if not valid_mappings:
             return {"status":"error","message":"No valid mappings found."}
 
-    log.append(f"Mode: {'Consolidated' if is_consolidated else 'Split'} · States: {', '.join(sorted(valid_mappings.keys()))}")
+    log.append(f"Mode: {'Manual/Consolidated' if _is_manual else ('Consolidated' if is_consolidated else 'Split')} · States: {', '.join(sorted(valid_mappings.keys()))}")
 
     # GSTR3B months ONLY — never include sales-only months in output
     gstr_months_set = {mk for sc_d in gst_data.values() for mk in sc_d.keys()}
@@ -9061,6 +9170,10 @@ def _process_gst_reconciliation(sales_path, gst_zip_path, mappings, output_path)
         p = mk.split("-"); return f"{p[0].capitalize()}-{p[1]}" if len(p)==2 else mk.capitalize()
 
     def _sales_val(mk, col):
+        # Manual mode: col is "__manual__", value is stored directly
+        if col == "__manual__":
+            v = sales_data.get(mk, {}).get("__manual__") or 0.0
+            return float(v)
         v = sales_data.get(mk,{}).get(col) or sales_data.get(mk.split("-")[0],{}).get(col) or 0.0
         return float(v)
 
@@ -9229,29 +9342,42 @@ def gst_process():
             return jsonify({"status": "error",
                 "message": f"No uploads remaining. Contact {CONTACT_EMAIL} to recharge."})
 
-        if "sales_file" not in request.files or "gst_file" not in request.files:
-            return jsonify({"status": "error", "message": "Please upload both files."})
+        # Support both manual-entry mode and Excel-upload mode
+        manual_sales_raw = request.form.get("manual_sales", "")
+        manual_sales = None
+        if manual_sales_raw:
+            try:
+                manual_sales = {k: float(v) for k, v in json.loads(manual_sales_raw).items() if v}
+            except:
+                return jsonify({"status": "error", "message": "Invalid manual sales data."})
 
-        sales_f = request.files["sales_file"]
+        if "gst_file" not in request.files:
+            return jsonify({"status": "error", "message": "Please upload the GSTR 3B ZIP file."})
+
         gst_f = request.files["gst_file"]
-
-        if not sales_f.filename.lower().endswith(('.xlsx', '.xls')):
-            return jsonify({"status": "error", "message": "Sales file must be .xlsx or .xls"})
         if not gst_f.filename.lower().endswith('.zip'):
             return jsonify({"status": "error", "message": "GSTR 3B file must be a .zip"})
+
+        # If not manual mode, require sales Excel
+        sales_f = request.files.get("sales_file")
+        if manual_sales is None:
+            if not sales_f or not sales_f.filename:
+                return jsonify({"status": "error", "message": "Please upload your Sales Summary Excel file."})
+            if not sales_f.filename.lower().endswith(('.xlsx', '.xls')):
+                return jsonify({"status": "error", "message": "Sales file must be .xlsx or .xls"})
 
         try:
             mappings = json.loads(request.form.get("mappings", "{}"))
         except:
             return jsonify({"status": "error", "message": "Invalid mapping data."})
 
-        # Handle consolidated checkbox
+        # Handle consolidated checkbox (only relevant for Excel mode)
         consolidated_mode = request.form.get("consolidated_mode", "").lower() == "true"
         consolidated_col  = request.form.get("consolidated_col", "").strip()
-        if consolidated_mode:
+        if consolidated_mode and manual_sales is None:
             mappings["__consolidated__"] = consolidated_col or "__auto__"
 
-        if not mappings:
+        if manual_sales is None and not mappings:
             return jsonify({"status": "error", "message": "Please provide at least one state-column mapping or tick Consolidated Sales."})
 
         on = request.form.get("output_name", "").strip()
@@ -9261,18 +9387,23 @@ def gst_process():
         op = os.path.join(OUTPUT_DIR, f"{h}_out.xlsx")
 
         try:
-            orig = sales_f.filename.lower()
-            if orig.endswith('.xls') and not orig.endswith('.xlsx'):
-                xls_tmp = os.path.join(UPLOAD_DIR, f"{h}_sales.xls")
-                sales_f.save(xls_tmp)
-                _convert_xls_to_xlsx(xls_tmp, sales_path)
-                try: os.remove(xls_tmp)
-                except: pass
-            else:
-                sales_f.save(sales_path)
+            if manual_sales is None and sales_f:
+                orig = sales_f.filename.lower()
+                if orig.endswith('.xls') and not orig.endswith('.xlsx'):
+                    xls_tmp = os.path.join(UPLOAD_DIR, f"{h}_sales.xls")
+                    sales_f.save(xls_tmp)
+                    _convert_xls_to_xlsx(xls_tmp, sales_path)
+                    try: os.remove(xls_tmp)
+                    except: pass
+                else:
+                    sales_f.save(sales_path)
             gst_f.save(gst_path)
 
-            result = _process_gst_reconciliation(sales_path, gst_path, mappings, op)
+            result = _process_gst_reconciliation(
+                sales_path if manual_sales is None else None,
+                gst_path, mappings, op,
+                manual_sales=manual_sales
+            )
         except Exception as e:
             return jsonify({"status": "error", "message": f"Processing error: {e}"})
         finally:
