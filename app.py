@@ -10049,13 +10049,29 @@ def _rollover_fixed_assets(output_path, cy_year, log, source_path=None):
                 ws_bs = wb[_bs_sn]
                 ws_bs_src = src_wb[_bs_src_sn]
 
-                # Find the new Total row in the new PY sheet
+                # Find the new Total row in the new PY sheet.
+                # Search by "total" label first; if not found (new PY is a copy
+                # of CY whose total row label is the firm name, not "Total"),
+                # fall back to finding the last row with a SUM formula in col I.
                 new_py_total_row = None
                 for _r in range(1, ws_py.max_row + 1):
                     _a = str(ws_py.cell(_r, 1).value or "").strip().lower()
                     if _a == "total":
                         new_py_total_row = _r
                         break
+                if new_py_total_row is None:
+                    from openpyxl.cell import MergedCell as _MCt
+                    for _r in range(ws_py.max_row, 0, -1):
+                        _i_cell = ws_py.cell(_r, 9)
+                        if isinstance(_i_cell, _MCt):
+                            continue
+                        _iv = _i_cell.value
+                        if isinstance(_iv, str) and _iv.startswith('=') and 'SUM' in _iv.upper():
+                            new_py_total_row = _r
+                            break
+                        if isinstance(_iv, (int, float)) and _iv > 0:
+                            new_py_total_row = _r
+                            break
 
                 import re as _re_bs
                 for r in range(1, ws_bs.max_row + 1):
