@@ -1387,6 +1387,23 @@ def _process_sheet_xml(xml_bytes: bytes, col_pairs: list,
                                     for _xm in _xref_re.finditer(cy_f_text):
                                         _ref_sn = (_xm.group(1) or _xm.group(3) or "").strip()
                                         _ref_col = (_xm.group(2) or _xm.group(4) or "")
+                                        # CROSS-SHEET STALE FIX (2026-08-13):
+                                        # Sheets in CAPITAL_SHEET_NAMES and TEXT_ONLY_SHEETS
+                                        # are never in shift_map (capital uses special row-shift
+                                        # logic; TEXT_ONLY sheets like "Fixed Assets C. Yr." are
+                                        # skipped entirely). Their summary/closing columns (e.g.
+                                        # capital!G8, 'Fixed Assets C. Yr.'!I24) ARE live values
+                                        # that recalculate from the new year's data. Treating
+                                        # them as stale and doing clear_v (which removes the <f>
+                                        # tag entirely) destroys the cross-sheet formula in the
+                                        # CY column, leaving the cell blank in the output.
+                                        # Fix: any cross-sheet ref whose target sheet is a
+                                        # capital or TEXT_ONLY sheet is never stale.
+                                        _ref_sn_lower = _ref_sn.strip().lower()
+                                        if (_ref_sn_lower in CAPITAL_SHEET_NAMES or
+                                                _ref_sn_lower in TEXT_ONLY_SHEETS):
+                                            all_unshifted = False
+                                            break
                                         _sheet_cy_cols = {
                                             c for c, _ in (shift_map or {}).get(_ref_sn, [])
                                         }
