@@ -8173,14 +8173,14 @@ function gstDragLeave(e,dzId){
         </label>
         <div id="month-inputs-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px"></div>
       </div>
+      <script>if(typeof buildMonthInputs==="function")buildMonthInputs();</script>
 
-      <!-- Excel upload toggle (optional) -->
-      <div style="margin-bottom:14px">
-        <button type="button" onclick="toggleExcelMode()"
-          id="excel-toggle-btn"
-          style="background:none;border:1px dashed var(--border2);border-radius:8px;padding:8px 14px;font-size:12px;color:var(--muted);cursor:pointer;width:100%">
-          📂 Prefer uploading an Excel file instead? Click here
-        </button>
+            <!-- Excel upload toggle (optional) -->
+      <div style="margin-bottom:14px;text-align:center">
+        <a href="#" id="excel-toggle-btn" onclick="toggleExcelMode();return false;"
+          style="font-size:12px;color:var(--brand);text-decoration:underline;cursor:pointer">
+          Prefer uploading an Excel file instead? Click here
+        </a>
       </div>
 
       <!-- Excel upload (hidden by default) -->
@@ -8384,8 +8384,7 @@ function collectManualSales() {
   return hasAny ? result : null;
 }
 
-// Build month inputs after DOM paint
-setTimeout(function(){ buildMonthInputs(); }, 0);
+// buildMonthInputs is called inline after the grid div (see HTML above)
 
 // Drag-and-drop for GST upload zones
 // pointer-events:none on the input passes drags to the .dropzone div.
