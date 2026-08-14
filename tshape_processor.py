@@ -4,6 +4,19 @@ tshape_processor.py
 ===================
 T-Shaped Balance Sheet → Comparative Balance Sheet Converter
 
+v2.3  2026-08-14  Two more fixes from second output scan:
+                  FIX D — Details R15 (unsecured FROM OTHER PARTIES) was hardcoded
+                    to 0, so the unsecured lenders (Rohit Vig, Santosh Rani etc.) never
+                    appeared in the notes to bs unsecured total. Now writes the sum of
+                    all unsecured_loan_parties minus the related-party subtotal already
+                    in R7-R12, giving the correct "from other parties" balance.
+                  FIX E — _extract_ocl_annexure amt_col search widened from 8 to 15
+                    cols. Added a two-pass wide fallback: if primary scan finds 0 items,
+                    re-scans every row in the Annexure-D section and picks any (text,
+                    number) pair where the text matches an OCL keyword, regardless of
+                    column distance. This recovers "Accounting Charges Payable",
+                    "Audit Fee Payable", "Ch.Issued But Yet Clear", etc. in layouts
+                    where the amount column is far from the label column.
 v2.2  2026-08-14  Three further fixes from full-sheet scan of Sachidanand output:
                   FIX A — cred_last_data_row now stops at the last actual creditor
                     row (CRED_START+n_cred-1), not at the end of the allocated block
@@ -1081,6 +1094,12 @@ def _extract_ocl_annexure(rows, result, log):
     Directly extract OTHER PAYABLE (Annexure-D) items by scanning for the
     section header and reading name+amount from the adjacent columns.
     This handles Salary Payable and other OCL items that the section reader misses.
+
+    FIX E (2026-08-14): Extended amt_col search range from 8 to 15 cols right of name.
+    Also added a two-pass approach: if the keyword-first name_col detection fails to
+    find any items (amt=0 or no keyword match on first real row), fall back to a
+    wider scan that reads ALL text+number pairs in the section and filters by keyword.
+    This handles the Sachidanand layout where the amount col is far from the name col.
     """
     if result.get('other_payable_items'):
         return  # already populated
@@ -1096,7 +1115,13 @@ def _extract_ocl_annexure(rows, result, log):
     _OCL_NAME_KEYS = ('payable', 'tds', 'provision', 'salary',
                       'accrued', 'outstanding', 'due to', 'liability',
                       'advance from', 'ch.issued', 'cheque issued', 'yet clear',
-                      'charges payable', 'fees payable')
+                      'charges payable', 'fees payable', 'bonus', 'rcm')
+    _TRADE_REJECT = ('m/s', 'pvt', 'ltd', 'textile', 'fabrics', 'fashion',
+                     'silk', 'creation', 'impex', 'enterprises', 'house',
+                     'communication', 'print', 'embroidery', 'stores',
+                     'industries', 'international', 'sons', 'bros')
+
+    section_rows = []  # collect all rows in the section for fallback
 
     for i, row in enumerate(rows):
         rs = ' '.join(_s(v).upper() for v in row if v is not None)
@@ -1107,15 +1132,23 @@ def _extract_ocl_annexure(rows, result, log):
                 continue
             continue
 
-        # Detect name_col and amt_col from first item row
+        # Stop at next major section header
+        _STOP = ('SUNDRY CREDITOR', 'ANNEXURE-C', 'ANNEXURE-G', 'CASH & BANK',
+                 'FIXED ASSET', 'SUNDRY DEBTOR', 'TOTAL OF BALANCE')
+        if any(kw in rs for kw in _STOP):
+            break
+
+        section_rows.append(row)
+
+        # Detect name_col and amt_col from first item row that has a keyword match
         if name_col is None:
             for ci, v in enumerate(row):
                 sv = _s(v).strip()
                 if len(sv) > 3:
                     sv_lower = sv.lower()
                     if any(kw in sv_lower for kw in _OCL_NAME_KEYS):
-                        # Find amount nearby
-                        for ac in range(ci + 1, min(ci + 8, len(row))):
+                        # FIX E: search up to 15 cols right (was 8)
+                        for ac in range(ci + 1, min(ci + 15, len(row))):
                             av = row[ac]
                             if isinstance(av, (int, float)) and av > 0:
                                 name_col = ci
@@ -1137,21 +1170,57 @@ def _extract_ocl_annexure(rows, result, log):
         amt = row[amt_col] if amt_col < len(row) else None
         if nm and len(nm) > 2 and isinstance(amt, (int, float)) and amt > 0:
             nm_lower = nm.lower()
-            # FIX S10: Reject trade creditor names (M/s. company names)
-            _TRADE_REJECT = ('m/s', 'pvt', 'ltd', 'textile', 'fabrics', 'fashion',
-                             'silk', 'creation', 'impex', 'enterprises', 'house',
-                             'communication', 'print', 'embroidery', 'stores',
-                             'industries', 'international', 'sons', 'bros')
             if any(tr in nm_lower for tr in _TRADE_REJECT):
                 continue  # skip trade company names — they belong in creditors not OCL
             if any(kw in nm_lower for kw in _OCL_NAME_KEYS):
                 items.append({'name': nm, 'amount': amt})
 
+    # ── FIX E fallback: if primary scan found nothing, do a wide scan of all
+    # text+number pairs in the section, keeping only those matching OCL keywords.
+    # This covers layouts where the amount col is far from name (e.g. col offset > 8).
+    if not items and section_rows:
+        log.append("OCL annexure: primary scan found 0 items, trying wide fallback scan")
+        for row in section_rows:
+            # Find all (text, amount) pairs anywhere in this row
+            text_cells = []
+            num_cells  = []
+            for ci, v in enumerate(row):
+                sv = _s(v).strip()
+                if sv and len(sv) > 3:
+                    try:
+                        float(sv.replace(',', ''))
+                    except ValueError:
+                        text_cells.append((ci, sv))
+                elif isinstance(v, (int, float)) and v is not None and v > 0:
+                    if not (isinstance(v, float) and math.isnan(v)):
+                        num_cells.append((ci, v))
+
+            for tc, nm in text_cells:
+                nm_lower = nm.lower()
+                if any(tr in nm_lower for tr in _TRADE_REJECT):
+                    continue
+                if not any(kw in nm_lower for kw in _OCL_NAME_KEYS):
+                    continue
+                # Find the closest numeric cell to the right
+                for nc, amt in sorted(num_cells, key=lambda x: x[0]):
+                    if nc > tc:
+                        items.append({'name': nm, 'amount': float(amt)})
+                        log.append(f"OCL wide-scan: {nm} = {amt:,.2f} (name_col={tc}, amt_col={nc})")
+                        break
+
     if items:
         # Deduplicate against what's already in unsecured_loan_parties
         existing = {it['name'].strip().lower() for it in
                     result.get('unsecured_loan_parties', [])}
-        new_items = [it for it in items if it['name'].strip().lower() not in existing]
+        # Also deduplicate items against each other (same name/amount)
+        seen_items: dict = {}
+        deduped: list = []
+        for it in items:
+            key = (it['name'].strip().lower(), round(it['amount']))
+            if key not in seen_items:
+                seen_items[key] = True
+                deduped.append(it)
+        new_items = [it for it in deduped if it['name'].strip().lower() not in existing]
         if new_items:
             result['other_payable_items'] = new_items
             log.append(f"OCL annexure: {len(new_items)} items extracted "
@@ -2899,8 +2968,23 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
             _write(ws, r, 2, '')
             _py(ws, r, PY, 0); _cy(ws, r, CY)
     # R13 = SUM formula, R17 = SUM formula, R19 = TOTAL formula — skip
-    # R15 in Details = "from other parties" (writable). For T-shaped clients this is usually 0.
-    _py(ws, 15, PY, 0); _cy(ws, 15, CY)   # Details R15: unsecured from other parties
+    # R15 in Details = "from other parties" (writable single-amount cell).
+    # FIX D (2026-08-14): This was hardcoded to 0, causing the unsecured OTHER PARTIES
+    # total to be blank in the BS (notes to bs R16 reads Details!D15/E15).
+    # The total for "from other parties" = sum of all unsecured_loan_parties MINUS
+    # whatever is already shown in R7-R12 (the related-party slots).
+    # Strategy: sum the full unsecured_loan_parties list and subtract the related-
+    # party total (which is the SUM(E7:E12) formula row at R13).
+    _unsec_all_py = sum(ul.get('amount', 0) for ul in p.get('unsecured_loan_parties', []))
+    _unsec_related_py = sum(
+        ws.cell(r, PY).value or 0
+        for r in range(7, 13)
+    )
+    _unsec_other_py = max(0.0, _unsec_all_py - _unsec_related_py)
+    _py(ws, 15, PY, _unsec_other_py)
+    _cy(ws, 15, CY)
+    log.append(f"Details R15 (unsecured other parties): {_unsec_other_py:,.2f} "
+               f"(total={_unsec_all_py:,.2f}, related={_unsec_related_py:,.2f})")
 
     # ── Sundry creditors (R23-R55, 33 slots; advance R57-R61, 5 slots) ───────
     # Prefer data from _extract_creditor_annexure (Annexure-C, col45/col49).
