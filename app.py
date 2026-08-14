@@ -8517,7 +8517,7 @@ async function doProcess(){
   if(!_excelMode){
     // Manual entry mode (default)
     const manualSales=collectManualSales();
-    if(!manualSales){showStatus('error','✗ Please enter at least one month\'s sales value.');return;}
+    if(!manualSales){showStatus('error','✗ Please enter at least one month\u2019s sales value.');return;}
     fd.append('manual_sales',JSON.stringify(manualSales));
     fd.append('mappings',JSON.stringify({}));
   } else {
