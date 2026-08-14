@@ -4,6 +4,9 @@ tshape_processor.py
 ===================
 T-Shaped Balance Sheet → Comparative Balance Sheet Converter
 
+v2.1  2026-08-14  Bug fixes: unsecured amt_col retry (Bug1), creditor/debtor SUM
+                  formula rewrite after insert_rows (Bug2), Advance-to-Suppliers
+                  SUM formula correction (Bug5), internal Details formula shift.
 v2.0  2026-07-30  COMPLETE REWRITE — forensic column-exact extraction
 
 Architecture:
@@ -1257,7 +1260,73 @@ def _extract_unsecured_annexure_b(rows, result, log):
     log.append(f"Unsecured Annexure-B: {len(items)} parties, total={calc:,.2f} "
                f"(BS={bs_total:,.2f})")
 
-    # Accept if matches BS total (within 2%) or if we have a found_total match
+    # ── BUG 1 FIX: amt_col is detected from the FIRST lender row only.
+    # If that row has an intermediate partial amount at an earlier col (e.g. TDS
+    # withheld, a split payment) before the actual total at a later col, the tool
+    # locks onto the wrong col for ALL lenders, producing a short total.
+    # Strategy: if the collected sum deviates from the BS total by more than 5%,
+    # re-scan with per-row independent amount detection — for each lender row,
+    # find the RIGHTMOST positive numeric value instead of the leftmost.
+    # Also try searching further right (up to col +20) per row.
+    if bs_total > 0 and abs(calc - bs_total) / bs_total > 0.05:
+        log.append(f"Unsecured Annexure-B: sum mismatch ({calc:,.0f} vs {bs_total:,.0f}), "
+                   f"retrying with per-row rightmost-amount detection")
+        items_retry = []
+        in_section2 = False
+        for row2 in rows:
+            rs2 = ' '.join(_s(v).upper() for v in row2 if v is not None)
+            if not in_section2:
+                if ('UNSECURED LOAN' in rs2 or 'UN-SECURED LOAN' in rs2) and \
+                   ('ANNEXURE-B' in rs2 or "'B'" in rs2):
+                    in_section2 = True
+                continue
+            if any(kw in rs2 for kw in _STOP_HEADERS):
+                break
+            # Detect name col (same as before)
+            nm2 = ''
+            nc2 = None
+            for ci2, v2 in enumerate(row2):
+                sv2 = _s(v2).strip()
+                if not sv2 or len(sv2) < 3:
+                    continue
+                svu2 = sv2.upper()
+                if svu2 in _SKIP_NAMES or svu2.startswith('ANNEXURE'):
+                    continue
+                try:
+                    float(sv2.replace(',', ''))
+                    continue
+                except ValueError:
+                    pass
+                nm2 = sv2
+                nc2 = ci2
+                break
+            if nc2 is None or not nm2:
+                continue
+            nmu2 = nm2.upper()
+            if nmu2 in _SKIP_NAMES or nmu2.startswith('ANNEXURE'):
+                continue
+            if nmu2 == 'TOTAL' or nmu2.startswith('TOTAL'):
+                break
+            # Per-row: find the RIGHTMOST numeric col > 1000 (up to 20 cols right of name)
+            best_amt = 0.0
+            for ac2 in range(nc2 + 1, min(nc2 + 20, len(row2))):
+                av2 = row2[ac2]
+                if isinstance(av2, (int, float)) and not (isinstance(av2, float) and math.isnan(av2)) and av2 > 1000:
+                    best_amt = float(av2)   # keep updating → gets rightmost
+            if best_amt > 0:
+                items_retry.append({'name': nm2, 'amount': best_amt})
+
+        if items_retry:
+            calc_retry = sum(x['amount'] for x in items_retry)
+            log.append(f"Unsecured Annexure-B retry: {len(items_retry)} parties, "
+                       f"total={calc_retry:,.2f} (BS={bs_total:,.2f})")
+            # Accept retry if it's closer to BS total than original
+            if bs_total == 0 or abs(calc_retry - bs_total) < abs(calc - bs_total):
+                items = items_retry
+                calc  = calc_retry
+                log.append("Unsecured Annexure-B: retry accepted (better match)")
+
+    # Accept if matches BS total (within 10%) or if we have a found_total match
     if bs_total > 0 and abs(calc - bs_total) / bs_total > 0.10 and \
        (found_total == 0 or abs(calc - found_total) / max(found_total, 1) > 0.10):
         log.append("Unsecured Annexure-B: sum mismatch > 10%, keeping existing parties")
@@ -2821,6 +2890,39 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
         _write(ws, r, 2, '')
         _py(ws, r, PY, 0); _cy(ws, r, CY)
 
+    # ── BUG 2 FIX (part A): Rewrite the creditors SUM formula.
+    # The template has a SUM formula for creditors total at a fixed row.
+    # After insert_rows(), openpyxl does NOT update formula strings — the formula
+    # stays pointing to the old (pre-insertion) row range and gives a wrong total.
+    # We must find that TOTAL row and rewrite the SUM to cover the full new range.
+    cred_last_data_row = CRED_START + CRED_TEMPLATE_SLOTS + extra_rows_cred - 1
+    # The template TOTAL row for creditors is just after the last creditor data slot.
+    # In Sachidanand layout: template R56 = SUM row (after 33 slots R23-R55).
+    # After insertion it moves to R56+extra_rows_cred.
+    cred_sum_template_row = CRED_START + CRED_TEMPLATE_SLOTS  # R56 in original template
+    cred_sum_actual_row   = cred_sum_template_row + extra_rows_cred
+    # Scan near expected position to find the actual TOTAL/SUM row (label or existing SUM)
+    for _tr in range(cred_sum_actual_row, cred_sum_actual_row + 10):
+        try:
+            _cv = ws.cell(_tr, 1).value
+            _dv = ws.cell(_tr, 4).value  # col D
+            _ev = ws.cell(_tr, 5).value  # col E
+            is_sum_row = (
+                (_cv and 'TOTAL' in str(_cv).upper()) or
+                (_dv and isinstance(_dv, str) and 'SUM' in _dv.upper()) or
+                (_ev and isinstance(_ev, str) and 'SUM' in _ev.upper())
+            )
+            if is_sum_row:
+                cred_sum_actual_row = _tr
+                break
+        except Exception:
+            pass
+    # Rewrite creditor SUM formulas with the correct range
+    ws.cell(cred_sum_actual_row, 4).value = f'=SUM(D{CRED_START}:D{cred_last_data_row})'
+    ws.cell(cred_sum_actual_row, 5).value = f'=SUM(E{CRED_START}:E{cred_last_data_row})'
+    log.append(f"Details: creditor SUM rewritten to =SUM(?{CRED_START}:?{cred_last_data_row}) "
+               f"at row {cred_sum_actual_row}")
+
     # All downstream row numbers shift by extra_rows_cred after creditor insertion.
     # Compute dynamic base rows for all sections below.
     _shift = extra_rows_cred  # rows inserted before R56
@@ -2926,20 +3028,91 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
         _write(ws, r, 2, '')
         _py(ws, r, PY, 0); _cy(ws, r, CY)
 
-    # Write corrected SUM formula for debtor total (accounts for dynamic row count)
+    # ── BUG 2 FIX (part B): Rewrite debtor SUM formula after row insertion.
+    # Same issue as creditors — the formula string is stale after insert_rows().
     deb_last = DEB_START + max(n_deb, DEB_TMPL_SLOTS + extra_rows_deb) - 1
     deb_total_row = deb_last + 1
     # Find the TOTAL row label in the sheet (scan near expected position)
-    for _tr in range(deb_total_row, deb_total_row + 5):
+    for _tr in range(deb_total_row, deb_total_row + 8):
         try:
             _cv = ws.cell(_tr, 1).value
-            if _cv and 'TOTAL' in str(_cv).upper():
+            _dv = ws.cell(_tr, 4).value
+            _ev = ws.cell(_tr, 5).value
+            is_sum_row = (
+                (_cv and 'TOTAL' in str(_cv).upper()) or
+                (_dv and isinstance(_dv, str) and 'SUM' in _dv.upper()) or
+                (_ev and isinstance(_ev, str) and 'SUM' in _ev.upper())
+            )
+            if is_sum_row:
                 deb_total_row = _tr
                 break
         except Exception:
             pass
+    # Rewrite debtor SUM for BOTH col D (CY) and col E (PY)
+    ws.cell(deb_total_row, 4).value = f'=SUM(D{DEB_START}:D{deb_last})'
     ws.cell(deb_total_row, 5).value = f'=SUM(E{DEB_START}:E{deb_last})'
-    log.append(f"Details: debtor SUM =SUM(E{DEB_START}:E{deb_last})")
+    log.append(f"Details: debtor SUM =SUM(?{DEB_START}:?{deb_last}) at row {deb_total_row}")
+
+    # ── BUG 5 FIX: Advance to Suppliers formula correction.
+    # The template's Details sheet has an ADVANCE TO SUPPLIERS row whose SUM formula
+    # spans a range that accidentally includes creditor rows placed below the main
+    # creditor section (e.g. Savita, Tinku Vig, "SUNDRY DEBTORS" label row) from the
+    # previous year's layout. This produces a grossly inflated total (e.g. 1,703,660
+    # instead of 0 or the correct advance figure).
+    #
+    # Fix: scan for the ADVANCE TO SUPPLIERS header row in the sheet.
+    # Then find the actual supplier advance rows (blank M/s. slots below the header).
+    # Rewrite the SUM formula to cover ONLY those blank slots.
+    # If the T-shaped XLS has no advance to suppliers (parsed value = 0), zero all cells.
+    adv_to_sup_total = p.get('advance_to_suppliers', 0) or 0
+    # Scan for ADVANCE TO SUPPLIERS header row (within 50 rows of deb_total_row)
+    _adv_sup_row = None
+    for _r in range(deb_total_row + 1, deb_total_row + 60):
+        try:
+            _cv = ws.cell(_r, 1).value
+            if _cv and 'ADVANCE' in str(_cv).upper() and 'SUPPLIER' in str(_cv).upper():
+                _adv_sup_row = _r
+                break
+        except Exception:
+            pass
+    if _adv_sup_row is not None:
+        # Find the range of actual advance-to-suppliers data rows (blank M/s. slots)
+        _adv_data_start = _adv_sup_row + 1
+        _adv_data_end   = _adv_sup_row + 1   # default: single row
+        _adv_total_row  = None
+        for _r in range(_adv_sup_row + 1, _adv_sup_row + 25):
+            try:
+                _cv = ws.cell(_r, 1).value
+                _bv = ws.cell(_r, 2).value
+                if _cv and 'TOTAL' in str(_cv).upper():
+                    _adv_total_row = _r
+                    _adv_data_end  = _r - 1
+                    break
+                # Count rows that look like data slots (M/s. prefix or blank)
+                if _cv in ('M/s.', 'M/s', None, '') or (_bv in (None, '')):
+                    _adv_data_end = _r
+            except Exception:
+                pass
+        # Rewrite the ADVANCE TO SUPPLIERS formula to cover only its proper rows
+        if _adv_total_row is not None:
+            ws.cell(_adv_total_row, 4).value = f'=SUM(D{_adv_data_start}:D{_adv_data_end})'
+            ws.cell(_adv_total_row, 5).value = f'=SUM(E{_adv_data_start}:E{_adv_data_end})'
+            log.append(f"Details: ADVANCE TO SUPPLIERS SUM rewritten to rows "
+                       f"{_adv_data_start}:{_adv_data_end} at total row {_adv_total_row}")
+        # If the T-shaped XLS shows 0 advance to suppliers, zero all data cells
+        if adv_to_sup_total == 0:
+            for _r in range(_adv_data_start, _adv_data_end + 1):
+                try:
+                    _py(ws, _r, PY, 0)
+                    _cy(ws, _r, CY)
+                except Exception:
+                    pass
+            log.append("Details: ADVANCE TO SUPPLIERS zeroed (T-shaped XLS shows 0)")
+        else:
+            # Write the actual advance-to-suppliers total in first data row
+            _py(ws, _adv_data_start, PY, adv_to_sup_total)
+            _cy(ws, _adv_data_start, CY)
+            log.append(f"Details: ADVANCE TO SUPPLIERS PY={adv_to_sup_total:,.2f} written")
 
     # ── Trade receivables <6 months ───────────────────────────────────────────
     _lt6_start = deb_total_row + 4   # TOTAL row + header rows
@@ -2989,6 +3162,10 @@ def _fix_details_formula_refs(wb, shifts, log):
     """
     Repair 'notes to bs' formulas that reference Details rows which moved
     after dynamic row insertion in _inject_details_sheet().
+
+    Also fixes internal Details sheet formulas (e.g. TOTAL rows that reference
+    other Details rows by absolute row number — these shift but openpyxl does
+    not update formula strings automatically after insert_rows()).
 
     Parameters
     ----------
@@ -3063,6 +3240,60 @@ def _fix_details_formula_refs(wb, shifts, log):
 
     log.append(f"Details formula refs: {count} formula(s) updated "
                f"(extra_cred={extra_cred}, extra_deb={extra_deb})")
+
+    # ── BUG 2 FIX (part C): Also repair INTERNAL Details sheet formulas.
+    # The Details sheet itself has formulas that reference absolute row numbers
+    # (e.g. =D62+D68, =SUM(D23:D61), =E62+E68) which shift after insert_rows().
+    # We must update any remaining stale row references in the Details sheet itself.
+    if 'Details' not in wb.sheetnames:
+        return
+    ws_det = wb['Details']
+    from openpyxl.cell import MergedCell as _MCD
+
+    # Build a row-shift map for absolute references in Details formulas:
+    # Any row ref >= insertion_point shifts by extra_rows.
+    # Creditor insertion point = CRED_START + CRED_TEMPLATE_SLOTS = 23 + 33 = 56
+    # Debtor insertion point   = 74 + extra_cred + DEB_TMPL_SLOTS = 74+extra_cred+43
+    CRED_INSERT = 56   # rows >= 56 shift by extra_cred
+    DEB_INSERT  = 74 + extra_cred + 43  # rows >= this shift by extra_deb
+
+    if extra_cred == 0 and extra_deb == 0:
+        return  # nothing to fix
+
+    import re as _re_int
+
+    def _shift_row_ref(m):
+        """Shift a row number in an Excel formula if it falls in an insertion zone."""
+        col_letter = m.group(1) or ''
+        row_num    = int(m.group(2))
+        shifted    = row_num
+        if extra_cred > 0 and row_num >= CRED_INSERT:
+            shifted += extra_cred
+        if extra_deb > 0 and row_num >= DEB_INSERT:
+            shifted += extra_deb
+        return f'{col_letter}{shifted}'
+
+    # Pattern: optional column letter(s) + row number in a formula context
+    # Only match patterns that look like cell references (letter(s) then digits)
+    _CELLREF_PAT = _re_int.compile(r'([A-Za-z]{1,3})(\d+)')
+
+    det_fix_count = 0
+    for row in ws_det.iter_rows():
+        for cell in row:
+            if isinstance(cell, _MCD):
+                continue
+            v = cell.value
+            if not isinstance(v, str) or not v.startswith('='):
+                continue
+            # Apply shift to all cell references in this formula
+            new_v = _CELLREF_PAT.sub(_shift_row_ref, v)
+            if new_v != v:
+                cell.value = new_v
+                det_fix_count += 1
+                log.append(f"  Details internal formula R{cell.row}C{cell.column}: "
+                           f"{v!r} → {new_v!r}")
+    if det_fix_count:
+        log.append(f"Details internal formula fix: {det_fix_count} formula(s) updated")
 
 
 # ── Fixed Assets P. Yr. ───────────────────────────────────────────────────────
