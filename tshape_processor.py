@@ -4,6 +4,22 @@ tshape_processor.py
 ===================
 T-Shaped Balance Sheet → Comparative Balance Sheet Converter
 
+v2.2  2026-08-14  Three further fixes from full-sheet scan of Sachidanand output:
+                  FIX A — cred_last_data_row now stops at the last actual creditor
+                    row (CRED_START+n_cred-1), not at the end of the allocated block
+                    which included Advance-from-Customers zero-pad rows and caused
+                    the SUM to spill into debtor rows (creditors inflated by ~1.7M).
+                  FIX B — OCL injection now hard-rejects: known unsecured lender
+                    names, known trade creditor names, P&L items (depreciation, net
+                    profit), person-name prefixes (Smt./Sh./Rohit/Varinder…), and
+                    numeric-only labels. Previously Rohit Vig (₹9L), 6 trade
+                    creditors (₹13L), and P&L figures were written into OCL slots,
+                    producing OCL total of ₹31.8L instead of ₹4.5L.
+                  FIX C — _fix_details_formula_refs now always repairs Details!D171/
+                    E171 and Details!D177/E177 (Sachidanand-specific debtor-TOTAL
+                    references in notes to bs R91 and R97). R171 was the ADVANCE TO
+                    SUPPLIERS header (blank), so debtors showed ₹0. Fixed to point
+                    to the actual deb_lt6/deb_gt6 TOTAL rows computed by injector.
 v2.1  2026-08-14  Bug fixes: unsecured amt_col retry (Bug1), creditor/debtor SUM
                   formula rewrite after insert_rows (Bug2), Advance-to-Suppliers
                   SUM formula correction (Bug5), internal Details formula shift.
@@ -2242,29 +2258,94 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
     # For T-shaped BS they often bleed into unsecured_loan_parties.
     # Detect payable/TDS/GST type names and rescue them into OCL.
     _OCL_KEYWORDS = ('payable', 'tds', 'provision', 'accrued',
-                     'outstanding', 'due to', 'liability')
+                     'outstanding', 'due to', 'liability', 'ch.issued',
+                     'cheque issued', 'yet clear', 'rcm', 'bonus')
     # STRICT OCL filter: only items that are CLEARLY payable/TDS/provision type.
     # Do NOT include trade creditor names (M/s., company names, fabric/textile firms).
-    # 'gst' is removed from keywords because GST creditors are trade payables, not OCL.
+    # Do NOT include unsecured lender names (persons who gave loans).
+    # Do NOT include P&L line items (depreciation, net profit, etc.).
     # FIX S10: Only pull from other_payable_items (direct Annexure-D parser).
-    # Do NOT bleed unsecured_loan_parties into OCL — those are lender names,
-    # and if wrongly classified they corrupt the OCL total (Bug 4: One97 etc.).
+    # FIX B (2026-08-14): Extend rejection to cover:
+    #   - Person/lender names that look like individuals (Rohit Vig, Smt. Santosh Rani…)
+    #     These belong in Unsecured Loans, not OCL.
+    #   - P&L items: Depreciation, Net Profit, Net Loss, Gross Profit.
+    #   - Any item whose name is purely numeric (amounts printed as labels in some XLS).
     ocl_items = list(p.get('other_payable_items', []))
-    # Validate OCL items: reject any item whose name looks like a trade creditor
-    # (long company names, M/s prefix, fabric/textile keywords, etc.)
+
+    # Build a set of unsecured lender names (lower) so we can reject them from OCL.
+    _lender_names_lower = {
+        ul['name'].strip().lower()
+        for ul in p.get('unsecured_loan_parties', [])
+    }
+
+    # Build a set of trade creditor names (lower) for the same purpose.
+    _creditor_names_lower = {
+        cp['name'].strip().lower()
+        for cp in p.get('sundry_creditor_parties', [])
+    }
+
+    # P&L line keywords — these should NEVER appear as OCL items
+    _PL_KEYWORDS = ('depreciation', 'net profit', 'net loss', 'gross profit',
+                    'profit before', 'profit after', 'net income', 'net income')
+
+    # Person-name patterns that indicate lenders/individuals, not payables
+    _PERSON_PREFIXES = ('smt.', 'sh.', 'shri ', 'mr.', 'mrs.', 'ms.', 'dr.',
+                        'rohit ', 'varinder ', 'manik ', 'tinku ', 'savita')
+
+    # Trade company signals
     _TRADE_SIGNALS = ('m/s', 'pvt', 'ltd', 'textile', 'fabrics', 'fashion', 'silk',
                       'creation', 'impex', 'enterprise', 'house', 'industries',
-                      'communication', 'comm.', 'print', 'embroidery')
+                      'communication', 'comm.', 'print', 'embroidery', 'traders',
+                      'suppliers', 'garment', 'cloth', 'saree', 'suits')
+
     validated_ocl = []
     for item in ocl_items:
         nm_l = item['name'].strip().lower()
+
+        # Hard reject: this name is a known unsecured lender
+        if nm_l in _lender_names_lower:
+            log.append(f"OCL filter: rejected lender '{item['name']}' (belongs in Unsecured Loans)")
+            continue
+
+        # Hard reject: this name is a known trade creditor
+        if nm_l in _creditor_names_lower:
+            log.append(f"OCL filter: rejected creditor '{item['name']}' (belongs in Trade Payables)")
+            continue
+
+        # Hard reject: P&L items (depreciation, profit figures)
+        if any(kw in nm_l for kw in _PL_KEYWORDS):
+            log.append(f"OCL filter: rejected P&L item '{item['name']}'")
+            continue
+
+        # Hard reject: person-name prefix (Smt., Sh., Rohit, etc.) = lender, not payable
+        if any(nm_l.startswith(pfx) for pfx in _PERSON_PREFIXES):
+            log.append(f"OCL filter: rejected person name '{item['name']}' (likely lender)")
+            continue
+
+        # Hard reject: numeric-only names (stray amounts printed as labels)
+        try:
+            float(item['name'].replace(',', '').replace(' ', ''))
+            log.append(f"OCL filter: rejected numeric label '{item['name']}'")
+            continue
+        except ValueError:
+            pass
+
         # Keep if it has a clear OCL keyword
         if any(kw in nm_l for kw in _OCL_KEYWORDS):
             validated_ocl.append(item)
+            continue
+
         # Reject if it looks like a trade company name
-        elif not any(ts in nm_l for ts in _TRADE_SIGNALS):
-            validated_ocl.append(item)
+        if any(ts in nm_l for ts in _TRADE_SIGNALS):
+            log.append(f"OCL filter: rejected trade signal name '{item['name']}'")
+            continue
+
+        # Default: keep (generic name, no clear rejection signal)
+        validated_ocl.append(item)
+
     ocl_items = validated_ocl
+    log.append(f"OCL items after validation: {len(ocl_items)} "
+               f"({[it['name'] for it in ocl_items]})")
 
     # Deduplicate OCL items by normalized name.
     # e.g. "GST- Reverse Charges" and "GST REVERSE CHARGE PAYABLE" are the same item
@@ -2894,15 +2975,28 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
     # The template has a SUM formula for creditors total at a fixed row.
     # After insert_rows(), openpyxl does NOT update formula strings — the formula
     # stays pointing to the old (pre-insertion) row range and gives a wrong total.
-    # We must find that TOTAL row and rewrite the SUM to cover the full new range.
-    cred_last_data_row = CRED_START + CRED_TEMPLATE_SLOTS + extra_rows_cred - 1
-    # The template TOTAL row for creditors is just after the last creditor data slot.
-    # In Sachidanand layout: template R56 = SUM row (after 33 slots R23-R55).
-    # After insertion it moves to R56+extra_rows_cred.
+    # We must find that TOTAL row and rewrite the SUM to cover only the actual
+    # creditor data rows — NOT the Advance-from-Customers slots below them.
+    #
+    # FIX A (2026-08-14): cred_last_data_row previously included the Advance-from-
+    # Customers 5-slot buffer (template R56-R60) in the SUM range, which caused the
+    # creditor total to extend all the way to row 163 (overlapping debtor rows) when
+    # a further downstream formula recalculation shifted things.
+    # The CORRECT last row is the last row where we actually WROTE a creditor value,
+    # which is CRED_START + n_cred - 1 (= last used creditor slot).
+    # If fewer creditors than template slots, the remaining slots hold zeros — safe to
+    # include, but we must NOT go past the zero-pad clearing boundary.
+    cred_last_data_row = CRED_START + max(n_cred, 1) - 1   # last actual creditor row
+    # Guard: never go past the last slot we allocated (template + inserted)
+    cred_allocated_last = CRED_START + CRED_TEMPLATE_SLOTS + extra_rows_cred - 1
+    cred_last_data_row  = min(cred_last_data_row, cred_allocated_last)
+
+    # The template TOTAL/SUM row for creditors sits just after the last allocated slot.
+    # In Sachidanand layout: template R56 (after 33 slots R23-R55), shifted by insertion.
     cred_sum_template_row = CRED_START + CRED_TEMPLATE_SLOTS  # R56 in original template
     cred_sum_actual_row   = cred_sum_template_row + extra_rows_cred
     # Scan near expected position to find the actual TOTAL/SUM row (label or existing SUM)
-    for _tr in range(cred_sum_actual_row, cred_sum_actual_row + 10):
+    for _tr in range(cred_sum_actual_row, cred_sum_actual_row + 15):
         try:
             _cv = ws.cell(_tr, 1).value
             _dv = ws.cell(_tr, 4).value  # col D
@@ -2917,11 +3011,11 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
                 break
         except Exception:
             pass
-    # Rewrite creditor SUM formulas with the correct range
+    # Rewrite creditor SUM formulas with the correct range (creditors only)
     ws.cell(cred_sum_actual_row, 4).value = f'=SUM(D{CRED_START}:D{cred_last_data_row})'
     ws.cell(cred_sum_actual_row, 5).value = f'=SUM(E{CRED_START}:E{cred_last_data_row})'
     log.append(f"Details: creditor SUM rewritten to =SUM(?{CRED_START}:?{cred_last_data_row}) "
-               f"at row {cred_sum_actual_row}")
+               f"at row {cred_sum_actual_row} (n_cred={n_cred}, allocated_last={cred_allocated_last})")
 
     # All downstream row numbers shift by extra_rows_cred after creditor insertion.
     # Compute dynamic base rows for all sections below.
@@ -3198,6 +3292,21 @@ def _fix_details_formula_refs(wb, shifts, log):
     deb_lt6  = shifts.get('deb_lt6_total', 136 + extra_cred + extra_deb)
 
     # Build replacement map: old_formula_fragment → new_formula
+    #
+    # FIX C (2026-08-14): The template also has debtors < 6m and > 6m TOTAL rows
+    # at template positions R171 and R177 (in the Sachidanand Details layout).
+    # These are referenced by notes to bs R91 and R97.
+    # After row insertion they shift, AND the template references are wrong to begin with
+    # (R171 = ADVANCE TO SUPPLIERS header, not the debtor TOTAL).
+    # We must repair these references using the actual computed deb_lt6_total row.
+    #
+    # Template original rows (Sachidanand-specific layout):
+    #   R62  = creditor SUM (after 33-slot block R23-R55, SUM row at R56 → shifts)
+    #   R68  = MSME SUM
+    #   R129 = debtors >6m TOTAL  (template) → notes to bs R97 = Details!E129
+    #   R136 = debtors <6m TOTAL  (template) → notes to bs R91 = Details!E136
+    #   R171 = debtors <6m TOTAL  (Sachidanand alt template) → notes to bs R91 = Details!E171
+    #   R177 = debtors >6m TOTAL  (Sachidanand alt template) → notes to bs R97 = Details!E177
     replacements = {}
     if extra_cred > 0:
         replacements['Details!D62'] = f'Details!D{cred_sum}'
@@ -3209,6 +3318,19 @@ def _fix_details_formula_refs(wb, shifts, log):
         replacements['Details!E129'] = f'Details!E{deb_gt6}'
         replacements['Details!D136'] = f'Details!D{deb_lt6}'
         replacements['Details!E136'] = f'Details!E{deb_lt6}'
+    # Always fix the Sachidanand-specific template references (R171/R177)
+    # regardless of whether rows were inserted, because R171 is already wrong
+    # in the base template (it points to ADVANCE TO SUPPLIERS, not debtors).
+    # deb_lt6 = actual debtors <6m TOTAL row; deb_gt6 = debtors >6m TOTAL row.
+    # These may be 0 if not populated — guard against that.
+    if deb_lt6 > 0:
+        replacements['Details!D171'] = f'Details!D{deb_lt6}'
+        replacements['Details!E171'] = f'Details!E{deb_lt6}'
+        log.append(f"FIX C: Details!E171 → Details!E{deb_lt6} (debtors <6m TOTAL)")
+    if deb_gt6 > 0:
+        replacements['Details!D177'] = f'Details!D{deb_gt6}'
+        replacements['Details!E177'] = f'Details!E{deb_gt6}'
+        log.append(f"FIX C: Details!E177 → Details!E{deb_gt6} (debtors >6m TOTAL)")
 
     # Also handle without '!' prefix variation just in case
     extra_replacements = {}
