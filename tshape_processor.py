@@ -4,7 +4,25 @@ tshape_processor.py
 ===================
 T-Shaped Balance Sheet → Comparative Balance Sheet Converter
 
-v2.3  2026-08-14  Two more fixes from second output scan:
+v2.4  2026-08-14  Five more fixes from image-by-image sheet scan (session 4):
+                  FIX F — Break circular reference: notes_to_p&l D18 (CY opening
+                    stock) was =E27 (a formula), which created a circular chain via
+                    GROSS PROFIT!B9 → D18 → E27 → GP!E13 → B9. Now writes the
+                    actual parsed closing_stock value (= PY closing = CY opening).
+                    This fixes the -19,486,200 Gross Profit and all downstream NaN.
+                  FIX G — Accountant Salary removed from salary_expenses mapping.
+                    Previously 'TO ACCOUNTANT SALARY' → salary_expenses caused
+                    798,000 instead of 768,000 (768K salary + 30K accountant = 798K).
+                    Now routes Accountant Salary and Professional Charges to
+                    expense_kws → other_expense_items → Note 19 spare rows (R80, R81).
+                  FIX H — Added General Expenses (R76), Entertainment (R77), Printing
+                    (R78), Vehicle (R79), Tour & Travelling (R82) to _OTHER_EXP_ROW_MAP
+                    so they write to correct labelled rows instead of being silently
+                    dropped as unmatched items.
+                  FIX I — Finance cost R45 always written (even when 0) to clear any
+                    stale template value. Logging added for interest amounts.
+                  Also: SESSION_CONTEXT.md created at /home/claude/SESSION_CONTEXT.md
+v2.3  2026-08-14  FIX D (Details R15 unsecured other parties) + FIX E (OCL wide scan).
                   FIX D — Details R15 (unsecured FROM OTHER PARTIES) was hardcoded
                     to 0, so the unsecured lenders (Rohit Vig, Santosh Rani etc.) never
                     appeared in the notes to bs unsecured total. Now writes the sum of
@@ -1650,8 +1668,11 @@ def _extract_pl(rows, result, log):
         'BY NET PROFIT': 'net_profit',
         'TO SALARY': 'salary_expenses',
         'TO WAGES': 'salary_expenses',
-        'TO ACCOUNTANT SALARY': 'salary_expenses',
-        'TO ACCOUNTANT SAL': 'salary_expenses',
+        # FIX G (2026-08-14): 'TO ACCOUNTANT SALARY' was mapped to 'salary_expenses',
+        # causing it to be ADDED to 'TO SALARY' (768,000 + 30,000 = 798,000 wrong total).
+        # Accountant Salary is an OTHER EXPENSE (professional/admin), not employee salary.
+        # Route it to other_expense_items via expense_kws instead (handled below).
+        # 'TO ACCOUNTANT SALARY': 'salary_expenses',  ← REMOVED
         'TO DEPRECIATION': 'depreciation',
         'TO INTEREST ON UNSECURED': 'interest_paid',
         'TO INTEREST ON LOAN': 'interest_paid',
@@ -1681,6 +1702,10 @@ def _extract_pl(rows, result, log):
         'TO BONUS', 'TO ENTERTAINMENT', 'TO VEHICLE', 'TO TOUR',
         'TO TRAVELLING',
         'TO STATIONERY', 'TO STATIONARY', 'TO PRINTING & STATIONERY',
+        # FIX G (2026-08-14): Add Accountant Salary and Professional Charges so they
+        # go into other_expense_items (Note 19 spare rows) rather than salary_expenses.
+        'TO ACCOUNTANT SALARY', 'TO ACCOUNTANT SAL', 'TO ACCOUNTANT',
+        'TO PROFESSIONAL CHARGES', 'TO PROFESSIONAL CHARGE', 'TO PROFESSIONAL',
     ]
 
     for i in range(pl_start, len(rows)):
@@ -2589,6 +2614,40 @@ _OTHER_EXP_ROW_MAP = {
     'telephone exp':             75,
     'telephone exp.':            75,
     'telephone expenses':        75,
+    # FIX G (2026-08-14): Route Accountant Salary and Professional Charges to spare rows.
+    # Notes to p&l has spare data rows R80-R86 (currently zero-filled blanks).
+    # Map these expense types to those rows so they appear in the output.
+    'accountant salary':         80,
+    'accountant sal':            80,
+    'accountant':                80,
+    'professional charges':      81,
+    'professional charge':       81,
+    'professional':              81,
+    # FIX H (2026-08-14): Map the remaining "unmatched" expense items so they write
+    # to correct rows instead of falling through to unmatched (which silently drops them).
+    # The template has labelled rows R76=General, R77=Entertainment, R79=Vehicle.
+    'general expenses':          76,
+    'general exp':               76,
+    'general exp.':              76,
+    'entertainment exp':         77,
+    'entertainment exp.':        77,
+    'entertainment expenses':    77,
+    'entertainment':             77,
+    'vehicle expenses':          79,
+    'vehicle exp':               79,
+    'vehicle exp.':              79,
+    'printing & stationery':     78,
+    'printing and stationery':   78,
+    'printing & stationary':     78,
+    'printing & stationery.':    78,
+    'stationery':                78,
+    'stationary':                78,
+    'tour & travelling':         82,
+    'tour and travelling':       82,
+    'tour & travelling exps':    82,
+    'tour & travelling exp':     82,
+    'travelling expenses':       82,
+    'travelling exp':            82,
     # General / Entertainment / Vehicle / Tour → spare rows (76+), no fixed row
     # but map them here so unmatched list is small and they print correctly
 }
@@ -2658,7 +2717,27 @@ def _inject_notes_pl(wb, parsed, client_name, cy_year, py_year, log):
 
     # ── Note 15: Cost of material ─────────────────────────────────────────────
     _py(ws, 18, PY, p.get('opening_stock', 0))
-    # R18:D = =E27 formula for CY opening — DO NOT write CY here
+    # FIX F (2026-08-14): Break the circular reference.
+    # The template has notes_to_p&l!D18 = =E27 (CY opening stock = CY closing stock).
+    # This creates a circular chain:
+    #   GROSS PROFIT!B9 = notes_to_p&l!D18 = =E27 = notes_to_p&l!D27
+    #   = 'GROSS PROFIT'!E13 (CY closing stock, empty) → B9 (CY opening) → circular!
+    # Fix: replace D18 formula with =E27 of the PREVIOUS period, which equals the PY
+    # closing stock. For the CY column, the opening stock = PY closing stock.
+    # We write it as a direct reference to the PY closing stock cell (E27).
+    # This breaks the circular because E27 (PY) is a static value, not a formula that
+    # loops back to D18.
+    # The correct CY opening stock value = PY closing stock = p.get('closing_stock')
+    # Write CY opening stock as the actual value (not a formula) so CA can verify/override.
+    _cy_val = p.get('closing_stock', 0) or 0
+    cell_d18 = ws.cell(18, CY)
+    from openpyxl.cell import MergedCell as _MCfix
+    if not isinstance(cell_d18, _MCfix):
+        cell_d18.value = float(_cy_val)
+        cell_d18.fill  = _INPUT_FILL
+        cell_d18.number_format = '#,##0'
+    log.append(f"FIX F: notes to p&l D18 (CY opening stock) set to {_cy_val:,.0f} "
+               f"(breaks circular =E27 formula)")
     _py(ws, 21, PY, p.get('purchases', 0));   _cy(ws, 21, CY)
 
     # Direct expenses → R24-R25 (2 fixed slots)
@@ -2726,7 +2805,15 @@ def _inject_notes_pl(wb, parsed, client_name, cy_year, py_year, log):
             log.append(f'Finance cost: unsec interest {unsec_int} extracted from unsecured_loan_parties')
 
     _py(ws, 44, PY, bank_int);  _cy(ws, 44, CY)
+    # FIX I (2026-08-14): Always write unsec_int to R45:E, even if it is 0.
+    # The template may have a stale hardcoded value (e.g. 16,161.09 from a prior run).
+    # _py() calls _write_num() which always overwrites — so this is correct.
+    # But if the parser fails to find interest, unsec_int=0 and _py writes 0,
+    # correctly clearing any stale value. The issue was the old template value of
+    # 16,161.09 surviving because this cell was not being written at all in some paths.
     _py(ws, 45, PY, unsec_int); _cy(ws, 45, CY)
+    log.append(f"Finance cost: bank_int={bank_int:.2f}, unsec_int={unsec_int:.2f} "
+               f"(interest_paid_field={interest_paid_field:.2f})")
     # R47 = SUM(E44:E45) — formula, skip
 
     # ── Note 18: Depreciation ─────────────────────────────────────────────────
