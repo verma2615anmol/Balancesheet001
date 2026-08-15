@@ -8601,9 +8601,67 @@ async function doProcess(){
 
 <button class="help-btn" onclick="openHelp()" title="How to use this tool">?</button>
 <div class="help-overlay" id="helpOverlay">
-  <div class="help-modal">
+  <div class="help-modal" style="max-width:600px">
     <div class="help-modal-head"><h3>How to Use — GST Reconciliation</h3><button class="help-close" onclick="closeHelp()">&#10005;</button></div>
-    <div class="help-modal-body"><div class="help-step"><div class="help-step-num">1</div><div class="help-step-body"><h4>Upload Sales Excel</h4><p>Upload your books sales summary Excel with month-wise, state-wise data.</p></div></div><div class="help-step"><div class="help-step-num">2</div><div class="help-step-body"><h4>Upload GSTR-3B ZIP</h4><p>Zip all your GSTR-3B PDFs (one per month) and upload the ZIP file.</p></div></div><div class="help-step"><div class="help-step-num">3</div><div class="help-step-body"><h4>Review Mappings</h4><p>Map your Excel column headers to the required fields on screen.</p></div></div><div class="help-step"><div class="help-step-num">4</div><div class="help-step-body"><h4>Process</h4><p>Click Process to generate the reconciliation report.</p></div></div><div class="help-step"><div class="help-step-num">5</div><div class="help-step-body"><h4>Download Report</h4><p>Download the Excel report with month-wise and state-wise differences highlighted.</p></div></div><div class="help-tip">📌 Export GSTR-3B PDFs from the GST portal and ZIP them before uploading.</div></div>
+    <div class="help-modal-body">
+
+      <div class="help-step">
+        <div class="help-step-num">1</div>
+        <div class="help-step-body">
+          <h4>Enter Your Sales Data — 2 Ways</h4>
+          <p><strong>Option A — Type manually:</strong> Select the financial year and type each month's total sales figure directly into the boxes shown on screen. Best when you have one combined total per month.</p>
+          <p style="margin-top:6px"><strong>Option B — Upload an Excel file:</strong> Click <em>"Or upload an Excel file instead →"</em> to upload your books sales summary. The Excel should have month-wise columns (Apr, May… Mar) and state-wise rows, or one consolidated row if you have a single total per month. After uploading, map your column headers to the required fields on screen.</p>
+        </div>
+      </div>
+
+      <div class="help-step">
+        <div class="help-step-num">2</div>
+        <div class="help-step-body">
+          <h4>Prepare &amp; Upload Your GSTR-3B ZIP</h4>
+          <p>Download GSTR-3B PDFs from the GST portal (one PDF per filing month) and ZIP them together. The tool automatically reads PDFs from all of these ZIP structures — use whichever matches how your portal exports them:</p>
+          <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
+            <div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;padding:10px 12px">
+              <div style="font-weight:700;font-size:13px;color:#065F46;margin-bottom:3px">📁 State-Code Folders (most common)</div>
+              <div style="font-size:12px;color:#374151">ZIP contains sub-folders named by state code — e.g. <code style="background:#D1FAE5;padding:1px 4px;border-radius:3px">03/</code>, <code style="background:#D1FAE5;padding:1px 4px;border-radius:3px">04/</code>, <code style="background:#D1FAE5;padding:1px 4px;border-radius:3px">29/</code>. Each folder holds the GSTR-3B PDFs for that state.</div>
+            </div>
+            <div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:10px 12px">
+              <div style="font-weight:700;font-size:13px;color:#1D4ED8;margin-bottom:3px">📁 Named Folders (by state name)</div>
+              <div style="font-size:12px;color:#374151">ZIP contains sub-folders named after states — e.g. <code style="background:#DBEAFE;padding:1px 4px;border-radius:3px">Punjab/</code>, <code style="background:#DBEAFE;padding:1px 4px;border-radius:3px">Haryana/</code>. PDFs sit inside each state folder.</div>
+            </div>
+            <div style="background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;padding:10px 12px">
+              <div style="font-weight:700;font-size:13px;color:#C2410C;margin-bottom:3px">📄 Flat ZIP (no sub-folders)</div>
+              <div style="font-size:12px;color:#374151">ZIP contains 10–12 GSTR-3B PDFs directly at the root level, with different state codes in the file names — no folders at all. The tool reads the state code from each PDF's filename or content.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="help-step">
+        <div class="help-step-num">3</div>
+        <div class="help-step-body">
+          <h4>Review Mappings (Excel upload only)</h4>
+          <p>If you uploaded an Excel file, confirm that your column headers are correctly mapped to Month, State, and Sales Amount fields before proceeding.</p>
+        </div>
+      </div>
+
+      <div class="help-step">
+        <div class="help-step-num">4</div>
+        <div class="help-step-body">
+          <h4>Process</h4>
+          <p>Click <strong>Process</strong> to compare your books sales against GSTR-3B figures and generate the reconciliation report.</p>
+        </div>
+      </div>
+
+      <div class="help-step">
+        <div class="help-step-num">5</div>
+        <div class="help-step-body">
+          <h4>Download Report</h4>
+          <p>Download the Excel report showing month-wise and state-wise differences between your books and GSTR-3B, with mismatches highlighted.</p>
+        </div>
+      </div>
+
+      <div class="help-tip">📌 Export GSTR-3B PDFs from the GST portal. All three ZIP structures above are supported — just ZIP whatever you have and upload.</div>
+    </div>
   </div>
 </div>
 <script>function openHelp(){document.getElementById('helpOverlay').classList.add('open')}function closeHelp(){document.getElementById('helpOverlay').classList.remove('open')}document.getElementById('helpOverlay').addEventListener('click',function(e){if(e.target===this)closeHelp()})</script>
