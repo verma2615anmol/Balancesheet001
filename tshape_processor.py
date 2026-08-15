@@ -4,6 +4,30 @@ tshape_processor.py
 ===================
 T-Shaped Balance Sheet → Comparative Balance Sheet Converter
 
+v2.6  2026-08-14  Four further fixes (session 5, live file scan):
+                  FIX M — Creditor SUM endpoint not re-shifted by internal formula pass.
+                    _inject_details_sheet correctly writes SUM(D23:D109) for creditors.
+                    _fix_details_formula_refs then re-scanned Details and shifted D109
+                    → D163 (109 >= CRED_INSERT=56). Fix: rows already written by the
+                    injector (cred_sum_actual_row and debtor total rows) are excluded
+                    from the generic internal-formula shift pass via a skip-set.
+                  FIX N — FIX C removed. Template Notes to BS already has R91 →
+                    Details!D129 and R97 → Details!D136. The standard _shift_row_ref
+                    correctly maps D129→D183 and D136→D190 after 54 creditor rows
+                    are inserted. FIX C was adding replacements for D171 which then
+                    OVERWROTE these already-correct shifted formulas with D171 (ADVANCE
+                    TO SUPPLIERS — wrong row). Removed all FIX C code entirely.
+                  FIX O — Notes to p&l mapped rows (R76-R82) get label in col B.
+                    Items mapped via _OTHER_EXP_ROW_MAP were writing value only;
+                    col B label was not written for mapped rows (only for unmatched
+                    spare rows). Now every matched item also writes its name to col B.
+                  FIX P — OCL trade-signal rejection tightened. A name containing
+                    one trade word (silk, textile, fashion, etc.) alone was enough to
+                    reject it from OCL. This blocked legitimate payable items like
+                    'Accounting Charges Payable'. Now requires BOTH a trade keyword
+                    AND at least one company suffix (pvt/ltd/m/s/traders/co./inc.)
+                    before rejecting as a trade company name.
+v2.5  2026-08-14  FIX J/K/L — Bank charges routing, TO-prefix strip, IGST highlight.
 v2.4  2026-08-14  Five more fixes from image-by-image sheet scan (session 4):
                   FIX F — Break circular reference: notes_to_p&l D18 (CY opening
                     stock) was =E27 (a formula), which created a circular chain via
@@ -1119,8 +1143,20 @@ def _extract_ocl_annexure(rows, result, log):
     wider scan that reads ALL text+number pairs in the section and filters by keyword.
     This handles the Sachidanand layout where the amount col is far from the name col.
     """
-    if result.get('other_payable_items'):
-        return  # already populated
+    # Guard: skip only if other_payable_items already contains genuinely payable items.
+    # The _extract_annexure_parties may populate other_payable_items with trade creditors
+    # that were misassigned to the 'other_pay' section. In that case we should NOT skip —
+    # we should replace them with the correctly-extracted Annexure-D items.
+    _existing_ocl = result.get('other_payable_items', [])
+    if _existing_ocl:
+        _payable_kws = ('payable', 'tds', 'provision', 'salary payable', 'ch.issued',
+                        'yet clear', 'outstanding', 'accrued', 'rcm')
+        _has_real_ocl = any(
+            any(kw in it.get('name','').lower() for kw in _payable_kws)
+            for it in _existing_ocl
+        )
+        if _has_real_ocl:
+            return  # already has correct OCL items — skip
 
     in_section = False
     items = []
@@ -1166,9 +1202,12 @@ def _extract_ocl_annexure(rows, result, log):
                     sv_lower = sv.lower()
                     if any(kw in sv_lower for kw in _OCL_NAME_KEYS):
                         # FIX E: search up to 15 cols right (was 8)
+                        # Require amount > 100 to avoid ICDS footnote numbers (e.g. 8, 11)
+                        # which accidentally matched "Provisions, contingent liabilities..."
+                        # and set name_col=69 / amt_col=77 — completely wrong columns.
                         for ac in range(ci + 1, min(ci + 15, len(row))):
                             av = row[ac]
-                            if isinstance(av, (int, float)) and av > 0:
+                            if isinstance(av, (int, float)) and av > 100:
                                 name_col = ci
                                 amt_col  = ac
                                 break
@@ -1253,23 +1292,20 @@ def _extract_unsecured_annexure_b(rows, result, log):
     """
     Directly extract UNSECURED LOAN (Annexure-B) lender parties.
 
-    The _extract_annexure_parties() section-assignment logic often fails for
-    Sachidanand-style layouts because:
-      - Lender names (Rohit Vig, Smt.Santosh Rani…) appear at the same
-        col-pair (25/26, 31) as the creditor B/F continuation block.
-      - Depending on row ordering, they get mis-assigned to 'creditor'.
+    Sachidanand GD Singla layout (0-based cols):
+      Header row: 'UNSECURED LOAN' at col 25, 'ANNEXURE-B' at col 31
+      Lender name: col 25 (person names like Rohit Vig, Smt.Santosh Rani)
+      Lender amount: col 31
+      TOTAL row: col 31 has the grand total (2,472,436.88)
 
-    This function scans directly between the ANNEXURE-B header and the next
-    section header (OTHER PAYABLE / SUNDRY CREDITOR / ANNEXURE-C / ANNEXURE-D),
-    collecting person names and amounts.
-
-    Layout (Sachidanand, 0-based cols):
-      Header row: contains 'UNSECURED LOAN' + 'ANNEXURE-B'
-      Name col: detected dynamically (first text col with a person name)
-      Amt col:  first numeric col after name col
-
-    Applies to GD Singla T-shaped XLS only; no-ops if unsecured_loan_parties
-    already has parties whose sum matches the BS total.
+    Two bugs in the previous approach were causing wrong results:
+    1. STOP check used the full row string — 'CASH & BANK BALANCES' at col 53
+       triggered a stop on row 25, BEFORE the first lender at row 26 (col 25).
+       Fix: limit the stop check to cols 24–35 only (the lender column zone).
+    2. Name_col detection picked up 'M/s. Krazy Choice' at col 32 (a CREDITOR
+       from Annexure-C) instead of 'Rohit Vig' at col 25 (actual lender).
+       Fix: hardcode name_col=25, amt_col=31 as the primary strategy; fall back
+       to dynamic detection only if the hardcoded cols yield no results.
     """
     bs_total = result.get('unsecured_loans', 0)
     existing = result.get('unsecured_loan_parties', [])
@@ -1280,166 +1316,162 @@ def _extract_unsecured_annexure_b(rows, result, log):
 
     _STOP_HEADERS = ('SUNDRY CREDITOR', 'ANNEXURE-C', 'ANNEXURE-D', 'OTHER PAYABLE',
                      'SUNDRY DEBTOR', 'CASH & BANK', 'FIXED ASSET')
+    # NOTE: ALL stop checks are limited to cols 24–35 (the lender column zone).
+    # The T-shaped layout has BS labels like 'SUNDRY DEBTORS' at col 0 and
+    # 'CASH & BANK BALANCES' at col 53 on the SAME rows as lender data at col 25.
+    # A full-row stop check fires too early and misses all lenders.
+    _STOP_HEADERS_LENDER_ZONE = _STOP_HEADERS
+
     _SKIP_NAMES = {'PARTICULARS', 'TOTAL', 'SUB TOTAL', 'ANNEXURE', 'NIL',
-                   'UNSECURED LOAN', 'FROM RELATED', 'FROM OTHER'}
+                   'UNSECURED LOAN', 'FROM RELATED', 'FROM OTHER', 'UN-SECURED LOAN'}
 
     in_section = False
-    name_col = None
-    amt_col  = None
     items = []
     found_total = 0.0
+    header_name_col = None   # col where 'UNSECURED LOAN' header was found
+    header_amt_col  = None   # col where 'ANNEXURE-B' / amount was found
 
     for i, row in enumerate(rows):
-        rs = ' '.join(_s(v).upper() for v in row if v is not None)
+        # Build full-row and lender-zone-only strings
+        rs_full = ' '.join(_s(v).upper() for v in row if v is not None)
+        # Lender zone: cols 24–35 only (where Annexure-B data lives)
+        rs_zone = ' '.join(_s(row[c]).upper() for c in range(24, min(36, len(row)))
+                           if row[c] is not None)
 
         if not in_section:
-            if ('UNSECURED LOAN' in rs or 'UN-SECURED LOAN' in rs) and \
-               ('ANNEXURE-B' in rs or "'B'" in rs):
+            if ('UNSECURED LOAN' in rs_full or 'UN-SECURED LOAN' in rs_full) and \
+               ('ANNEXURE-B' in rs_full or "'B'" in rs_full):
                 in_section = True
-                continue
+                # Record where the header appeared to anchor name/amt cols
+                for ci, v in enumerate(row):
+                    sv = _s(v).upper()
+                    if 'UNSECURED LOAN' in sv or 'UN-SECURED LOAN' in sv:
+                        header_name_col = ci
+                        break
+                for ci, v in enumerate(row):
+                    sv = _s(v).upper()
+                    if 'ANNEXURE-B' in sv or ("'B'" in sv and ci > 20):
+                        header_amt_col = ci
+                        break
+                log.append(f"Unsecured Annexure-B header at row {i}: "
+                            f"name_col≈{header_name_col}, amt_col≈{header_amt_col}")
             continue
 
-        # Stop at next section
-        if any(kw in rs for kw in _STOP_HEADERS):
+        # FIX: Stop check limited to lender zone (cols 24-35) ONLY.
+        # Full-row check caused early termination: 'SUNDRY DEBTORS' at col 0 and
+        # 'CASH & BANK BALANCES' at col 53 both appear on the same rows as lenders.
+        if any(kw in rs_zone for kw in _STOP_HEADERS_LENDER_ZONE):
+            log.append(f"Unsecured Annexure-B: stopped at row {i} (lender-zone header)")
             break
 
-        # Detect name_col + amt_col from first real name row
-        if name_col is None:
-            for ci, v in enumerate(row):
-                sv = _s(v).strip()
-                if not sv or len(sv) < 3:
-                    continue
-                svu = sv.upper()
-                if svu in _SKIP_NAMES or svu.startswith('ANNEXURE'):
-                    continue
-                # Must look like a person/firm name (not a number, not a label)
-                try:
-                    float(sv.replace(',', ''))
-                    continue  # skip numbers
-                except ValueError:
-                    pass
-                # Try to find amount col nearby
-                for ac in range(ci + 1, min(ci + 10, len(row))):
-                    av = row[ac]
-                    if isinstance(av, (int, float)) and not (isinstance(av, float) and math.isnan(av)) and av > 1000:
-                        name_col = ci
-                        amt_col = ac
-                        break
-                if name_col is not None:
-                    break
-            if name_col is None:
-                continue
+        # FIX: Use hardcoded primary cols (name=header_name_col or 25, amt=31)
+        # These are the KNOWN lender columns for GD Singla Sachidanand layout.
+        # Dynamic detection fails because creditor names (M/s.) appear at col 32
+        # on the same rows, and the scanner picks those up instead.
+        primary_name_col = header_name_col if header_name_col is not None else 25
+        primary_amt_col  = header_amt_col  if header_amt_col  is not None else 31
 
-        # Read name + amount
-        nm_cell = _s(row[name_col]).strip() if name_col < len(row) else ''
-        amt_cell = row[amt_col] if amt_col < len(row) else None
+        nm = _s(row[primary_name_col]).strip() if primary_name_col < len(row) else ''
+        amt_raw = row[primary_amt_col] if primary_amt_col < len(row) else None
 
-        nmu = nm_cell.upper()
-        if not nm_cell or nmu in _SKIP_NAMES or nmu.startswith('ANNEXURE'):
+        if not nm:
+            continue
+        nmu = nm.upper()
+        if nmu in _SKIP_NAMES or nmu.startswith('ANNEXURE'):
             continue
         try:
-            float(nm_cell.replace(',', ''))
-            continue  # numeric name = skip
+            # If name is a pure number, it's the grand total
+            float_nm = float(nm.replace(',', ''))
+            # A number at the name_col = running total or grand total — check amt_col too
+            if isinstance(amt_raw, (int, float)) and not (isinstance(amt_raw, float) and math.isnan(amt_raw)) and amt_raw > 0:
+                found_total = float(amt_raw)
+            elif float_nm > 10000:
+                found_total = float_nm
+            continue
         except ValueError:
             pass
 
-        # Check for TOTAL row
-        if nmu == 'TOTAL' or nmu.startswith('TOTAL'):
-            if isinstance(amt_cell, (int, float)) and amt_cell > 0:
-                found_total = float(amt_cell)
+        # TOTAL row: name contains 'TOTAL' or amount_col has the grand total
+        if 'TOTAL' in nmu:
+            if isinstance(amt_raw, (int, float)) and not (isinstance(amt_raw, float) and math.isnan(amt_raw)):
+                found_total = float(amt_raw)
             break
 
-        if not isinstance(amt_cell, (int, float)) or \
-           (isinstance(amt_cell, float) and math.isnan(amt_cell)) or \
-           amt_cell <= 0:
+        # Valid lender row: must have a positive amount
+        if not isinstance(amt_raw, (int, float)) or \
+           (isinstance(amt_raw, float) and math.isnan(amt_raw)) or \
+           amt_raw <= 0:
             continue
 
-        items.append({'name': nm_cell, 'amount': float(amt_cell)})
+        items.append({'name': nm, 'amount': float(amt_raw)})
+        log.append(f"  Unsecured lender: {nm} = {amt_raw:,.2f} (R{i} C{primary_name_col}/{primary_amt_col})")
 
     if not items:
+        # Fallback: dynamic name_col detection (original approach but with zone-limited stop)
+        log.append("Unsecured Annexure-B: hardcoded cols found nothing, trying dynamic detection")
+        in_section2 = False
+        name_col2 = None
+        amt_col2  = None
+        items2 = []
+        for i, row in enumerate(rows):
+            rs_full = ' '.join(_s(v).upper() for v in row if v is not None)
+            rs_zone = ' '.join(_s(row[c]).upper() for c in range(24, min(36, len(row)))
+                               if row[c] is not None)
+            if not in_section2:
+                if ('UNSECURED LOAN' in rs_full or 'UN-SECURED LOAN' in rs_full) and \
+                   ('ANNEXURE-B' in rs_full or "'B'" in rs_full):
+                    in_section2 = True
+                continue
+            if any(kw in rs_zone for kw in _STOP_HEADERS_LENDER_ZONE):
+                break
+            if any(kw in rs_full for kw in ('ANNEXURE-C','ANNEXURE-D','OTHER PAYABLE')):
+                break
+            if name_col2 is None:
+                for ci, v in enumerate(row[:40]):   # limit scan to first 40 cols
+                    sv = _s(v).strip()
+                    if not sv or len(sv) < 3: continue
+                    svu = sv.upper()
+                    if svu in _SKIP_NAMES or svu.startswith('ANNEXURE'): continue
+                    try: float(sv.replace(',','')); continue
+                    except ValueError: pass
+                    for ac in range(ci+1, min(ci+10, len(row))):
+                        av = row[ac]
+                        if isinstance(av,(int,float)) and not (isinstance(av,float) and math.isnan(av)) and av > 1000:
+                            name_col2 = ci; amt_col2 = ac; break
+                    if name_col2 is not None: break
+                if name_col2 is None: continue
+            nm2 = _s(row[name_col2]).strip() if name_col2 < len(row) else ''
+            amt2 = row[amt_col2] if amt_col2 and amt_col2 < len(row) else None
+            if not nm2: continue
+            nmu2 = nm2.upper()
+            if nmu2 in _SKIP_NAMES: continue
+            try: float(nm2.replace(',','')); continue
+            except ValueError: pass
+            if 'TOTAL' in nmu2: break
+            if isinstance(amt2,(int,float)) and not (isinstance(amt2,float) and math.isnan(amt2)) and amt2 > 0:
+                items2.append({'name': nm2, 'amount': float(amt2)})
+        items = items2
+
+    if not items:
+        log.append("Unsecured Annexure-B: no lenders found")
         return
 
     calc = sum(x['amount'] for x in items)
     log.append(f"Unsecured Annexure-B: {len(items)} parties, total={calc:,.2f} "
-               f"(BS={bs_total:,.2f})")
+               f"(BS={bs_total:,.2f}, found_total={found_total:,.2f})")
 
-    # ── BUG 1 FIX: amt_col is detected from the FIRST lender row only.
-    # If that row has an intermediate partial amount at an earlier col (e.g. TDS
-    # withheld, a split payment) before the actual total at a later col, the tool
-    # locks onto the wrong col for ALL lenders, producing a short total.
-    # Strategy: if the collected sum deviates from the BS total by more than 5%,
-    # re-scan with per-row independent amount detection — for each lender row,
-    # find the RIGHTMOST positive numeric value instead of the leftmost.
-    # Also try searching further right (up to col +20) per row.
-    if bs_total > 0 and abs(calc - bs_total) / bs_total > 0.05:
-        log.append(f"Unsecured Annexure-B: sum mismatch ({calc:,.0f} vs {bs_total:,.0f}), "
-                   f"retrying with per-row rightmost-amount detection")
-        items_retry = []
-        in_section2 = False
-        for row2 in rows:
-            rs2 = ' '.join(_s(v).upper() for v in row2 if v is not None)
-            if not in_section2:
-                if ('UNSECURED LOAN' in rs2 or 'UN-SECURED LOAN' in rs2) and \
-                   ('ANNEXURE-B' in rs2 or "'B'" in rs2):
-                    in_section2 = True
-                continue
-            if any(kw in rs2 for kw in _STOP_HEADERS):
-                break
-            # Detect name col (same as before)
-            nm2 = ''
-            nc2 = None
-            for ci2, v2 in enumerate(row2):
-                sv2 = _s(v2).strip()
-                if not sv2 or len(sv2) < 3:
-                    continue
-                svu2 = sv2.upper()
-                if svu2 in _SKIP_NAMES or svu2.startswith('ANNEXURE'):
-                    continue
-                try:
-                    float(sv2.replace(',', ''))
-                    continue
-                except ValueError:
-                    pass
-                nm2 = sv2
-                nc2 = ci2
-                break
-            if nc2 is None or not nm2:
-                continue
-            nmu2 = nm2.upper()
-            if nmu2 in _SKIP_NAMES or nmu2.startswith('ANNEXURE'):
-                continue
-            if nmu2 == 'TOTAL' or nmu2.startswith('TOTAL'):
-                break
-            # Per-row: find the RIGHTMOST numeric col > 1000 (up to 20 cols right of name)
-            best_amt = 0.0
-            for ac2 in range(nc2 + 1, min(nc2 + 20, len(row2))):
-                av2 = row2[ac2]
-                if isinstance(av2, (int, float)) and not (isinstance(av2, float) and math.isnan(av2)) and av2 > 1000:
-                    best_amt = float(av2)   # keep updating → gets rightmost
-            if best_amt > 0:
-                items_retry.append({'name': nm2, 'amount': best_amt})
-
-        if items_retry:
-            calc_retry = sum(x['amount'] for x in items_retry)
-            log.append(f"Unsecured Annexure-B retry: {len(items_retry)} parties, "
-                       f"total={calc_retry:,.2f} (BS={bs_total:,.2f})")
-            # Accept retry if it's closer to BS total than original
-            if bs_total == 0 or abs(calc_retry - bs_total) < abs(calc - bs_total):
-                items = items_retry
-                calc  = calc_retry
-                log.append("Unsecured Annexure-B: retry accepted (better match)")
-
-    # Accept if matches BS total (within 10%) or if we have a found_total match
-    if bs_total > 0 and abs(calc - bs_total) / bs_total > 0.10 and \
-       (found_total == 0 or abs(calc - found_total) / max(found_total, 1) > 0.10):
-        log.append("Unsecured Annexure-B: sum mismatch > 10%, keeping existing parties")
-        return
+    # If sum deviates >10% from BS total and we have a found_total, trust found_total for validation
+    if bs_total > 0 and abs(calc - bs_total) / bs_total > 0.10:
+        if found_total > 0 and abs(calc - found_total) / max(found_total, 1) < 0.05:
+            log.append("Unsecured Annexure-B: sum matches found_total, accepting")
+        else:
+            log.append("Unsecured Annexure-B: sum mismatch >10%, keeping existing parties")
+            return
 
     result['unsecured_loan_parties'] = items
     if not result.get('unsecured_loans') or result['unsecured_loans'] == 0:
         result['unsecured_loans'] = calc
     log.append(f"Unsecured Annexure-B: written {len(items)} parties")
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Pass 4c — Capital account Annexure-A direct extraction
@@ -1490,11 +1522,19 @@ def _extract_capital_annexure(rows, result, log):
             lbl27 = _s(row[27]).upper() if 27 < len(row) else ''
             combined_lbl = lbl25 + ' ' + lbl26 + ' ' + lbl27
 
-            if 'LAST BALANCE' in combined_lbl or 'OPENING BALANCE' in combined_lbl or \
-               ('BALANCE' in combined_lbl and ('01.04' in combined_lbl or 'AS ON' in combined_lbl)):
-                v31 = _n(row[31]) if 31 < len(row) else 0
-                if v31 > 0:
-                    sachi_opening = v31
+            # Opening balance: "Last Balance as on 01.04.YYYY" or "Opening Balance"
+            # FIX Q (2026-08-14): Do NOT capture if 'CLOSING' is in the label.
+            # Row 21 has "CLOSING BALANCE AS ON 31.03.2024" which also matches
+            # ('BALANCE' + 'AS ON') and was overwriting the correct opening (928,695.69)
+            # with the closing balance (1,559,992.23). Now exclude CLOSING rows.
+            # Also capture only ONCE: once sachi_opening is set, don't overwrite it.
+            if sachi_opening == 0 and 'CLOSING' not in combined_lbl:
+                if 'LAST BALANCE' in combined_lbl or 'OPENING BALANCE' in combined_lbl or \
+                   ('BALANCE' in combined_lbl and ('01.04' in combined_lbl or
+                                                   ('AS ON' in combined_lbl and '01.04' in rs))):
+                    v31 = _n(row[31]) if 31 < len(row) else 0
+                    if v31 > 0:
+                        sachi_opening = v31
 
             if ('ADD PROFIT' in combined_lbl or 'ADD: PROFIT' in combined_lbl or
                 'PROFIT DURING' in combined_lbl or 'NET PROFIT' in combined_lbl):
@@ -1679,7 +1719,12 @@ def _extract_pl(rows, result, log):
         'TO INTEREST PAID': 'interest_paid',
         'TO BANK INT': 'interest_paid',
         'TO BANK INTT': 'interest_paid',
-        'TO BANK CHARGES': 'interest_paid',    # Bobby includes bank charges in finance cost
+        # FIX J (2026-08-14): 'TO BANK CHARGES' removed from pl_keywords.
+        # It was routing Bank Charges (12,237.09) into interest_paid, so
+        # interest_paid = 12,237 + 3,924 = 16,161 wrote to R45 (unsecured interest).
+        # Now it falls through to expense_kws where 'TO BANK CHARGE' catches it
+        # and routes to other_expense_items → Note 19 R62 (bank charges).
+        # 'TO BANK CHARGES': 'interest_paid',  ← REMOVED
         'TO CAR LOAN INT': 'interest_paid',
         'TO INTEREST TO PARTIES': 'interest_paid',
         'TO INTEREST TO PARTY': 'interest_paid',
@@ -1691,7 +1736,7 @@ def _extract_pl(rows, result, log):
     _in_sale_gst = False
 
     expense_kws = [
-        'TO AUDIT FEE', 'TO BANK CHARGE', 'TO ELECTRICITY', 'TO INSURANCE',
+        'TO AUDIT FEE', 'TO BANK CHARGE', 'TO BANK CHARGES', 'TO ELECTRICITY', 'TO INSURANCE',
         'TO TELEPHONE', 'TO REPAIR', 'TO PETROL', 'TO RENT', 'TO GENERAL',
         'TO POSTAGE', 'TO STATIONARY', 'TO PRINTING', 'TO STAFF', 'TO PACKING',
         'TO PROPERTY TAX', 'TO CAR EXP', 'TO CAR EXP', 'TO SCOOTER', 'TO LABOUR',
@@ -1791,7 +1836,14 @@ def _extract_pl(rows, result, log):
                 if lbl.startswith(kw):
                     amt = _first_num(row, j + 1, j + 8)
                     if amt > 0:
-                        name = _s(v).replace('To ', '').strip()
+                        # FIX K (2026-08-14): Strip 'TO ' prefix case-insensitively.
+                        # .replace('To ', '') is case-sensitive and misses labels like
+                        # 'TO ACCOUNTANT SALARY' (all-caps from T-shaped XLS).
+                        # Result: names stored as 'TO ACCOUNTANT SALARY' → lower →
+                        # 'to accountant salary' → no match in _OTHER_EXP_ROW_MAP.
+                        # Fix: strip the leading TO/To/to prefix explicitly.
+                        raw_name = _s(v).strip()
+                        name = re.sub(r'^[Tt][Oo]\s+', '', raw_name).strip()
                         result['other_expense_items'].append({'name': name, 'amount': amt})
                         result['other_expenses'] += amt
                     break
@@ -2429,9 +2481,18 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
             validated_ocl.append(item)
             continue
 
-        # Reject if it looks like a trade company name
-        if any(ts in nm_l for ts in _TRADE_SIGNALS):
-            log.append(f"OCL filter: rejected trade signal name '{item['name']}'")
+        # FIX P (2026-08-14): Only reject if BOTH a trade keyword AND a company suffix
+        # are present. A single trade keyword alone (e.g. 'silk', 'textile', 'fashion')
+        # may appear in a legitimate payable name (e.g. "Accounting Charges Payable"
+        # doesn't have trade signals, but the old code was too broad). Requiring both
+        # a trade word AND a company suffix (pvt/ltd/m/s/traders/co.) prevents
+        # legitimate payables from being dropped.
+        _COMPANY_SIGNALS = ('pvt', 'ltd', 'limited', 'm/s', 'm/s.', 'traders',
+                             'co.', ' co ', 'inc.', 'corporation', 'works')
+        has_trade = any(ts in nm_l for ts in _TRADE_SIGNALS)
+        has_company = any(cs in nm_l for cs in _COMPANY_SIGNALS)
+        if has_trade and has_company:
+            log.append(f"OCL filter: rejected trade company name '{item['name']}'")
             continue
 
         # Default: keep (generic name, no clear rejection signal)
@@ -2515,6 +2576,7 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
     # C section — Advance to Revenue Authorities: R143-R147 (5 slots)
     # Template formula SUM(E143:E143) only covers 1 row — fix to cover all 5.
     rev_items = p.get('advance_to_revenue_items', [])
+    from openpyxl.cell import MergedCell as _MCrev
     for i in range(5):
         r = 143 + i
         if i < len(rev_items):
@@ -2524,6 +2586,13 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
         else:
             _py(ws, r, PY, 0)
         _cy(ws, r, CY)
+        # FIX L (2026-08-14): Preserve yellow highlight on PY (E) cell.
+        # _py()→_write_num() writes the value but never sets fill. The template
+        # has yellow (_INPUT_FILL) on IGST/GST/TDS rows so the CA can verify them.
+        # We apply _INPUT_FILL to the PY cell explicitly after writing.
+        py_cell = ws.cell(row=r, column=PY)
+        if not isinstance(py_cell, _MCrev):
+            py_cell.fill = _INPUT_FILL
     # Fix Total(C) formula to cover all 5 rows R143:R147
     _write(ws, 148, PY, '=SUM(E143:E147)')
     _write(ws, 148, CY, '=SUM(D143:D147)')
@@ -2833,20 +2902,43 @@ def _inject_notes_pl(wb, parsed, client_name, cy_year, py_year, log):
         k = it['name'].strip().lower()
         r = _OTHER_EXP_ROW_MAP.get(k)
         if r:
+            # FIX O (2026-08-14): Also write the item name to col B (label column).
+            # Template rows R76-R82 (spare rows) have blank col B; without a label the
+            # CA sees a value with no description. Write the name so the row is complete.
+            existing_label = ws.cell(r, 2).value
+            if not existing_label or str(existing_label).strip() in ('', '0'):
+                _write(ws, r, 2, it['name'])
             _py(ws, r, PY, it['amount']); _cy(ws, r, CY)
         else:
             unmatched.append(it)
 
     # Write unmatched into spare rows R76-R86
+    unmatched_spare_rows = set()
     for i, it in enumerate(unmatched):
         r = 76 + i
         if r > 86:
             break
         _write(ws, r, 2, it['name'])
         _py(ws, r, PY, it['amount']); _cy(ws, r, CY)
+        unmatched_spare_rows.add(r)
 
-    # Clear remaining spare rows
-    for r in range(76 + len(unmatched), 87):
+    # Build set of all rows written by the mapped-item loop
+    mapped_written_rows = set()
+    for it in other_items:
+        k = it['name'].strip().lower()
+        r = _OTHER_EXP_ROW_MAP.get(k)
+        if r and 76 <= r <= 86:
+            mapped_written_rows.add(r)
+
+    # Clear remaining spare rows — but ONLY rows not already written by either loop.
+    # Previous bug: range(76 + len(unmatched), 87) zeroed ALL spare rows when
+    # unmatched=[], including rows R76-R82 that were just correctly written via
+    # _OTHER_EXP_ROW_MAP (General Expenses, Entertainment, Vehicle, Accountant Salary,
+    # Professional Charges, Printing). Now skip any row in mapped_written_rows or
+    # unmatched_spare_rows so those values are preserved.
+    for r in range(76, 87):
+        if r in mapped_written_rows or r in unmatched_spare_rows:
+            continue   # already has correct data — do not zero
         _py(ws, r, PY, 0); _cy(ws, r, CY)
 
     # R87 = SUM(D61:D86) — formula, skip
@@ -3265,6 +3357,19 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
         deb_parties = [x for x in deb_raw_all[skip_count:]
                        if _is_debtor_party(x['name'], lender_names) and not _is_lender(x['name'])]
 
+    # ── Debtor sanity check: if parsed total >> BS total, parser captured wrong rows ──
+    # This happens when the debtor extractor reads the carry-forward page of creditors
+    # (which appears in the same row range as Annexure-G in T-shaped XLS layouts).
+    # Result: 21 "debtors" totaling 1.7M when BS shows 196,267.
+    # Fix: if parsed total > 3x BS total, discard all parties and write a single
+    # "Sundry Debtors" row with the BS amount. The CA can fill individual entries later.
+    _bs_debtors = p.get('sundry_debtors', 0) or 0
+    _parsed_deb_total = sum(d.get('amount', 0) for d in deb_parties)
+    if _bs_debtors > 0 and _parsed_deb_total > _bs_debtors * 3:
+        log.append(f"Details: debtor total mismatch ({_parsed_deb_total:,.0f} >> BS {_bs_debtors:,.0f}) "
+                   f"— using single BS total row instead of {len(deb_parties)} parsed parties")
+        deb_parties = [{'name': 'Sundry Debtors', 'amount': _bs_debtors}]
+
     DEB_START_TMPL = 74   # template debtor start before any shifts
     DEB_TMPL_SLOTS = 43   # R74-R116 in template (43 rows)
     DEB_START = DEB_START_TMPL + _shift
@@ -3396,16 +3501,30 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
     _extra_deb  = extra_rows_deb            # rows inserted for debtor overflow
     _cred_sum_row     = 62 + _extra_cred    # Details row that has =SUM(creditor amounts)
     _msme_sum_row     = 68 + _extra_cred    # Details row with MSME SUM
-    _deb_gt6_total    = deb_total_row       # actual TOTAL row for debtors >6m
+    _deb_gt6_total    = deb_total_row       # actual TOTAL row for debtors >6m (Advance-to-Sup)
     _deb_lt6_total    = _lt6_start + 2      # approximate TOTAL row for debtors <6m
 
+    # FIX M (2026-08-14): Record the rows that _inject_details_sheet has ALREADY written
+    # correct formulas to. The internal formula shift in _fix_details_formula_refs must
+    # NOT re-shift these rows, because the formulas there already reference the correct
+    # post-insertion row numbers and a second shift would corrupt them.
+    # These rows are: cred_sum_actual_row, deb_total_row, any Advance-to-Suppliers row,
+    # and the Trade Receivable <6mo TOTAL row (_lt6_start + 2).
+    _skip_rows = {cred_sum_actual_row, deb_total_row, _lt6_start, _lt6_start+1, _lt6_start+2}
+    if _adv_sup_row is not None:
+        _skip_rows.add(_adv_sup_row)
+        if _adv_total_row is not None:
+            _skip_rows.add(_adv_total_row)
+
     return {
-        'cred_sum_row':  _cred_sum_row,
-        'msme_sum_row':  _msme_sum_row,
-        'deb_gt6_total': _deb_gt6_total,
-        'deb_lt6_total': _deb_lt6_total,
-        'extra_cred':    _extra_cred,
-        'extra_deb':     _extra_deb,
+        'cred_sum_row':      _cred_sum_row,
+        'cred_sum_actual':   cred_sum_actual_row,  # FIX M: actual row written by injector
+        'msme_sum_row':      _msme_sum_row,
+        'deb_gt6_total':     _deb_gt6_total,
+        'deb_lt6_total':     _deb_lt6_total,
+        'extra_cred':        _extra_cred,
+        'extra_deb':         _extra_deb,
+        'skip_rows':         _skip_rows,            # FIX M: rows to exclude from re-shift
     }
 
 
@@ -3456,28 +3575,27 @@ def _fix_details_formula_refs(wb, shifts, log):
     ws = wb['notes to bs']
 
     # Map: (notes_to_bs_row, col_idx) → new Details row number
-    # Template original rows in Details: 62=credSUM, 68=MSME, 129=deb>6, 136=deb<6
-    cred_sum = shifts.get('cred_sum_row',  62 + extra_cred)
-    msme_sum = shifts.get('msme_sum_row',  68 + extra_cred)
-    deb_gt6  = shifts.get('deb_gt6_total', 129 + extra_cred + extra_deb)
-    deb_lt6  = shifts.get('deb_lt6_total', 136 + extra_cred + extra_deb)
+    # Template original rows in Details: 62=credSUM, 68=MSME, 129=deb<6m TOTAL, 136=deb>6m TOTAL
+    # FIX N part 2: deb_gt6 and deb_lt6 must be computed by directly applying extra_cred
+    # shift to the TEMPLATE row numbers (129 and 136), NOT from the deb_gt6_total /
+    # deb_lt6_total tracker fields (which track the ADVANCE TO SUPPLIERS and _lt6_start+2
+    # rows — wrong rows for this cross-sheet reference fix).
+    # Template R129 (deb <6mo TOTAL) shifts by extra_cred (only creditor rows are inserted
+    # before R129, no debtor overflow for this client). Same for R136.
+    cred_sum = shifts.get('cred_sum_row',  62  + extra_cred)
+    msme_sum = shifts.get('msme_sum_row',  68  + extra_cred)
+    deb_gt6  = 129 + extra_cred + extra_deb   # template R129 shifted by all insertions
+    deb_lt6  = 136 + extra_cred + extra_deb   # template R136 shifted by all insertions
 
-    # Build replacement map: old_formula_fragment → new_formula
-    #
-    # FIX C (2026-08-14): The template also has debtors < 6m and > 6m TOTAL rows
-    # at template positions R171 and R177 (in the Sachidanand Details layout).
-    # These are referenced by notes to bs R91 and R97.
-    # After row insertion they shift, AND the template references are wrong to begin with
-    # (R171 = ADVANCE TO SUPPLIERS header, not the debtor TOTAL).
-    # We must repair these references using the actual computed deb_lt6_total row.
-    #
-    # Template original rows (Sachidanand-specific layout):
-    #   R62  = creditor SUM (after 33-slot block R23-R55, SUM row at R56 → shifts)
-    #   R68  = MSME SUM
-    #   R129 = debtors >6m TOTAL  (template) → notes to bs R97 = Details!E129
-    #   R136 = debtors <6m TOTAL  (template) → notes to bs R91 = Details!E136
-    #   R171 = debtors <6m TOTAL  (Sachidanand alt template) → notes to bs R91 = Details!E171
-    #   R177 = debtors >6m TOTAL  (Sachidanand alt template) → notes to bs R97 = Details!E177
+    # FIX N (2026-08-14): FIX C REMOVED.
+    # The template has notes to bs R91 → Details!D129 (trade receivable <6mo TOTAL)
+    # and R97 → Details!D136 (>6mo TOTAL). After 54 creditor rows are inserted:
+    #   D129 → D183 (correct <6mo total) via standard _shift_row_ref
+    #   D136 → D190 (correct >6mo total) via standard _shift_row_ref
+    # FIX C was adding extra replacements for Details!D171 → deb_lt6 which OVERWROTE
+    # the already-correctly-shifted formulas with D171 (ADVANCE TO SUPPLIERS — wrong).
+    # Solution: let the standard shift mechanism handle D129/D136 → D183/D190 naturally.
+    # No special D171 patching needed.
     replacements = {}
     if extra_cred > 0:
         replacements['Details!D62'] = f'Details!D{cred_sum}'
@@ -3489,19 +3607,6 @@ def _fix_details_formula_refs(wb, shifts, log):
         replacements['Details!E129'] = f'Details!E{deb_gt6}'
         replacements['Details!D136'] = f'Details!D{deb_lt6}'
         replacements['Details!E136'] = f'Details!E{deb_lt6}'
-    # Always fix the Sachidanand-specific template references (R171/R177)
-    # regardless of whether rows were inserted, because R171 is already wrong
-    # in the base template (it points to ADVANCE TO SUPPLIERS, not debtors).
-    # deb_lt6 = actual debtors <6m TOTAL row; deb_gt6 = debtors >6m TOTAL row.
-    # These may be 0 if not populated — guard against that.
-    if deb_lt6 > 0:
-        replacements['Details!D171'] = f'Details!D{deb_lt6}'
-        replacements['Details!E171'] = f'Details!E{deb_lt6}'
-        log.append(f"FIX C: Details!E171 → Details!E{deb_lt6} (debtors <6m TOTAL)")
-    if deb_gt6 > 0:
-        replacements['Details!D177'] = f'Details!D{deb_gt6}'
-        replacements['Details!E177'] = f'Details!E{deb_gt6}'
-        log.append(f"FIX C: Details!E177 → Details!E{deb_gt6} (debtors >6m TOTAL)")
 
     # Also handle without '!' prefix variation just in case
     extra_replacements = {}
@@ -3570,10 +3675,23 @@ def _fix_details_formula_refs(wb, shifts, log):
     # Only match patterns that look like cell references (letter(s) then digits)
     _CELLREF_PAT = _re_int.compile(r'([A-Za-z]{1,3})(\d+)')
 
+    # FIX M (2026-08-14): Rows already rewritten by _inject_details_sheet must be
+    # excluded from the generic shift pass. The injector writes correct post-insertion
+    # formulas (e.g. SUM(D23:D109) for creditors). A second shift would corrupt them
+    # (e.g. D109→D163). Skip any row in the skip_rows set returned by the injector.
+    skip_rows = shifts.get('skip_rows', set())
+    # Also always skip the cred_sum_actual row (the one the injector wrote)
+    cred_sum_actual = shifts.get('cred_sum_actual', cred_sum)
+    if cred_sum_actual:
+        skip_rows = skip_rows | {cred_sum_actual}
+
     det_fix_count = 0
     for row in ws_det.iter_rows():
         for cell in row:
             if isinstance(cell, _MCD):
+                continue
+            # FIX M: skip rows that already have correct injector-written formulas
+            if cell.row in skip_rows:
                 continue
             v = cell.value
             if not isinstance(v, str) or not v.startswith('='):
@@ -3587,6 +3705,37 @@ def _fix_details_formula_refs(wb, shifts, log):
                            f"{v!r} → {new_v!r}")
     if det_fix_count:
         log.append(f"Details internal formula fix: {det_fix_count} formula(s) updated")
+
+    # FIX N part 3: After internal shift, correct the debtor SUM formulas.
+    # The template has wrong E-col ranges (SUM(E77:E128) instead of SUM(E74:E128))
+    # and the >6mo TOTAL only covers E135:E135 (template bug). After shift these
+    # become SUM(E131:E182) and SUM(E189:E189). Rewrite to correct ranges.
+    # The correct start row for debtors in D col: DEB_START_TMPL+extra_cred = 74+extra_cred
+    # In E col it should match D col exactly.
+    deb_start_actual = 74 + extra_cred   # actual first debtor data row in output
+    deb_end_actual   = deb_start_actual + 43 + extra_deb - 1   # last debtor slot
+
+    # Debtor <6mo total row: template R129 + extra_cred + extra_deb
+    _lt6_total_row = 129 + extra_cred + extra_deb
+    try:
+        ws_det.cell(_lt6_total_row, 4).value = f'=SUM(D{deb_start_actual}:D{deb_end_actual})'
+        ws_det.cell(_lt6_total_row, 5).value = f'=SUM(E{deb_start_actual}:E{deb_end_actual})'
+        log.append(f"Details debtor <6mo SUM corrected at R{_lt6_total_row}: "
+                   f"D/E{deb_start_actual}:{deb_end_actual}")
+    except Exception as _e:
+        log.append(f"Details debtor SUM correction failed: {_e}")
+
+    # Debtor >6mo total row: template R136 + extra_cred + extra_deb
+    _gt6_total_row = 136 + extra_cred + extra_deb
+    try:
+        _gt6_data_start = _gt6_total_row - 2   # 2 data rows above total
+        _gt6_data_end   = _gt6_total_row - 1
+        ws_det.cell(_gt6_total_row, 4).value = f'=SUM(D{_gt6_data_start}:D{_gt6_data_end})'
+        ws_det.cell(_gt6_total_row, 5).value = f'=SUM(E{_gt6_data_start}:E{_gt6_data_end})'
+        log.append(f"Details debtor >6mo SUM corrected at R{_gt6_total_row}: "
+                   f"D/E{_gt6_data_start}:{_gt6_data_end}")
+    except Exception as _e:
+        log.append(f"Details debtor >6mo SUM correction failed: {_e}")
 
 
 # ── Fixed Assets P. Yr. ───────────────────────────────────────────────────────
