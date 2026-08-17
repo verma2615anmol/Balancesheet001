@@ -7311,7 +7311,7 @@ input:focus{border-color:var(--brand)}
 <section class="hero">
   <div class="hero-badge">&#128209; T-Shape &rarr; Comparative BS</div>
   <h1>T-Shaped Balance Sheet &rarr;<br/><em>Comparative Format</em> Automatically</h1>
-  <p>Upload a T-shaped balance sheet (.xls) &mdash; the tool extracts every annexure and fills the PY column of the output template. CY column left blank (yellow) for you to fill.</p>
+  <p>Upload a T-shaped balance sheet (.xls or .xlsx) &mdash; the tool extracts every annexure and fills the PY column of the output template. CY column left blank (yellow) for you to fill.</p>
 </section>
 
 {% if uploads_left == 0 %}
@@ -7350,16 +7350,16 @@ input:focus{border-color:var(--brand)}
       </div>
       <div class="usage-bar-bg"><div class="usage-bar-fill" style="width:{{ bar_pct }}%"></div></div>
       <div class="info-box">
-        <strong>&#9432; .xls format only.</strong> Upload the T-shaped XLS file. The tool auto-detects the format, reads the financial year from the file, and fills the PY column automatically.
+        <strong>&#9432; .xls / .xlsx supported.</strong> Upload the T-shaped XLS file. The tool auto-detects the format, reads the financial year from the file, and fills the PY column automatically.
       </div>
       <div class="field">
         <label>Upload T-Shaped XLS</label>
         <div class="dropzone" id="dropzone">
           <div class="dz-icon">&#128196;</div>
           <div class="dz-text">Drag &amp; drop or <strong>click to browse</strong></div>
-          <div class="dz-text" style="margin-top:3px">.xls files only</div>
+          <div class="dz-text" style="margin-top:3px">.xls and .xlsx files supported</div>
           <div class="dz-file" id="dzFile"></div>
-          <input type="file" id="xlFile" accept=".xls">
+          <input type="file" id="xlFile" accept=".xls,.xlsx">
         </div>
       </div>
       <div class="field">
@@ -7385,7 +7385,7 @@ input:focus{border-color:var(--brand)}
       </div>
       <div class="card-body">
         <ol class="steps">
-          <li><strong>Upload the .xls file</strong><span>Click or drag the T-shaped XLS. Must be .xls (not .xlsx).</span></li>
+          <li><strong>Upload the .xls or .xlsx file</strong><span>Click or drag the T-shaped XLS or XLSX file.</span></li>
           <li><strong>Client Name (optional)</strong><span>Overrides the entity name auto-detected from the XLS. Leave blank if unsure.</span></li>
           <li><strong>Click Convert</strong><span>The tool reads the financial year from the file and fills the PY column automatically. Takes under 15 seconds.</span></li>
           <li><strong>Download &amp; verify</strong><span>Open in Excel. PY column is filled. Yellow cells = CY inputs for you to enter.</span></li>
@@ -7435,8 +7435,8 @@ if(dz&&fi){
   fi.addEventListener('change',()=>{if(fi.files.length)showFile(fi.files[0]);});
 }
 function showFile(f){
-  if(!f.name.toLowerCase().endsWith('.xls')||f.name.toLowerCase().endsWith('.xlsx')){
-    showStatus('error','Please upload a .xls file (not .xlsx).');
+  if(!f.name.toLowerCase().endsWith('.xls')&&!f.name.toLowerCase().endsWith('.xlsx')){
+    showStatus('error','Please upload a .xls or .xlsx file.');
     return;
   }
   dzFile.textContent='\\u2713 '+f.name;dzFile.style.display='block';
@@ -7448,9 +7448,9 @@ async function processFile(){
         sp=document.getElementById('spinner'),
         bt=document.getElementById('btnText'),
         dl=document.getElementById('dlBtn');
-  if(!f){showStatus('error','Please select a .xls file first.');return;}
-  if(!f.name.toLowerCase().endsWith('.xls')||f.name.toLowerCase().endsWith('.xlsx')){
-    showStatus('error','Only .xls files are supported.');return;}
+  if(!f){showStatus('error','Please select a .xls or .xlsx file first.');return;}
+  if(!f.name.toLowerCase().endsWith('.xls')&&!f.name.toLowerCase().endsWith('.xlsx')){
+    showStatus('error','Only .xls and .xlsx files are supported.');return;}
   btn.disabled=true;sp.style.display='block';bt.textContent='Converting\\u2026';
   dl.style.display='none';showStatus('','');
   const fd=new FormData();
@@ -7829,7 +7829,19 @@ def process_file():
                 f.save(raw_tmp)
                 _convert_xlsb_to_xlsx(raw_tmp, ip)
             else:
-                f.save(ip)
+                # .xlsx — check if it is a T-shaped file via tshape_processor detection
+                raw_tmp = os.path.join(UPLOAD_DIR, f"{h}_in_raw.xlsx")
+                f.save(raw_tmp)
+                if _TSHAPE_AVAILABLE:
+                    try:
+                        from tshape_processor import _detect_input_format as _dtf
+                        _fmt = _dtf(raw_tmp)
+                        is_tshape = (_fmt in ('tshape_xlsx', 'multisection'))
+                    except Exception:
+                        is_tshape = False
+                if not is_tshape:
+                    import shutil as _shutil2
+                    _shutil2.copy2(raw_tmp, ip)
         except Exception as e:
             for p in (raw_tmp, ip):
                 if p and not is_tshape:
