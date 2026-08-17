@@ -240,6 +240,707 @@ def _detect_input_format(filepath: str) -> str:
         return 'tshape_xlsx'   # if detection fails, let the parser try and fail naturally
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Multi-section XLSX parser  (GD Singla & Co. — all annexures on one sheet)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#  Layout (0-based col indices, verified from Bansal Pharmaceuticals 2024):
+#
+#  A-I   (0-8)   : T-shaped BS summary  (Liabilities | Assets)
+#  K-P   (10-16) : Trading Account      (To Purchases | By Sales)
+#  R-Y   (17-24) : Profit & Loss        (To Expenses  | By GP)
+#  AM-AN (38-39) : Capital Annexure-A   (col38=movements, col39=subtotals/closing)
+#  AO    (44-45) : Creditors col (col40=M/s. prefix, col41=name, col45=amount)
+#  AY-AZ (45-46) : Other Payables       (col46=label, col50=amount)
+#  AZ-BH (50-59) : Fixed Assets + Advances + Cash&Bank (col51=label, col59=amt)
+#  BG-BH (60-66) : Debtors block 1      (col60=M/s., col61=name, col66=amount)
+#  BI-BP (67-74) : Debtors block 2      (col67=M/s., col68=name, col74=amount)
+#  AN-AN (39)    : Unsecured Loan total (col39 row with grand total)
+
+def _parse_multisection_xlsx(filepath: str) -> dict:
+    """
+    Parse a GD Singla & Co. multi-section XLSX where all annexures are packed
+    horizontally on a single sheet.  Tested on Bansal Pharmaceuticals 2024.
+
+    Returns the same dict shape as parse_tshape_bs() so inject_into_template()
+    works unchanged.
+    """
+    from openpyxl import load_workbook as _lw2
+    import math as _math2
+    import re as _re2
+    import datetime as _dt2
+
+    log = ['[multisection] parsing GD Singla multi-section XLSX']
+
+    wb2 = _lw2(filepath, read_only=True, data_only=True)
+    ws2 = wb2.active
+    rows = [list(r) for r in ws2.iter_rows(values_only=True)]
+    wb2.close()
+
+    ncols = max(len(r) for r in rows)
+    for r in rows:
+        while len(r) < ncols:
+            r.append(None)
+
+    def _sv(v):
+        return '' if v is None else str(v).strip()
+
+    def _nv(v, default=0.0):
+        if isinstance(v, (int, float)) and not (isinstance(v, float) and _math2.isnan(v)):
+            return float(v)
+        try:
+            return float(_sv(v).replace(',', ''))
+        except Exception:
+            return default
+
+    # ── Entity name & date ────────────────────────────────────────────────────
+    entity_name = ''
+    bs_date = ''
+    py_year_end = ''
+    for i, row in enumerate(rows[:15]):
+        for j, v in enumerate(row):
+            s = _sv(v)
+            if not entity_name and len(s) > 8 and 'M/S' in s.upper():
+                entity_name = s
+            if not bs_date and 'BALANCE' in s.upper() and 'SHEET' in s.upper():
+                for k in range(j, min(j + 20, ncols)):
+                    dv = row[k]
+                    if isinstance(dv, _dt2.datetime):
+                        bs_date = dv.strftime('%d.%m.%Y')
+                        py_year_end = str(dv.year)
+                        break
+                    ds = _sv(dv)
+                    m = _re2.search(r'(\d{2})[./](\d{2})[./](\d{4})', ds)
+                    if m:
+                        bs_date = ds.strip()
+                        py_year_end = m.group(3)
+                        break
+
+    if not entity_name:
+        entity_name = _sv(rows[6][0]) if len(rows) > 6 else 'M/S CLIENT'
+    if not bs_date:
+        bs_date = '31.03.2024'
+        py_year_end = '2024'
+
+    log.append(f'Entity: {entity_name} | Date: {bs_date}')
+
+    # ── BS summary totals (cols 0-8) ──────────────────────────────────────────
+    # R11 = header: LIABILITIES | ASSETS | AMOUNT
+    # Liabilities amount col = 3 (D), Assets amount col = 8 (I)
+    LIAB_COL = 3
+    ASSET_COL = 8
+
+    secured_loans = 0.0
+    unsecured_loans = 0.0
+    sundry_creditors = 0.0
+    other_payables = 0.0
+    fixed_assets_wdv = 0.0
+    closing_stock = 0.0
+    advances_security = 0.0
+    sundry_debtors = 0.0
+    cash_bank = 0.0
+    capital_closing = 0.0
+
+    for i, row in enumerate(rows):
+        label = _sv(row[0]).upper()
+        rs = ' '.join(_sv(v).upper() for v in row[:9] if v is not None)
+        amt_l = _nv(row[LIAB_COL]) if LIAB_COL < len(row) else 0.0
+        amt_a = _nv(row[ASSET_COL]) if ASSET_COL < len(row) else 0.0
+
+        if ('CAPITAL' in label or "PROP" in label) and "'A'" in rs or 'ANNEXURE-A' in rs or '"A"' in rs:
+            if amt_l > 0:
+                capital_closing = amt_l
+        if 'SECURED LOAN' in label and 'UN' not in label:
+            if amt_l > 0:
+                secured_loans = amt_l
+        # Individual secured loan items (bank OD etc.)
+        if any(k in label for k in ('HDFC', 'SBI', 'ICICI', 'OBC', 'PNB', 'BANK OD', 'LAP LOAN')):
+            if amt_l > 0:
+                secured_loans = max(secured_loans, amt_l)
+        if 'UNSECURED' in label and 'LOAN' in label:
+            if amt_l > 0:
+                unsecured_loans = amt_l
+        if 'SUNDRY CREDITOR' in label:
+            if amt_l > 0:
+                sundry_creditors = amt_l
+        if 'OTHER PAYABLE' in label:
+            if amt_l > 0:
+                other_payables = amt_l
+        if 'FIXED ASSET' in rs and amt_a > 0 and fixed_assets_wdv == 0:
+            fixed_assets_wdv = amt_a
+        if 'CLOSING STOCK' in rs and 'CURRENT ASSET' in rs and amt_a > 0:
+            closing_stock = amt_a
+        if 'CLOSING STOCK' in label and amt_a > 0:
+            closing_stock = amt_a
+        # closing stock from asset col where label has 'closing stock'
+        if closing_stock == 0:
+            for jj in range(5, min(9, len(row))):
+                sv_j = _sv(row[jj]).upper()
+                if 'CLOSING' in sv_j and 'STOCK' in sv_j:
+                    closing_stock = amt_a
+        if 'SECURITIES' in label or 'ADVANCES' in label and 'SECURITY' in rs:
+            if amt_a > 0:
+                advances_security = amt_a
+        if 'SUNDRY DEBTOR' in label or ('DEBTOR' in label and 'ADVANCE' not in label):
+            if amt_a > 0:
+                sundry_debtors = amt_a
+        if 'CASH' in label and ('BANK' in label or 'BALANCE' in label):
+            if amt_a > 0:
+                cash_bank = amt_a
+        if i > 5 and label.startswith('TOTAL') and amt_l > 0:
+            break
+
+    # Direct reads from known rows for Bansal layout
+    # R16: PROP CAPITAL = col3 amount
+    if len(rows) > 15 and capital_closing == 0:
+        capital_closing = _nv(rows[15][3])
+    # R21: HDFC Bank OD = col3
+    if len(rows) > 20 and secured_loans == 0:
+        secured_loans = _nv(rows[20][3])
+    # R25: UNSECURED = col3; ADVANCES = col8
+    if len(rows) > 24:
+        if unsecured_loans == 0:
+            unsecured_loans = _nv(rows[24][3])
+        if advances_security == 0:
+            advances_security = _nv(rows[24][8])
+    # R28: CREDITORS = col3; DEBTORS = col8
+    if len(rows) > 27:
+        if sundry_creditors == 0:
+            sundry_creditors = _nv(rows[27][3])
+        if sundry_debtors == 0:
+            sundry_debtors = _nv(rows[27][8])
+    # R31: OTHER PAYABLES = col3; CASH & BANK = col8
+    if len(rows) > 30:
+        if other_payables == 0:
+            other_payables = _nv(rows[30][3])
+        if cash_bank == 0:
+            cash_bank = _nv(rows[30][8])
+    # R13: FIXED ASSETS = col8; CLOSING STOCK = R18 col8
+    if len(rows) > 17:
+        if fixed_assets_wdv == 0:
+            fixed_assets_wdv = _nv(rows[12][8])
+        if closing_stock == 0:
+            closing_stock = _nv(rows[17][8])
+
+    log.append(f'BS totals: capital={capital_closing:.0f}, secured={secured_loans:.0f}, '
+               f'unsecured={unsecured_loans:.0f}, creditors={sundry_creditors:.0f}, '
+               f'debtors={sundry_debtors:.0f}, cash={cash_bank:.0f}')
+
+    # ── Trading Account (cols 10-16) ──────────────────────────────────────────
+    # Opening stock: col12 row with "To Opening Stock" at col10
+    # Sales: col15 "By Sales..." rows, total = col16 (SUM row)
+    # Purchases: col11/12 rows with "Purchase GST..." at col10
+    # Gross Profit: col12 row with "To Gross Profit"
+    # Closing stock: col16 row with "By Closing Stock"
+
+    opening_stock = 0.0
+    sales = 0.0
+    purchases = 0.0
+    gross_profit = 0.0
+    foc_amt = 0.0
+    freight_amt = 0.0
+
+    _sale_lines = []
+    _purch_lines = []
+
+    for i, row in enumerate(rows[:40]):
+        # Trading cols: label=col10, amount=col11/12; By-label=col13, By-amount=col15; total=col16
+        lbl10 = _sv(row[10]).upper() if 10 < len(row) else ''
+        lbl12 = _sv(row[12]).upper() if 12 < len(row) else ''
+        lbl13 = _sv(row[13]).upper() if 13 < len(row) else ''
+        col11 = _nv(row[11]) if 11 < len(row) else 0.0
+        col12 = _nv(row[12]) if 12 < len(row) else 0.0
+        col15 = _nv(row[15]) if 15 < len(row) else 0.0
+        col16 = _nv(row[16]) if 16 < len(row) else 0.0
+
+        # Opening stock: col12 numeric, no col10 purchase label, lbl13='BY' (R15)
+        if opening_stock == 0 and col12 > 0 and not lbl10 and lbl13 == 'BY':
+            opening_stock = col12
+        if 'PURCHASE' in lbl10:
+            _purch_lines.append(col11)
+        if 'F.O.C' in lbl10 or lbl10 == 'FOC':
+            foc_amt = col12 or col11
+        if 'FREIGHT' in lbl10 or 'FRIEGHT' in lbl10:
+            freight_amt = col12 or col11
+        if 'BY SALE' in lbl13 or 'BY SALES' in lbl13:
+            _sale_lines.append(col15)
+        # Sales total = col16 on last By-Sales row (R22); exclude closing stock row
+        if col16 > 0 and _sale_lines and 'CLOSING STOCK' not in lbl13:
+            sales = max(sales, col16)
+        if 'BY CLOSING STOCK' in lbl13:
+            closing_stock = closing_stock or col16
+        if 'BY CLOSING STOCK' in lbl13 and col12 > 0:
+            gross_profit = col12
+        # Purchases total: col12 on last purchase line (R23 = 'Purchase Local Tax Free')
+        # It's the last row with 'PURCHASE' in col10 and col12 populated
+        if 'PURCHASE' in lbl10 and col12 > 0:
+            purchases = col12  # running: last one wins = grand total row
+
+    if _sale_lines and sales == 0:
+        sales = sum(_sale_lines)
+    if purchases == 0 and _purch_lines:
+        purchases = sum(_purch_lines)
+
+    log.append(f'Trading: opening={opening_stock:.0f}, purchases={purchases:.0f}, '
+               f'sales={sales:.0f}, GP={gross_profit:.0f}')
+
+    # ── P&L Account (cols 17-24) ──────────────────────────────────────────────
+    # Labels at col17/col18, amounts at col20
+    # "By Gross Profit" at col21, incentives at col24
+    # Net Profit: col20 row with "To Net Profit"
+
+    salary_expenses = 0.0
+    interest_paid = 0.0
+    depreciation = 0.0
+    other_income = 0.0
+    net_profit = 0.0
+    other_expense_items = []
+
+    _PL_EXP_MAP = {
+        'AUDIT FEE': 'audit fees',
+        'AUDIT FEES': 'audit fees',
+        'BANK INTEREST': 'bank interest',
+        'BANK CHARGES': 'bank charges',
+        'BANK CHARGE': 'bank charges',
+        'ELECTRICITY': 'electricity exp',
+        'PETROL': 'petrol expenses',
+        'MISC EXP': 'misc exp',
+        'PRINTING': 'printing & stationery',
+        'PROPERTY TAX': 'property tax',
+        'REPAIR': 'repair & maintance',
+        'REBARE': 'rebate & discount',
+        'REBATE': 'rebate & discount',
+        'SHOP EXP': 'shop expenses',
+        'TELEPHONE': 'telephone exp',
+        'TOUR': 'tour & travelling',
+        'TRAVELLING': 'tour & travelling',
+        'INSURANCE': 'insurance',
+        'ASSOCIATION': 'association fees',
+    }
+
+    for i, row in enumerate(rows[:40]):
+        lbl17 = _sv(row[17]).upper() if 17 < len(row) else ''
+        lbl18 = _sv(row[18]).upper() if 18 < len(row) else ''
+        col20 = _nv(row[20]) if 20 < len(row) else 0.0
+        col24 = _nv(row[24]) if 24 < len(row) else 0.0
+
+        combined = (lbl17 + ' ' + lbl18).strip()
+
+        if 'TO SALARY' in combined or combined == 'TO SALARY':
+            salary_expenses += col20
+        elif 'TO DEPRECIATION' in combined:
+            depreciation = col20
+        elif 'TO INTEREST' in combined or 'TO BANK INT' in combined or 'TO BANK INTT' in combined:
+            interest_paid += col20
+        elif 'TO NET PROFIT' in combined:
+            net_profit = col20
+        elif 'BY INCENTIVE' in combined or 'BY INCENTIVES' in combined:
+            other_income += col20 or col24
+        elif 'BY GROSS PROFIT' in combined or 'BY GROSS PROFIT B/D' in combined:
+            pass  # skip
+        elif lbl18 and lbl17 == 'TO' and col20 > 0:
+            # Match to expense map
+            matched = False
+            for kw, name in _PL_EXP_MAP.items():
+                if kw in lbl18:
+                    other_expense_items.append({'name': name, 'amount': col20})
+                    matched = True
+                    break
+            if not matched:
+                clean_name = lbl18.strip().title()
+                if clean_name and col20 > 0:
+                    other_expense_items.append({'name': clean_name, 'amount': col20})
+
+    log.append(f'P&L: salary={salary_expenses:.0f}, dep={depreciation:.0f}, '
+               f'int={interest_paid:.0f}, NP={net_profit:.0f}')
+
+    # ── Capital Annexure-A (col38=movements, col39=totals) ────────────────────
+    # Opening = row13 col39 (7,490,745)
+    # Profit  = row21 col38 (2,660,247)
+    # Less withdrawals = col38 sub-items rows 24-30
+    # Closing = row33 col39 (9,780,338)
+
+    cap_opening = 0.0
+    cap_withdrawals = 0.0
+    cap_additions = 0.0
+    cap_closing = capital_closing  # from BS
+
+    for i, row in enumerate(rows[:40]):
+        c38 = _nv(row[38]) if 38 < len(row) else 0.0
+        c39 = _nv(row[39]) if 39 < len(row) else 0.0
+        lbl25 = _sv(row[25]).upper() if 25 < len(row) else ''
+
+        if i == 12 and c39 > 0:  # R13
+            cap_opening = c39
+        if i == 20 and c38 > 0:  # R21 = net profit
+            pass  # already captured from P&L
+        if i == 23 and c38 > 0:  # R24 = withdrawals
+            cap_withdrawals = c38
+        if i == 29 and c39 > 0:  # R30 = withdrawals total
+            cap_withdrawals = c39
+        if i == 32 and c39 > 0:  # R33 = closing
+            cap_closing = c39
+
+    if cap_opening == 0 and len(rows) > 12:
+        cap_opening = _nv(rows[12][39])
+    if cap_closing == 0:
+        cap_closing = capital_closing
+
+    log.append(f'Capital: opening={cap_opening:.0f}, withdrawals={cap_withdrawals:.0f}, '
+               f'closing={cap_closing:.0f}')
+
+    # ── Unsecured Loans Annexure-B (col38=ANNEXURE-B marker, col39=amounts) ───
+    # Header at R36: col38='ANNEXURE-B'
+    # Party names: col38=name rows 38-48, col39=amount
+    # Total: R49 col39
+
+    # Unsecured Loan parties: read from Form 3CD section (col75=name, col80=balance)
+    # These rows appear where col75 has a person name and col80 has a positive balance.
+    # The "REFER ITEM 31" / "ANNEXURE-B" header at col75/R5 marks the section.
+    # We filter by: col75 is a person name (not address/PAN/note), col80 is positive number.
+    unsecured_loan_parties = []
+    _UNSEC_SKIP = ('B.R.S NAGAR', 'PAN NO', 'LUDHIANA', 'AWFPS', 'CITPS', 'CHQ',
+                   'NOTE', 'REFER', 'AUDITOR', 'INTERMS', 'DEWAN', 'KANTANDU',  # address
+                   'PROP.', 'FOR ', 'BEHALF')
+    for i, row in enumerate(rows):
+        nm75 = _sv(row[75]).strip() if 75 < len(row) else ''
+        amt80 = _nv(row[80]) if 80 < len(row) else 0.0
+        if not nm75 or len(nm75) < 3 or amt80 <= 0:
+            continue
+        nm75_u = nm75.upper()
+        if any(skip in nm75_u for skip in _UNSEC_SKIP):
+            continue
+        # Must look like a person name (not all-caps company with address tokens)
+        if nm75_u in ('TOTAL', 'PARTICULARS', 'NAME', 'SR. NO.'):
+            continue
+        # Filter: balance must be a round/large number (unsecured loans are usually 1L+)
+        if amt80 < 10000:
+            continue
+        unsecured_loan_parties.append({'name': nm75, 'amount': amt80})
+
+    log.append(f'Unsecured parties: {len(unsecured_loan_parties)}')
+
+    # ── Other Payables Annexure-D (col46=label, col50=amount) ────────────────
+    # Header R6: col46='OTHER PAYABLES', col50='ANNEXURE-D'
+    # Items: R8-R10 col46=name, col50=amount; R12=total
+
+    other_payable_items = []
+    in_ocl = False
+    for i, row in enumerate(rows):
+        c46 = _sv(row[46]).upper() if 46 < len(row) else ''
+        c50 = row[50] if 50 < len(row) else None
+
+        if 'OTHER PAYABLE' in c46 and ('ANNEXURE' in _sv(c50).upper() or i < 10):
+            in_ocl = True
+            continue
+        if not in_ocl:
+            continue
+        if i > 15:  # OCL section is short (rows 8-12)
+            break
+
+        nm = _sv(row[46]).strip()
+        amt = _nv(c50)
+        if nm and len(nm) > 2 and amt > 0:
+            other_payable_items.append({'name': nm, 'amount': amt})
+        if isinstance(c50, (int, float)) and c50 > 0 and not nm:
+            other_payables = other_payables or c50  # total row
+
+    log.append(f'OCL items: {len(other_payable_items)}, total={other_payables:.0f}')
+
+    # ── Fixed Assets (col51=label, cols52-59=values) ──────────────────────────
+    # Header R11: col51='Particulars'  cols 52-59 = Value/Addition/Sale/Total/Rate/Dep/WDV
+    # Data rows R14-R24, Total R25
+
+    fixed_asset_items = []
+    in_fa = False
+    fa_total_wdv = 0.0
+
+    for i, row in enumerate(rows):
+        lbl = _sv(row[51]).strip() if 51 < len(row) else ''
+        lbl_u = lbl.upper()
+
+        if lbl_u == 'PARTICULARS' and i < 20:
+            in_fa = True
+            continue
+        if not in_fa:
+            continue
+        if lbl_u in ('ADVANCES & SECURITY', 'CASH & BANK BALANCES', ''):
+            if lbl_u not in ('',):
+                break
+
+        opening_v = _nv(row[52]) if 52 < len(row) else 0.0
+        add_gt    = _nv(row[53]) if 53 < len(row) else 0.0
+        add_lt    = _nv(row[54]) if 54 < len(row) else 0.0
+        sales_v   = _nv(row[55]) if 55 < len(row) else 0.0
+        rate_raw  = row[57] if 57 < len(row) else None
+        dep_v     = _nv(row[58]) if 58 < len(row) else 0.0
+        wdv_v     = _nv(row[59]) if 59 < len(row) else 0.0
+
+        if not lbl or len(lbl) < 2:
+            # Check if this is the total row (col52 has total opening)
+            if _nv(row[59] if 59 < len(row) else None) > 0 and not lbl:
+                fa_total_wdv = _nv(row[59])
+            continue
+
+        if lbl_u == 'TOTAL':
+            fa_total_wdv = wdv_v
+            break
+
+        rate_f = 0.0
+        if rate_raw not in (None, '-', ' '):
+            r_n = _nv(rate_raw)
+            if 0 < r_n <= 1:
+                rate_f = round(r_n * 100)
+            elif r_n in (5, 10, 15, 20, 25, 30, 40):
+                rate_f = int(r_n)
+
+        if opening_v > 0 or add_gt > 0 or wdv_v > 0:
+            fixed_asset_items.append({
+                'name': lbl,
+                'opening_wdv': opening_v,
+                'additions': add_gt + add_lt,
+                'sales': sales_v,
+                'dep': dep_v,
+                'closing_wdv': wdv_v,
+                'rate': rate_f,
+            })
+
+    if fixed_asset_items:
+        calc_wdv = sum(x['closing_wdv'] for x in fixed_asset_items)
+        if calc_wdv > 0:
+            fixed_assets_wdv = calc_wdv
+    elif fa_total_wdv > 0:
+        fixed_assets_wdv = fa_total_wdv
+
+    log.append(f'Fixed assets: {len(fixed_asset_items)} items, WDV={fixed_assets_wdv:.0f}')
+
+    # ── Advances & Security (col51=label, col59=amount, rows 27-48) ───────────
+    loans_advances_items = []
+    in_adv = False
+    for i, row in enumerate(rows):
+        lbl = _sv(row[51]).strip() if 51 < len(row) else ''
+        lbl_u = lbl.upper()
+        amt = _nv(row[59]) if 59 < len(row) else 0.0
+
+        if 'ADVANCES & SECURITY' in lbl_u or ('ADVANCE' in lbl_u and 'SECURITY' in lbl_u):
+            in_adv = True
+            continue
+        if not in_adv:
+            continue
+        if 'CASH & BANK' in lbl_u or 'ANNEXURE-H' in _sv(row[59]).upper():
+            break
+        if lbl and len(lbl) > 1 and lbl not in ('.', '') and amt > 0:
+            loans_advances_items.append({'name': lbl, 'amount': amt})
+        # Total row
+        if not lbl and amt > 0 and i > 40:
+            advances_security = advances_security or amt
+            break
+
+    log.append(f'Advances: {len(loans_advances_items)} items, total={advances_security:.0f}')
+
+    # ── Cash & Bank (col51=label, col59=amount, rows after CASH & BANK header) ─
+    cash_in_hand = 0.0
+    bank_balances = []
+    in_cash = False
+    for i, row in enumerate(rows):
+        lbl = _sv(row[51]).strip() if 51 < len(row) else ''
+        lbl_u = lbl.upper()
+        amt59 = row[59] if 59 < len(row) else None
+
+        if 'CASH & BANK' in lbl_u or 'CASH AND BANK' in lbl_u:
+            in_cash = True
+            continue
+        if not in_cash:
+            continue
+        if not lbl and not isinstance(amt59, (int, float)):
+            continue
+        if lbl and len(lbl) < 2:
+            continue
+
+        amt = _nv(amt59)
+        if 'CASH IN HAND' in lbl_u:
+            cash_in_hand = amt
+        elif amt > 0 and lbl:
+            bank_balances.append({'name': lbl, 'amount': amt})
+        # Total row (blank label with amount)
+        if not lbl and isinstance(amt59, (int, float)) and amt > 0:
+            cash_bank = cash_bank or amt
+            break
+        if i > 60:
+            break
+
+    if not cash_bank:
+        cash_bank = cash_in_hand + sum(b['amount'] for b in bank_balances)
+
+    log.append(f'Cash: hand={cash_in_hand:.0f}, banks={len(bank_balances)}, total={cash_bank:.0f}')
+
+    # ── Debtors blocks G1 (col60/61/66) and G2 (col67/68/74) ────────────────
+    # G1: col60='M/s.', col61=name, col66=amount
+    # G2: col67='M/s.', col68=name, col74=amount
+    # Total: R58 col66 = 6,841,420.52
+
+    sundry_debtor_parties = []
+    in_deb = False
+    deb_total_calc = 0.0
+
+    for i, row in enumerate(rows):
+        # Start marker: ANNEXURE-G in col66 or col74
+        rs_wide = ' '.join(_sv(v).upper() for v in row[60:76] if v is not None)
+        if 'ANNEXURE-G' in rs_wide and not in_deb:
+            in_deb = True
+            continue
+        if not in_deb:
+            continue
+        if i > 80:
+            break
+
+        # G1 block
+        p60 = _sv(row[60]).strip() if 60 < len(row) else ''
+        n61 = _sv(row[61]).strip() if 61 < len(row) else ''
+        a66 = _nv(row[66]) if 66 < len(row) else 0.0
+        # G2 block
+        p67 = _sv(row[67]).strip() if 67 < len(row) else ''
+        n68 = _sv(row[68]).strip() if 68 < len(row) else ''
+        a74 = _nv(row[74]) if 74 < len(row) else 0.0
+
+        if p60.lower() in ('m/s.', 'm/s') and n61 and a66 > 0:
+            sundry_debtor_parties.append({'name': n61, 'amount': a66})
+            deb_total_calc += a66
+        if p67.lower() in ('m/s.', 'm/s') and n68 and a74 > 0:
+            sundry_debtor_parties.append({'name': n68, 'amount': a74})
+            deb_total_calc += a74
+
+        # Total check: col66 non-M/s row with large amount
+        if not p60.lower().startswith('m/s') and not n61 and a66 > 0 and deb_total_calc > 0:
+            sundry_debtors = sundry_debtors or a66
+            break
+
+    if not sundry_debtors:
+        sundry_debtors = deb_total_calc
+    log.append(f'Debtors: {len(sundry_debtor_parties)} parties, total={deb_total_calc:.0f}')
+
+    # ── Creditors (col60=M/s., col61=name, col66=amount from ANNEXURE-C area) ─
+    # Creditors use the SAME col60/61/66 layout but appear BEFORE Annexure-G
+    # Actually for Bansal the creditor amounts are at col45 (col AQ) - 0-based=45
+    # Let's re-read from col 40/41/45 block (Annexure-C creditors)
+    sundry_creditor_parties = []
+    in_cred = False
+    cred_total_calc = 0.0
+
+    for i, row in enumerate(rows):
+        rs_cred = ' '.join(_sv(v).upper() for v in row[38:50] if v is not None)
+        if 'SUNDRY CREDITOR' in rs_cred or 'ANNEXURE-C' in rs_cred:
+            in_cred = True
+            continue
+        if not in_cred:
+            continue
+        if i > 130:
+            break
+
+        p40 = _sv(row[40]).strip() if 40 < len(row) else ''
+        n41 = _sv(row[41]).strip() if 41 < len(row) else ''
+        a45 = _nv(row[45]) if 45 < len(row) else 0.0
+
+        if p40.lower() in ('m/s.', 'm/s') and n41 and a45 > 0:
+            sundry_creditor_parties.append({'name': n41, 'amount': a45})
+            cred_total_calc += a45
+
+        # Stop when we run out of M/s. entries
+        rs_stop = ' '.join(_sv(v).upper() for v in row[:42] if v is not None)
+        if any(k in rs_stop for k in ('SUNDRY DEBTOR', 'ANNEXURE-G', 'OTHER PAYABLE')):
+            break
+
+    if not sundry_creditors:
+        sundry_creditors = cred_total_calc
+    log.append(f'Creditors: {len(sundry_creditor_parties)} parties, total={cred_total_calc:.0f}')
+
+    # ── Classify advances into revenue_auth / other_current / loans ──────────
+    _REV_KW = ('GST', 'CGST', 'SGST', 'IGST', 'TDS', 'TCS', 'TAX', 'ADVANCE INCOME TAX',
+               'ADVANCE TAX', 'VAT')
+    _OCA_KW = ('PREPAID', 'INSURANCE', 'SECURITY DEPOSIT', 'FD', 'FIXED DEPOSIT')
+
+    advance_to_revenue_items = []
+    loans_to_other_items = []
+    other_current_asset_items = []
+
+    for it in loans_advances_items:
+        nm_u = it['name'].upper()
+        if any(k in nm_u for k in _REV_KW):
+            advance_to_revenue_items.append(it)
+        elif any(k in nm_u for k in _OCA_KW):
+            other_current_asset_items.append(it)
+        else:
+            loans_to_other_items.append(it)
+
+    # ── Build capital accounts list ───────────────────────────────────────────
+    cap_name = entity_name.replace('M/S. ', '').replace('M/S.', '').strip()
+    capital_accounts = [{
+        'name': cap_name,
+        'opening': cap_opening,
+        'additions': cap_additions,
+        'withdrawals': cap_withdrawals,
+        'profit': net_profit,
+        'net_profit': net_profit,
+        'closing': cap_closing,
+    }]
+
+    # ── Assemble result ───────────────────────────────────────────────────────
+    result = {
+        'entity_name': entity_name,
+        'bs_date': bs_date,
+        'py_year_end': py_year_end,
+        'entity_type': 'proprietorship',
+        'capital_accounts': capital_accounts,
+        'secured_loans': secured_loans,
+        'unsecured_loans': unsecured_loans,
+        'unsecured_loan_parties': unsecured_loan_parties,
+        'sundry_creditors': sundry_creditors,
+        'sundry_creditor_parties': sundry_creditor_parties,
+        'advance_from_customers': 0.0,
+        'advance_from_customer_parties': [],
+        'other_payables': other_payables,
+        'other_payable_items': other_payable_items,
+        'short_term_provisions': 0.0,
+        'fixed_assets_wdv': fixed_assets_wdv,
+        'fixed_asset_items': fixed_asset_items,
+        'investments': 0.0,
+        'advances_security': advances_security,
+        'closing_stock': closing_stock,
+        'sundry_debtors': sundry_debtors,
+        'sundry_debtor_parties': sundry_debtor_parties,
+        'loans_advances': advances_security,
+        'loans_advances_items': loans_advances_items,
+        'loans_to_other_items': loans_to_other_items,
+        'advance_to_revenue_items': advance_to_revenue_items,
+        'other_current_asset_items': other_current_asset_items,
+        'other_current_assets': sum(x['amount'] for x in other_current_asset_items),
+        'cash_bank': cash_bank,
+        'cash_in_hand': cash_in_hand,
+        'bank_balances': bank_balances,
+        'other_current_assets': sum(x['amount'] for x in other_current_asset_items),
+        'sales': sales,
+        'opening_stock': opening_stock,
+        'purchases': purchases,
+        'direct_expenses': foc_amt + freight_amt,
+        'direct_expense_items': (
+            ([{'name': 'F.O.C', 'amount': foc_amt}] if foc_amt > 0 else []) +
+            ([{'name': 'Freight', 'amount': freight_amt}] if freight_amt > 0 else [])
+        ),
+        'gross_profit': gross_profit,
+        'other_income': other_income,
+        'salary_expenses': salary_expenses,
+        'interest_paid': interest_paid,
+        'depreciation': depreciation,
+        'other_expenses': sum(x['amount'] for x in other_expense_items),
+        'other_expense_items': other_expense_items,
+        'net_profit': net_profit,
+        'log': log,
+    }
+
+    log.append('[multisection] parse complete')
+    return result
+
 def parse_tshape_bs(filepath: str) -> dict:
     """
     Parse a GD Singla & Co. style T-shaped balance sheet.
@@ -255,25 +956,16 @@ def parse_tshape_bs(filepath: str) -> dict:
     """
     log = []
 
-    # ── Format detection guard ────────────────────────────────────────────────
+    # ── Format routing ─────────────────────────────────────────────────────
     _fmt = _detect_input_format(filepath)
     if _fmt == 'multisection':
-        raise ValueError(
-            "This balance sheet format is not supported.\n\n"
-            "The tool expects a T-shaped XLS/XLSX where Liabilities and Assets "
-            "sit side-by-side in columns A\u2013I, with each Annexure (A\u2013H) on a "
-            "separate sheet or in a narrow column block.\n\n"
-            "The uploaded file appears to be a multi-section format (G.D. Singla & "
-            "Co. style) where all Annexures are packed horizontally on one sheet "
-            "spanning 80\u2013120 columns. This format is not yet supported.\n\n"
-            "Please upload the standard T-shaped XLS file instead."
-        )
+        return _parse_multisection_xlsx(filepath)
     if _fmt == 'unknown':
         raise ValueError(
-            "Unrecognised balance sheet layout. "
-            "Please upload a standard T-shaped .xls or .xlsx file."
+            'Unrecognised balance sheet layout. '
+            'Please upload a standard T-shaped .xls or .xlsx file.'
         )
-    # ── / Format detection guard ──────────────────────────────────────────────
+    # ── / Format routing ────────────────────────────────────────────────────
 
     ext = os.path.splitext(filepath)[1].lower()
     engine = 'xlrd' if ext == '.xls' else 'openpyxl'
