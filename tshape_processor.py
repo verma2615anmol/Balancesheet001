@@ -1,9 +1,19 @@
-import math
 """
 tshape_processor.py
 ===================
 T-Shaped Balance Sheet → Comparative Balance Sheet Converter
 
+v2.7  2026-08-17  Format detection + accept .xlsx uploads:
+                  _detect_input_format() added before parse_tshape_bs().
+                  Multi-section XLSX (GD Singla all-on-one-sheet, >50 cols)
+                  raises ValueError with a user-readable message instead of
+                  silently producing garbage output. Supported: .xls (xlrd)
+                  and narrow .xlsx (≤50 cols, openpyxl). Also fixed the
+                  _adv_total_row unbound-variable risk in _inject_details_sheet
+                  (initialised to None before the conditional scan block so the
+                  _skip_rows set is always valid). Module docstring moved to
+                  correct position (was after `import math`); import math moved
+                  inside docstring block to restore valid Python syntax.
 v2.6  2026-08-14  Four further fixes (session 5, live file scan):
                   FIX M — Creditor SUM endpoint not re-shifted by internal formula pass.
                     _inject_details_sheet correctly writes SUM(D23:D109) for creditors.
@@ -91,8 +101,19 @@ Hard rules:
   - Output_sample_format.xlsx structure is NEVER modified
   - PY column ← values from T-shaped XLS
   - CY column ← blank / 0 (yellow highlighted) for CA to fill
+
+Supported input formats:
+  - .xls  T-shaped GD Singla layout (xlrd)
+  - .xlsx T-shaped GD Singla layout (openpyxl, single-sheet ≤50 cols)
+
+NOT supported:
+  - .xlsx multi-section format (G.D. Singla & Co. style where all Annexures
+    A-H are packed horizontally on ONE sheet with >50 columns).
+    Detection: single sheet + BS header row present + max_column > 50.
+    These files raise ValueError with a user-readable message.
 """
 
+import math
 import re
 import os
 import shutil
@@ -162,6 +183,63 @@ def _write_num(ws, row, col, value):
 #  SECTION 1 — T-shaped BS parser  (v2.0 forensic-exact)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _detect_input_format(filepath: str) -> str:
+    """
+    Detect whether the uploaded file is a supported T-shaped layout or the
+    unsupported multi-section XLSX (G.D. Singla & Co. all-on-one-sheet style).
+
+    Returns one of:
+      'tshape_xls'    — supported (.xls, narrow column count)
+      'tshape_xlsx'   — supported (.xlsx, narrow column count ≤50 cols)
+      'multisection'  — NOT supported (.xlsx, >50 columns on one sheet)
+      'unknown'       — unrecognised layout
+
+    Multi-section fingerprint (Bansal / GD Singla combined style):
+      • Single sheet (or sheet named after the firm)
+      • Row 11 (0-indexed row 10) has 'LIABILITIES' in col 0 AND 'ASSETS' somewhere
+        in the same row  →  confirmed T-shaped BS header
+      • XLSX file AND ws.max_column > 50  →  multi-section (annexures packed right)
+      • XLS or XLSX with max_column ≤ 50 →  standard T-shaped
+    """
+    ext = os.path.splitext(filepath)[1].lower()
+
+    if ext == '.xls':
+        return 'tshape_xls'   # xlrd path; column width is always narrow in .xls
+
+    if ext != '.xlsx':
+        return 'unknown'
+
+    # --- XLSX: inspect sheet to detect multi-section layout ---
+    try:
+        from openpyxl import load_workbook as _lw
+        _wb = _lw(filepath, read_only=True, data_only=True)
+        _ws = _wb.active
+
+        # max_column can be None for some writers — iterate first few rows to get real count
+        _ncols = _ws.max_column or 0
+        if _ncols == 0 or _ncols is None:
+            # Fallback: iterate first 20 rows to find actual column count
+            for _row in _ws.iter_rows(max_row=20):
+                _ncols = max(_ncols, len(_row))
+
+        # Check for BS header in first 15 rows
+        _has_bs_header = False
+        for _r in _ws.iter_rows(max_row=15, values_only=True):
+            _rs = ' '.join(str(v).upper() for v in _r if v is not None)
+            if 'LIABILIT' in _rs and 'ASSET' in _rs and 'AMOUNT' in _rs:
+                _has_bs_header = True
+                break
+
+        _wb.close()
+
+        if _has_bs_header and _ncols > 50:
+            return 'multisection'
+        return 'tshape_xlsx'
+
+    except Exception:
+        return 'tshape_xlsx'   # if detection fails, let the parser try and fail naturally
+
+
 def parse_tshape_bs(filepath: str) -> dict:
     """
     Parse a GD Singla & Co. style T-shaped balance sheet.
@@ -176,6 +254,26 @@ def parse_tshape_bs(filepath: str) -> dict:
     Returns a dict with all financial values + log.
     """
     log = []
+
+    # ── Format detection guard ────────────────────────────────────────────────
+    _fmt = _detect_input_format(filepath)
+    if _fmt == 'multisection':
+        raise ValueError(
+            "This balance sheet format is not supported.\n\n"
+            "The tool expects a T-shaped XLS/XLSX where Liabilities and Assets "
+            "sit side-by-side in columns A\u2013I, with each Annexure (A\u2013H) on a "
+            "separate sheet or in a narrow column block.\n\n"
+            "The uploaded file appears to be a multi-section format (G.D. Singla & "
+            "Co. style) where all Annexures are packed horizontally on one sheet "
+            "spanning 80\u2013120 columns. This format is not yet supported.\n\n"
+            "Please upload the standard T-shaped XLS file instead."
+        )
+    if _fmt == 'unknown':
+        raise ValueError(
+            "Unrecognised balance sheet layout. "
+            "Please upload a standard T-shaped .xls or .xlsx file."
+        )
+    # ── / Format detection guard ──────────────────────────────────────────────
 
     ext = os.path.splitext(filepath)[1].lower()
     engine = 'xlrd' if ext == '.xls' else 'openpyxl'
@@ -3436,7 +3534,8 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
     # If the T-shaped XLS has no advance to suppliers (parsed value = 0), zero all cells.
     adv_to_sup_total = p.get('advance_to_suppliers', 0) or 0
     # Scan for ADVANCE TO SUPPLIERS header row (within 50 rows of deb_total_row)
-    _adv_sup_row = None
+    _adv_sup_row  = None
+    _adv_total_row = None   # initialise here so it is always bound in _skip_rows below
     for _r in range(deb_total_row + 1, deb_total_row + 60):
         try:
             _cv = ws.cell(_r, 1).value
