@@ -782,22 +782,22 @@ HOW_TO_USE_TEMPLATE = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF
       <div class="tg-icon" style="background:linear-gradient(135deg,#FEE2E2,#FECACA)">&#128209;</div>
       <div>
         <div class="tg-tag" style="background:#FEF2F2;color:#991B1B;border:1px solid #FECACA">&#11088; Premium &middot; T-Shape BS Converter</div>
-        <div class="tg-title">Convert a T-shaped XLS into a comparative Balance Sheet</div>
+        <div class="tg-title">Convert a T-shaped XLS or XLSX into a comparative Balance Sheet</div>
         <div class="tg-sub">Extracts every annexure &mdash; fills PY column automatically across all notes</div>
       </div>
     </div>
     <div class="tg-body">
-      Some CA firms produce balance sheets in a T-shaped format (.xls) where liabilities and assets sit side by side in the same rows. This tool reads that format forensically &mdash; extracting every annexure (capital account, creditors, debtors, unsecured loans, fixed assets, cash &amp; bank, short-term loans, and more) &mdash; and fills the PY column of the standard comparative output template. The CY column is left blank (yellow-highlighted) for the CA to fill.
+      Some CA firms produce balance sheets in a T-shaped format (.xls / .xlsx) where liabilities and assets sit side by side in the same rows. This tool reads that format forensically &mdash; extracting every annexure (capital account, creditors, debtors, unsecured loans, fixed assets, cash &amp; bank, short-term loans, and more) &mdash; and fills the PY column of the standard comparative output template. The CY column is left blank (yellow-highlighted) for the CA to fill.
     </div>
     <ul class="tg-steps">
       <li>Sign in and go to <strong>T-Shape BS Converter</strong></li>
-      <li>Upload the <strong>T-shaped .xls file</strong></li>
+      <li>Upload the <strong>T-shaped .xls or .xlsx file</strong></li>
       <li>Enter <strong>Closing Year</strong> (e.g. 2024 &mdash; the year of the T-shaped BS) and <strong>New Year</strong> (e.g. 2025)</li>
       <li>Optionally enter the <strong>client name</strong> in the Output Name field</li>
       <li>Click <strong>Process</strong> &mdash; the tool auto-detects the T-shaped format and converts it</li>
       <li>Download the output .xlsx &mdash; open in Excel, verify PY values, then fill the CY column &#10003;</li>
     </ul>
-    <div class="tg-tip">&#128161; <strong>Tip:</strong> The tool auto-detects T-shaped .xls files &mdash; no separate mode needed. Just upload the file and it will route automatically.</div>
+    <div class="tg-tip">&#128161; <strong>Tip:</strong> The tool auto-detects T-shaped .xls and .xlsx files &mdash; no separate mode needed. Just upload and it will route automatically.</div>
     <a href="/tool/tshape" class="tg-link">Open T-Shape Converter &#8594;</a>
   </div>
 
@@ -1348,7 +1348,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     {% endif %}
       <div class="tool-icon" style="background:linear-gradient(135deg,#F0FDFB,#CCFBF1)">&#128209;</div>
       <h2>T-Shape BS Converter</h2>
-      <p>Convert a T-shaped balance sheet (.xls) into the standard comparative format. Auto-fills PY column — creditors, debtors, capital, fixed assets, loans and more.</p>
+      <p>Convert a T-shaped balance sheet (.xls or .xlsx) into the standard comparative format. Auto-fills PY column — creditors, debtors, capital, fixed assets, loans and more.</p>
       <div class="tool-footer">
         {% if username %}<span class="tool-tag tag-live-prem">&#10003; Live &middot; Premium</span>
         {% else %}<span class="tool-tag tag-login">&#128274; Login to Use</span>{% endif %}
@@ -7350,10 +7350,10 @@ input:focus{border-color:var(--brand)}
       </div>
       <div class="usage-bar-bg"><div class="usage-bar-fill" style="width:{{ bar_pct }}%"></div></div>
       <div class="info-box">
-        <strong>&#9432; .xls / .xlsx supported.</strong> Upload the T-shaped XLS file. The tool auto-detects the format, reads the financial year from the file, and fills the PY column automatically.
+        <strong>&#9432; .xls / .xlsx supported.</strong> Upload the T-shaped XLS or XLSX file. The tool auto-detects the format, reads the financial year from the file, and fills the PY column automatically.
       </div>
       <div class="field">
-        <label>Upload T-Shaped XLS</label>
+        <label>Upload T-Shaped XLS / XLSX</label>
         <div class="dropzone" id="dropzone">
           <div class="dz-icon">&#128196;</div>
           <div class="dz-text">Drag &amp; drop or <strong>click to browse</strong></div>
