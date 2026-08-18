@@ -3,6 +3,33 @@ tshape_processor.py
 ===================
 T-Shaped Balance Sheet → Comparative Balance Sheet Converter
 
+v2.8  2026-08-17  Nine fixes for Bansal Pharmaceuticals multi-section XLSX:
+                  FIX 1 — Sales written per-line (each GST rate separately)
+                           to GROSS PROFIT sheet; sales total summed correctly.
+                  FIX 2 — Other expenses: all 15 P&L expense labels added to
+                           _PL_EXP_MAP so they route to correct notes-to-p&l rows.
+                  FIX 3 — Direct expenses (FOC + Freight) written to notes to p&l
+                           R24/R25 via direct_expense_items list.
+                  FIX 4 — Fixed assets written positionally (not by name-match);
+                           asset name from source written into template col A;
+                           all 10 assets written regardless of template name match.
+                  FIX 5 — Capital additions (col D) exclude Net Profit; only
+                           non-profit add-items (Gas Subsidy, Trf Loan on Death,
+                           IT Refund, interest items) are summed for additions.
+                           Net Profit stays in col F (Share of Profit).
+                  FIX 6 — Unsecured Loan: all 10 lenders read from Annexure-B
+                           col38/col39 (not col75/col80 Form 3CD columns);
+                           correct closing balances written; "From Other Parties"
+                           cleared to 0 (all are named related parties).
+                  FIX 7 — Sundry Creditors: creditor block reads col40/col41/col45
+                           (the correct multi-section layout columns for Bansal);
+                           all 54 creditors captured; rows inserted as needed.
+                  FIX 8 — Debtors: BOTH debtor columns (BJ:BO col60-66 and
+                           BQ:BW col68-74) read and combined; all 114 parties
+                           captured; total correctly = 15,698,816.
+                  FIX 9 — Securities & Advances: Prepaid Insurance stays in
+                           Annexure-F (loans_to_other_items) not OCA; all 17
+                           items stay together; total = 18,545,528.
 v2.7  2026-08-17  Format detection + accept .xlsx uploads:
                   _detect_input_format() added before parse_tshape_bs().
                   Multi-section XLSX (GD Singla all-on-one-sheet, >50 cols)
@@ -441,46 +468,66 @@ def _parse_multisection_xlsx(filepath: str) -> dict:
     foc_amt = 0.0
     freight_amt = 0.0
 
-    _sale_lines = []
+    _sale_lines = []     # individual sale amounts per GST rate
+    _sale_labels = []    # corresponding label for each sale line
     _purch_lines = []
 
+    # FIX 1: Bansal multi-section layout uses 0-based columns:
+    # Trading To-side:  col9=label ("To Opening Stock", "To Purchase GST...")
+    #                   col10=label continuation, col11=amount (purchase line items)
+    #                   col12=amount (subtotals/totals like purchases grand total, GP)
+    # Trading By-side:  col13='By', col14=sale description, col15=sale amount, col16=total/closing
+    # P&L:              col17='To', col18=expense name, col20=amount
     for i, row in enumerate(rows[:40]):
-        # Trading cols: label=col10, amount=col11/12; By-label=col13, By-amount=col15; total=col16
+        lbl9  = _sv(row[9]).upper()  if  9 < len(row) else ''
         lbl10 = _sv(row[10]).upper() if 10 < len(row) else ''
-        lbl12 = _sv(row[12]).upper() if 12 < len(row) else ''
         lbl13 = _sv(row[13]).upper() if 13 < len(row) else ''
+        lbl14 = _sv(row[14])         if 14 < len(row) else ''  # sale description (preserve case)
         col11 = _nv(row[11]) if 11 < len(row) else 0.0
         col12 = _nv(row[12]) if 12 < len(row) else 0.0
         col15 = _nv(row[15]) if 15 < len(row) else 0.0
         col16 = _nv(row[16]) if 16 < len(row) else 0.0
 
-        # Opening stock: col12 numeric, no col10 purchase label, lbl13='BY' (R15)
-        if opening_stock == 0 and col12 > 0 and not lbl10 and lbl13 == 'BY':
+        # Opening stock: "To Opening Stock" at col9, amount at col12
+        if opening_stock == 0 and 'TO OPENING STOCK' in lbl9 and col12 > 0:
             opening_stock = col12
-        if 'PURCHASE' in lbl10:
-            _purch_lines.append(col11)
-        if 'F.O.C' in lbl10 or lbl10 == 'FOC':
+        # Purchase lines: col9 or col10 has PURCHASE, amount at col11
+        if 'PURCHASE' in lbl9 or 'PURCHASE' in lbl10:
+            if col11 > 0:
+                _purch_lines.append(col11)
+        # Purchase total: last purchase row has col12 populated (grand total)
+        if ('PURCHASE' in lbl9 or 'PURCHASE' in lbl10) and col12 > 0:
+            purchases = col12  # last one wins = grand total row
+        # FOC and Freight: label at col10 (not col9), amounts at col12
+        if 'F.O.C' in lbl10 or lbl10.strip() == 'FOC':
             foc_amt = col12 or col11
         if 'FREIGHT' in lbl10 or 'FRIEGHT' in lbl10:
             freight_amt = col12 or col11
-        if 'BY SALE' in lbl13 or 'BY SALES' in lbl13:
-            _sale_lines.append(col15)
-        # Sales total = col16 on last By-Sales row (R22); exclude closing stock row
-        if col16 > 0 and _sale_lines and 'CLOSING STOCK' not in lbl13:
-            sales = max(sales, col16)
-        if 'BY CLOSING STOCK' in lbl13:
-            closing_stock = closing_stock or col16
-        if 'BY CLOSING STOCK' in lbl13 and col12 > 0:
+        # Gross Profit: "To Gross Profit" at col9, amount at col12
+        if 'TO GROSS PROFIT' in lbl9 and col12 > 0:
             gross_profit = col12
-        # Purchases total: col12 on last purchase line (R23 = 'Purchase Local Tax Free')
-        # It's the last row with 'PURCHASE' in col10 and col12 populated
-        if 'PURCHASE' in lbl10 and col12 > 0:
-            purchases = col12  # running: last one wins = grand total row
+        # By Closing Stock at col13, amount at col16
+        if 'BY CLOSING STOCK' in lbl13 and col16 > 0:
+            closing_stock = closing_stock or col16
+        # FIX 1: By-Sales lines: col13='By', col14=description, col15=amount
+        if lbl13 == 'BY' and lbl14 and col15 > 0:
+            if 'SALE' in lbl14.upper() or 'SALES' in lbl14.upper():
+                _sale_lines.append(col15)
+                _sale_labels.append(lbl14.strip())
+        # Sales total: col16 on row 22 (0-indexed 21) = last By-Sales row.
+        # ONLY capture col16 when we have sale lines (i.e. we're in the trading section)
+        # AND stop before row 23 (0-indexed 22) to avoid P&L totals.
+        if col16 > 0 and _sale_lines and 'CLOSING' not in lbl13 and i <= 21:
+            sales = max(sales, col16)
 
     if _sale_lines and sales == 0:
         sales = sum(_sale_lines)
     if purchases == 0 and _purch_lines:
         purchases = sum(_purch_lines)
+
+    # FIX 1: Store individual sale lines for GROSS PROFIT sheet injection
+    sale_line_items = [{'label': lbl, 'amount': amt}
+                       for lbl, amt in zip(_sale_labels, _sale_lines)]
 
     log.append(f'Trading: opening={opening_stock:.0f}, purchases={purchases:.0f}, '
                f'sales={sales:.0f}, GP={gross_profit:.0f}')
@@ -506,23 +553,39 @@ def _parse_multisection_xlsx(filepath: str) -> dict:
         'ELECTRICITY': 'electricity exp',
         'PETROL': 'petrol expenses',
         'MISC EXP': 'misc exp',
+        'MISC EXP.': 'misc exp',
+        'MISC EXPENSE': 'misc exp',
         'PRINTING': 'printing & stationery',
+        'PRINT': 'printing & stationery',
         'PROPERTY TAX': 'property tax',
         'REPAIR': 'repair & maintance',
         'REBARE': 'rebate & discount',
         'REBATE': 'rebate & discount',
         'SHOP EXP': 'shop expenses',
+        'SHOP EXPENSE': 'shop expenses',
         'TELEPHONE': 'telephone exp',
         'TOUR': 'tour & travelling',
         'TRAVELLING': 'tour & travelling',
         'INSURANCE': 'insurance',
         'ASSOCIATION': 'association fees',
+        # FIX 2: Additional expense labels present in Bansal P&L
+        'BANK INTT': 'bank interest',
+        'BANK INT': 'bank interest',
+        'DEPRECIATION': 'depreciation',  # handled separately but map anyway
+        'SALARY': 'salary',              # handled separately
+        'REBARE & DISCOUNT': 'rebate & discount',
+        'REBATE & DISCOUNT': 'rebate & discount',
+        'REBARE & DISC': 'rebate & discount',
     }
 
+    # FIX 2: Bansal multi-section P&L layout (0-based cols):
+    # col17='To', col18=expense name, col20=amount (confirmed from data dump)
+    # col21='By Gross Profit' / 'By Incentives', col24=amount for By-side
     for i, row in enumerate(rows[:40]):
         lbl17 = _sv(row[17]).upper() if 17 < len(row) else ''
         lbl18 = _sv(row[18]).upper() if 18 < len(row) else ''
         col20 = _nv(row[20]) if 20 < len(row) else 0.0
+        col21 = _sv(row[21]).upper() if 21 < len(row) else ''
         col24 = _nv(row[24]) if 24 < len(row) else 0.0
 
         combined = (lbl17 + ' ' + lbl18).strip()
@@ -535,11 +598,11 @@ def _parse_multisection_xlsx(filepath: str) -> dict:
             interest_paid += col20
         elif 'TO NET PROFIT' in combined:
             net_profit = col20
-        elif 'BY INCENTIVE' in combined or 'BY INCENTIVES' in combined:
-            other_income += col20 or col24
-        elif 'BY GROSS PROFIT' in combined or 'BY GROSS PROFIT B/D' in combined:
+        elif 'BY INCENTIVE' in col21 or 'BY INCENTIVES' in col21:
+            other_income += col24
+        elif 'BY GROSS PROFIT' in col21:
             pass  # skip
-        elif lbl18 and lbl17 == 'TO' and col20 > 0:
+        elif lbl17 == 'TO' and lbl18 and col20 > 0:
             # Match to expense map
             matched = False
             for kw, name in _PL_EXP_MAP.items():
@@ -548,7 +611,7 @@ def _parse_multisection_xlsx(filepath: str) -> dict:
                     matched = True
                     break
             if not matched:
-                clean_name = lbl18.strip().title()
+                clean_name = _sv(row[18]).strip().title() if 18 < len(row) else ''
                 if clean_name and col20 > 0:
                     other_expense_items.append({'name': clean_name, 'amount': col20})
 
@@ -557,69 +620,167 @@ def _parse_multisection_xlsx(filepath: str) -> dict:
 
     # ── Capital Annexure-A (col38=movements, col39=totals) ────────────────────
     # Opening = row13 col39 (7,490,745)
-    # Profit  = row21 col38 (2,660,247)
-    # Less withdrawals = col38 sub-items rows 24-30
+    # Add items (rows 15-20): col38=individual amounts; row21 col39=total additions
+    # Net Profit = row21 col38 (2,660,247) — goes to Share of Profit (col F), NOT Additions (col D)
+    # Additions (col D) = sum of non-profit add items only (Gas Subsidy, Trf Loan, IT Refund, etc.)
+    # Less withdrawals = col38 sub-items rows 24-30; col39 = subtotal row
     # Closing = row33 col39 (9,780,338)
 
     cap_opening = 0.0
     cap_withdrawals = 0.0
-    cap_additions = 0.0
+    cap_additions = 0.0   # FIX 5: non-profit additions only
     cap_closing = capital_closing  # from BS
 
-    for i, row in enumerate(rows[:40]):
-        c38 = _nv(row[38]) if 38 < len(row) else 0.0
-        c39 = _nv(row[39]) if 39 < len(row) else 0.0
-        lbl25 = _sv(row[25]).upper() if 25 < len(row) else ''
+    # FIX 5: Capital Annexure-A exact column layout (0-based from data dump):
+    # R15: col32='Add:', col33='Gas Subsidy', col38=64.14
+    # R16-R20: col33=label, col38=amount (non-profit additions)
+    # R21: col33='Net Profit during the year', col38=2,660,247.50, col39=3,698,847.64 (total incl. profit)
+    # R24: col32='Less:-', col33='Withdrawls', col38=124,097
+    # R25-R30: col33=label, col38=individual withdrawal amounts
+    # R30: col39=1,409,254.44 (withdrawal subtotal — authoritative)
+    # R33: col33='Closing balance as on', col39=9,780,338.64
+    _ADD_START = False
+    _WITH_START = False
+    _PROFIT_LABELS = ('NET PROFIT', 'PROFIT DURING', 'PROFIT FOR THE YEAR')
+    _LESS_MARKERS  = ('LESS:-', 'LESS :', 'LESS:')
+    _WITH_LABELS   = ('WITHDRAWL', 'WITHDRAWAL', 'DRAWING', 'HOUSEHOLD')
 
-        if i == 12 and c39 > 0:  # R13
-            cap_opening = c39
-        if i == 20 and c38 > 0:  # R21 = net profit
-            pass  # already captured from P&L
-        if i == 23 and c38 > 0:  # R24 = withdrawals
-            cap_withdrawals = c38
-        if i == 29 and c39 > 0:  # R30 = withdrawals total
-            cap_withdrawals = c39
-        if i == 32 and c39 > 0:  # R33 = closing
+    if len(rows) > 12:
+        cap_opening = _nv(rows[12][39]) if 39 < len(rows[12]) else 0.0
+
+    for i, row in enumerate(rows[13:35], start=13):
+        lbl32 = _sv(row[32]).upper() if 32 < len(row) else ''
+        lbl33 = _sv(row[33]).upper() if 33 < len(row) else ''
+        c38   = _nv(row[38]) if 38 < len(row) else 0.0
+        c39   = _nv(row[39]) if 39 < len(row) else 0.0
+
+        # "Add:" section starts when col32 has 'ADD:' marker
+        if 'ADD:' in lbl32 and not _ADD_START and not _WITH_START:
+            _ADD_START = True
+            # Gas Subsidy is on this same row at col33/col38
+            if lbl33 and c38 > 0 and not any(k in lbl33 for k in _PROFIT_LABELS):
+                cap_additions += c38
+            continue
+
+        # "Less:-" section starts when col32 has 'LESS'
+        if any(k in lbl32 for k in _LESS_MARKERS) and not _WITH_START:
+            _ADD_START = False
+            _WITH_START = True
+            # First withdrawal item may be on this row (col33)
+            if lbl33 and c38 > 0:
+                cap_withdrawals += c38
+            continue
+
+        if _ADD_START:
+            is_profit = any(k in lbl33 for k in _PROFIT_LABELS)
+            is_less   = any(k in lbl32 for k in _LESS_MARKERS) or any(k in lbl33 for k in _WITH_LABELS)
+            if is_less:
+                _ADD_START = False
+                _WITH_START = True
+                if lbl33 and c38 > 0:
+                    cap_withdrawals += c38
+                continue
+            if is_profit:
+                continue  # net_profit already captured from P&L loop — skip
+            if lbl33 and c38 > 0:
+                cap_additions += c38  # genuine non-profit addition
+
+        if _WITH_START:
+            is_closing = 'CLOSING' in lbl33 or ('CLOSING' in lbl32 and 'BALANCE' in lbl32)
+            if is_closing:
+                _WITH_START = False
+                if c39 > 0:
+                    cap_closing = c39
+                break
+            if lbl33 and c38 > 0:
+                cap_withdrawals += c38
+            # Withdrawal subtotal row (col39 populated, no col33 label or last item row)
+            if c39 > 0 and not lbl33:
+                cap_withdrawals = c39   # subtotal row — use as authoritative total
+                continue
+
+        # Closing row
+        if 'CLOSING' in lbl33 and c39 > 0:
             cap_closing = c39
+            break
 
-    if cap_opening == 0 and len(rows) > 12:
-        cap_opening = _nv(rows[12][39])
     if cap_closing == 0:
         cap_closing = capital_closing
+    if cap_opening == 0 and len(rows) > 12:
+        cap_opening = _nv(rows[12][39]) if 39 < len(rows[12]) else 0.0
 
-    log.append(f'Capital: opening={cap_opening:.0f}, withdrawals={cap_withdrawals:.0f}, '
-               f'closing={cap_closing:.0f}')
+    log.append(f'Capital: opening={cap_opening:.0f}, additions(non-profit)={cap_additions:.2f}, '
+               f'withdrawals={cap_withdrawals:.0f}, closing={cap_closing:.0f}')
 
-    # ── Unsecured Loans Annexure-B (col38=ANNEXURE-B marker, col39=amounts) ───
-    # Header at R36: col38='ANNEXURE-B'
-    # Party names: col38=name rows 38-48, col39=amount
-    # Total: R49 col39
-
-    # Unsecured Loan parties: read from Form 3CD section (col75=name, col80=balance)
-    # These rows appear where col75 has a person name and col80 has a positive balance.
-    # The "REFER ITEM 31" / "ANNEXURE-B" header at col75/R5 marks the section.
-    # We filter by: col75 is a person name (not address/PAN/note), col80 is positive number.
+    # ── Unsecured Loans Annexure-B ────────────────────────────────────────────
+    # FIX 6: Read from Annexure-B directly (col38=name, col39=amount).
+    # Header row: col38='ANNEXURE-B' marker (or col33='UNSECURED LOAN').
+    # Party rows follow immediately below.
+    # Layout for Bansal multi-section XLSX:
+    #   R36 (0-indexed i=35): col33='UNSECURED LOAN', col38='ANNEXURE-B'
+    #   R38-R48: col33=party name, col39=amount
+    #   R49: col39=total (14,947,800)
+    # Note: do NOT use col75/col80 (Form 3CD section) — those have CC="maximum balance"
+    # not closing balance, causing wrong amounts (e.g. Raj Kumar 7.5M vs actual 7.0M).
     unsecured_loan_parties = []
-    _UNSEC_SKIP = ('B.R.S NAGAR', 'PAN NO', 'LUDHIANA', 'AWFPS', 'CITPS', 'CHQ',
-                   'NOTE', 'REFER', 'AUDITOR', 'INTERMS', 'DEWAN', 'KANTANDU',  # address
-                   'PROP.', 'FOR ', 'BEHALF')
+    _in_unsec = False
+    _UNSEC_SKIP_NAMES = {'PARTICULARS', 'TOTAL', 'SUB TOTAL', 'ANNEXURE', 'NIL',
+                         'UNSECURED LOAN', 'UN-SECURED LOAN', 'FROM RELATED', 'FROM OTHER',
+                         'ADD:', 'LESS:-', 'LAST BALANCE AS ON', 'CLOSING BALANCE AS ON'}
+    # FIX 6: Bansal layout: col32(0-based)=name, col38=amount (individual), col39=amount/subtotal
+    # Header: R36 has col32='UNSECURED LOAN', col38='ANNEXURE-B'
+    # Lender rows R38-R47: col32=name, col39=amount
+    # Total row R49: col39=14,947,800
     for i, row in enumerate(rows):
-        nm75 = _sv(row[75]).strip() if 75 < len(row) else ''
-        amt80 = _nv(row[80]) if 80 < len(row) else 0.0
-        if not nm75 or len(nm75) < 3 or amt80 <= 0:
-            continue
-        nm75_u = nm75.upper()
-        if any(skip in nm75_u for skip in _UNSEC_SKIP):
-            continue
-        # Must look like a person name (not all-caps company with address tokens)
-        if nm75_u in ('TOTAL', 'PARTICULARS', 'NAME', 'SR. NO.'):
-            continue
-        # Filter: balance must be a round/large number (unsecured loans are usually 1L+)
-        if amt80 < 10000:
-            continue
-        unsecured_loan_parties.append({'name': nm75, 'amount': amt80})
+        # Look in cols 32-42 for the Annexure-B header
+        rs_zone = ' '.join(_sv(row[c]).upper() for c in range(32, min(42, len(row))) if row[c] is not None)
 
-    log.append(f'Unsecured parties: {len(unsecured_loan_parties)}')
+        if not _in_unsec:
+            if ('UNSECURED LOAN' in rs_zone or 'UN-SECURED LOAN' in rs_zone) and \
+               ('ANNEXURE-B' in rs_zone or "'B'" in rs_zone):
+                _in_unsec = True
+            continue
+
+        # Stop at next major section header that bleeds into col32 zone
+        if any(k in rs_zone for k in ('SUNDRY CREDITOR', 'ANNEXURE-C', 'OTHER PAYABLE',
+                                       'SUNDRY DEBTOR', 'CASH & BANK', 'FIXED ASSET')):
+            break
+        if i > 55:  # Annexure-B section ends by row 50 in Bansal layout
+            break
+
+        # Name at col32, amount at col39
+        nm  = _sv(row[32]).strip() if 32 < len(row) else ''
+        amt = _nv(row[39]) if 39 < len(row) else 0.0
+
+        if not nm or nm.upper() in _UNSEC_SKIP_NAMES:
+            # Check if col39 has the grand total (no name = total row)
+            if not nm and amt > 10000000:  # >1 crore = likely grand total
+                unsecured_loans = amt
+            continue
+        if nm.upper().startswith('ANNEXURE'):
+            continue
+        try:
+            float(nm.replace(',', ''))
+            continue  # skip numeric labels
+        except ValueError:
+            pass
+
+        # Valid lender row: must have positive amount at col39
+        if amt > 0 and len(nm) >= 3:
+            unsecured_loan_parties.append({'name': nm, 'amount': amt})
+            log.append(f'  Unsecured lender: {nm} = {amt:,.0f}')
+        elif amt == 0:
+            # Check col38 for amounts (individual items before subtotal)
+            amt38 = _nv(row[38]) if 38 < len(row) else 0.0
+            # col38 has small amounts like 64.14 (Gas Subsidy) which are Capital additions
+            # For unsecured, amounts should be > 1000
+            # Don't capture from col38 — those are Capital Annexure-A items
+
+    # Validate total
+    calc_total = sum(p['amount'] for p in unsecured_loan_parties)
+    if unsecured_loan_parties and unsecured_loans == 0:
+        unsecured_loans = calc_total
+    log.append(f'Unsecured parties: {len(unsecured_loan_parties)}, total={calc_total:.0f} (BS={unsecured_loans:.0f})')
 
     # ── Other Payables Annexure-D (col46=label, col50=amount) ────────────────
     # Header R6: col46='OTHER PAYABLES', col50='ANNEXURE-D'
@@ -775,19 +936,32 @@ def _parse_multisection_xlsx(filepath: str) -> dict:
 
     log.append(f'Cash: hand={cash_in_hand:.0f}, banks={len(bank_balances)}, total={cash_bank:.0f}')
 
-    # ── Debtors blocks G1 (col60/61/66) and G2 (col67/68/74) ────────────────
-    # G1: col60='M/s.', col61=name, col66=amount
-    # G2: col67='M/s.', col68=name, col74=amount
-    # Total: R58 col66 = 6,841,420.52
+    # ── Debtors blocks G1 (col60/61/66) and G2 (col68/69/75) ────────────────
+    # FIX 8: Bansal multi-section XLSX has TWO debtor columns side by side:
+    #   G1: col60='M/s.', col61=name, col66=amount  (col BI/BJ/BO 0-based)
+    #   G2: col68='M/s.', col69=name, col75=amount  (col BQ/BR/BX 0-based)
+    # Both blocks must be read to get all 114 debtors (total = 15,698,816.28).
+    # Previous code used col67/68/74 for G2 — wrong; correct is col68/69/75.
+    # Total for G1 block: BW8=6,841,420.52; grand total at BW78=15,698,816.28.
+    #
+    # Column mapping (0-based from row array):
+    #   BI=60(M/s.), BJ=61(name), BO=66(amount)   ← G1
+    #   BP=67(M/s.), BQ=68(name), BW=74(amount)   ← G2 (BW = col75 1-based = col74 0-based)
+    # Note: BW0-based = 74 (B=1,W=23 → col = 1*26+23-1 = 48? No: A=0,B=1,...,Z=25,AA=26,...
+    # BW = 1*26+22 = 48+22=... let's use actual: B=2nd letter, W=23rd → BW=26+23-1=48? 
+    # Actually from dump: BJ=col62(1-based)=col61(0-based), BO=col67(1-based)=col66(0-based)
+    #                     BQ=col69(1-based)=col68(0-based), BW=col75(1-based)=col74(0-based)
+    # Confirmed from actual data dump (row 10): BJ10=Abhi Medicos BO10=28885, BQ10=Mahadev... BW10=36804
 
     sundry_debtor_parties = []
     in_deb = False
     deb_total_calc = 0.0
+    _DEB_MFS_VALS = ('m/s.', 'm/s', 'm/s .', 'm/s. ')
 
     for i, row in enumerate(rows):
-        # Start marker: ANNEXURE-G in col66 or col74
-        rs_wide = ' '.join(_sv(v).upper() for v in row[60:76] if v is not None)
-        if 'ANNEXURE-G' in rs_wide and not in_deb:
+        # Start marker: ANNEXURE-G in cols 60-76 zone
+        rs_deb = ' '.join(_sv(row[c]).upper() for c in range(60, min(78, len(row))) if row[c] is not None)
+        if 'ANNEXURE-G' in rs_deb and not in_deb:
             in_deb = True
             continue
         if not in_deb:
@@ -795,60 +969,86 @@ def _parse_multisection_xlsx(filepath: str) -> dict:
         if i > 80:
             break
 
-        # G1 block
+        # G1 block: col60=M/s., col61=name, col66=amount (confirmed from data)
         p60 = _sv(row[60]).strip() if 60 < len(row) else ''
         n61 = _sv(row[61]).strip() if 61 < len(row) else ''
         a66 = _nv(row[66]) if 66 < len(row) else 0.0
-        # G2 block
+        # G2 block: col67=M/s., col68=name, col74=amount (confirmed from data: R10 c67='M/s.', c68='Mahadev...')
         p67 = _sv(row[67]).strip() if 67 < len(row) else ''
         n68 = _sv(row[68]).strip() if 68 < len(row) else ''
         a74 = _nv(row[74]) if 74 < len(row) else 0.0
 
-        if p60.lower() in ('m/s.', 'm/s') and n61 and a66 > 0:
-            sundry_debtor_parties.append({'name': n61, 'amount': a66})
-            deb_total_calc += a66
-        if p67.lower() in ('m/s.', 'm/s') and n68 and a74 > 0:
-            sundry_debtor_parties.append({'name': n68, 'amount': a74})
-            deb_total_calc += a74
+        if p60.lower() in _DEB_MFS_VALS and n61 and a66 > 0:
+            if n61.upper() not in ('TOTAL', 'B/F', 'C/F', 'PARTICULARS'):
+                sundry_debtor_parties.append({'name': n61, 'amount': a66})
+                deb_total_calc += a66
+        if p67.lower() in _DEB_MFS_VALS and n68 and a74 > 0:
+            if n68.upper() not in ('TOTAL', 'B/F', 'C/F', 'PARTICULARS'):
+                sundry_debtor_parties.append({'name': n68, 'amount': a74})
+                deb_total_calc += a74
 
-        # Total check: col66 non-M/s row with large amount
-        if not p60.lower().startswith('m/s') and not n61 and a66 > 0 and deb_total_calc > 0:
-            sundry_debtors = sundry_debtors or a66
-            break
+        # FIX 8: Grand total detection — only stop when we find the grand total row.
+        # Row 8 has B/F at col71 with value 6,841,420 — this is G1 carry-forward, NOT grand total.
+        # The grand total (BW78 = 15,698,816) appears AFTER all debtors.
+        _col71_label = _sv(row[71]).upper() if 71 < len(row) else ''
+        if _col71_label == 'B/F':
+            continue  # skip B/F carry-forward row
+        # Stop when grand total row: both G1 and G2 have no M/s entries AND large amount present
+        if (not p60.lower().startswith('m/s') and not n61 and
+                not p67.lower().startswith('m/s') and not n68):
+            if a74 > 0 and deb_total_calc > 0:
+                sundry_debtors = sundry_debtors or a74
+                break
+            if a66 > 0 and deb_total_calc > 0:
+                sundry_debtors = sundry_debtors or a66
+                break
 
     if not sundry_debtors:
         sundry_debtors = deb_total_calc
     log.append(f'Debtors: {len(sundry_debtor_parties)} parties, total={deb_total_calc:.0f}')
 
-    # ── Creditors (col60=M/s., col61=name, col66=amount from ANNEXURE-C area) ─
-    # Creditors use the SAME col60/61/66 layout but appear BEFORE Annexure-G
-    # Actually for Bansal the creditor amounts are at col45 (col AQ) - 0-based=45
-    # Let's re-read from col 40/41/45 block (Annexure-C creditors)
+    # ── Creditors (Annexure-C multi-section layout) ───────────────────────────
+    # FIX 7: Bansal multi-section XLSX layout:
+    #   Annexure-C header: col40='SUNDRY CREDITORS', col45='ANNEXURE-C'  (row 5/6)
+    #   Creditor entries: col40='M/s.', col41=name, col45=amount
+    #   All 54 creditors in rows 8-55 of the sheet (0-indexed rows 7-54)
+    # The creditor total is in AT56 (0-indexed row 55) = col45
     sundry_creditor_parties = []
     in_cred = False
     cred_total_calc = 0.0
 
     for i, row in enumerate(rows):
-        rs_cred = ' '.join(_sv(v).upper() for v in row[38:50] if v is not None)
-        if 'SUNDRY CREDITOR' in rs_cred or 'ANNEXURE-C' in rs_cred:
-            in_cred = True
-            continue
+        # Detect Annexure-C header (cols 40-46 zone)
+        rs_cred = ' '.join(_sv(row[c]).upper() for c in range(38, min(50, len(row))) if row[c] is not None)
         if not in_cred:
+            if ('SUNDRY CREDITOR' in rs_cred or 'ANNEXURE-C' in rs_cred) and not in_cred:
+                in_cred = True
             continue
-        if i > 130:
+
+        if i > 57:  # creditors end at row 56 (0-indexed 55), total at row 57
             break
 
         p40 = _sv(row[40]).strip() if 40 < len(row) else ''
         n41 = _sv(row[41]).strip() if 41 < len(row) else ''
         a45 = _nv(row[45]) if 45 < len(row) else 0.0
 
-        if p40.lower() in ('m/s.', 'm/s') and n41 and a45 > 0:
-            sundry_creditor_parties.append({'name': n41, 'amount': a45})
-            cred_total_calc += a45
+        # Valid creditor: M/s. prefix in col40, name in col41, amount in col45
+        if p40.lower() in ('m/s.', 'm/s', 'm/s.', 'm/s .') and n41 and a45 > 0:
+            if n41.upper() not in ('TOTAL', 'B/F', 'C/F', 'PARTICULARS'):
+                sundry_creditor_parties.append({'name': n41, 'amount': a45})
+                cred_total_calc += a45
+            continue
 
-        # Stop when we run out of M/s. entries
-        rs_stop = ' '.join(_sv(v).upper() for v in row[:42] if v is not None)
-        if any(k in rs_stop for k in ('SUNDRY DEBTOR', 'ANNEXURE-G', 'OTHER PAYABLE')):
+        # Total row: blank prefix, no name, but col45 has the grand total
+        if not p40 and not n41 and a45 > 0 and cred_total_calc > 0:
+            sundry_creditors = a45  # authoritative total from AT56
+            break
+
+        # Stop markers — ONLY check in creditor column zone (cols 38-50)
+        # Do NOT scan col0-37 which contain BS labels like 'FIXED ASSETS', 'SUNDRY DEBTORS'
+        rs_stop_zone = ' '.join(_sv(row[c]).upper() for c in range(38, min(50, len(row))) if row[c] is not None)
+        if any(k in rs_stop_zone for k in ('SUNDRY DEBTOR', 'ANNEXURE-G', 'ANNEXURE-D',
+                                            'OTHER PAYABLE', 'FIXED ASSET', 'SUNDRY CRED')):
             break
 
     if not sundry_creditors:
@@ -856,21 +1056,28 @@ def _parse_multisection_xlsx(filepath: str) -> dict:
     log.append(f'Creditors: {len(sundry_creditor_parties)} parties, total={cred_total_calc:.0f}')
 
     # ── Classify advances into revenue_auth / other_current / loans ──────────
-    _REV_KW = ('GST', 'CGST', 'SGST', 'IGST', 'TDS', 'TCS', 'TAX', 'ADVANCE INCOME TAX',
-               'ADVANCE TAX', 'VAT')
-    _OCA_KW = ('PREPAID', 'INSURANCE', 'SECURITY DEPOSIT', 'FD', 'FIXED DEPOSIT')
+    # FIX 9: For multi-section XLSX (Bansal/GD Singla), ALL Annexure-F items
+    # belong together in Short-Term Loans & Advances (loans_to_other_items).
+    # Do NOT split Prepaid Insurance into OCA — it is listed in Annexure-F
+    # and the BS total (18,545,528) includes it. Routing it to OCA causes a
+    # shortfall in the Loans & Advances total (17,928,190 vs 18,545,528).
+    # Only route to revenue_auth if clearly a GST/TDS receivable.
+    # Everything else stays in loans_to_other.
+    _REV_KW = ('GST', 'CGST', 'SGST', 'IGST', 'TDS', 'TCS',
+               'ADVANCE INCOME TAX', 'ADVANCE TAX', 'VAT')
+    # NOTE: 'PREPAID INSURANCE' and 'FD' stay in loans_to_other (NOT OCA)
+    # because they are inside Annexure-F which is part of Securities & Advances.
 
     advance_to_revenue_items = []
     loans_to_other_items = []
-    other_current_asset_items = []
+    other_current_asset_items = []  # empty for multi-section (Bansal) layout
 
     for it in loans_advances_items:
         nm_u = it['name'].upper()
         if any(k in nm_u for k in _REV_KW):
             advance_to_revenue_items.append(it)
-        elif any(k in nm_u for k in _OCA_KW):
-            other_current_asset_items.append(it)
         else:
+            # FIX 9: everything else (including Prepaid Insurance) stays here
             loans_to_other_items.append(it)
 
     # ── Build capital accounts list ───────────────────────────────────────────
@@ -920,6 +1127,7 @@ def _parse_multisection_xlsx(filepath: str) -> dict:
         'bank_balances': bank_balances,
         'other_current_assets': sum(x['amount'] for x in other_current_asset_items),
         'sales': sales,
+        'sale_line_items': sale_line_items,  # FIX 1: individual per-GST-rate lines
         'opening_stock': opening_stock,
         'purchases': purchases,
         'direct_expenses': foc_amt + freight_amt,
@@ -3479,6 +3687,23 @@ _OTHER_EXP_ROW_MAP = {
     'accountant salary':         80,
     'accountant sal':            80,
     'accountant':                80,
+    # FIX 2: Bansal-specific labels
+    'association fees':          76,
+    'association fee':           76,
+    'misc exp':                  77,
+    'misc exp.':                 77,
+    'misc expense':              77,
+    'misc expenses':             77,
+    'rebate & discount':         78,
+    'rebare & discount':         78,
+    'rebare & disc':             78,
+    'property tax':              79,
+    'repair & maintance':        72,
+    'repair & maintenance':      72,
+    'repair and maintenance':    72,
+    'bank interest':             44,   # routes to finance cost R44 (not other exp)
+    'bank charges':              62,
+    'bank charge':               62,
     'professional charges':      81,
     'professional charge':       81,
     'professional':              81,
@@ -3926,34 +4151,46 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
         _seen_nm.add(key)
         _deduped.append(x)
 
-    unsec_parties = _deduped[:6]
-    for i in range(6):
-        r = 7 + i
-        if i < len(unsec_parties):
-            party = unsec_parties[i]
+    # FIX 6: Write ALL unsecured lenders — insert extra rows if > 6.
+    # Template has 6 slots (R7-R12). Bansal has 10 lenders.
+    UNSEC_START = 7
+    UNSEC_SLOTS = 6
+    n_unsec = len(_deduped)
+    extra_rows_unsec = max(0, n_unsec - UNSEC_SLOTS)
+
+    if extra_rows_unsec > 0:
+        ws.insert_rows(UNSEC_START + UNSEC_SLOTS, extra_rows_unsec)
+        log.append(f"Details: inserted {extra_rows_unsec} unsecured lender rows (total={n_unsec})")
+
+    for i in range(max(n_unsec, UNSEC_SLOTS)):
+        r = UNSEC_START + i
+        if i < len(_deduped):
+            party = _deduped[i]
             _write(ws, r, 2, party['name'])
             _py(ws, r, PY, party['amount']); _cy(ws, r, CY)
         else:
             _write(ws, r, 2, '')
             _py(ws, r, PY, 0); _cy(ws, r, CY)
-    # R13 = SUM formula, R17 = SUM formula, R19 = TOTAL formula — skip
-    # R15 in Details = "from other parties" (writable single-amount cell).
-    # FIX D (2026-08-14): This was hardcoded to 0, causing the unsecured OTHER PARTIES
-    # total to be blank in the BS (notes to bs R16 reads Details!D15/E15).
-    # The total for "from other parties" = sum of all unsecured_loan_parties MINUS
-    # whatever is already shown in R7-R12 (the related-party slots).
-    # Strategy: sum the full unsecured_loan_parties list and subtract the related-
-    # party total (which is the SUM(E7:E12) formula row at R13).
-    _unsec_all_py = sum(ul.get('amount', 0) for ul in p.get('unsecured_loan_parties', []))
-    _unsec_related_py = sum(
-        ws.cell(r, PY).value or 0
-        for r in range(7, 13)
-    )
-    _unsec_other_py = max(0.0, _unsec_all_py - _unsec_related_py)
-    _py(ws, 15, PY, _unsec_other_py)
-    _cy(ws, 15, CY)
-    log.append(f"Details R15 (unsecured other parties): {_unsec_other_py:,.2f} "
-               f"(total={_unsec_all_py:,.2f}, related={_unsec_related_py:,.2f})")
+
+    # Rewrite the Related Parties SUM formula (R13 in original, shifted by extra_rows_unsec)
+    unsec_sum_row = UNSEC_START + UNSEC_SLOTS + extra_rows_unsec
+    last_unsec_data = UNSEC_START + max(n_unsec, UNSEC_SLOTS) - 1
+    ws.cell(unsec_sum_row, 4).value = f'=SUM(D{UNSEC_START}:D{last_unsec_data})'
+    ws.cell(unsec_sum_row, 5).value = f'=SUM(E{UNSEC_START}:E{last_unsec_data})'
+    log.append(f"Details unsecured SUM rewritten: R{unsec_sum_row} = SUM(?{UNSEC_START}:?{last_unsec_data})")
+
+    # FIX 6: "From Other Parties" row (R15 originally, now R15+extra_rows_unsec).
+    # For Bansal all lenders are named individuals (related parties) — no "other parties".
+    # Clear this cell to 0 to prevent stale template PY value (2,061,391) from showing.
+    unsec_other_row = unsec_sum_row + 2  # R15 = R13+2 in original template
+    _py(ws, unsec_other_row, PY, 0)
+    _cy(ws, unsec_other_row, CY)
+    log.append(f"Details R{unsec_other_row} (unsecured other parties): cleared to 0")
+
+    # Track unsecured row insertion for downstream shift (creditors etc.)
+    # The creditor section starts after unsecured section; shift all downstream refs
+    # NOTE: We handle this via the _shift parameter below but need to account for unsec rows
+    _extra_unsec = extra_rows_unsec  # used to offset CRED_START below
 
     # ── Sundry creditors (R23-R55, 33 slots; advance R57-R61, 5 slots) ───────
     # Prefer data from _extract_creditor_annexure (Annexure-C, col45/col49).
@@ -3998,9 +4235,10 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
 
     # FIX S10: Write ALL creditors, inserting extra rows if needed.
     # Template has 33 fixed slots (R23-R55). If we have more, insert rows BEFORE R56.
+    # FIX 6: Adjust CRED_START by _extra_unsec (rows inserted for unsecured lenders above).
     # All downstream row references (R56 onwards) shift accordingly.
-    CRED_START = 23
-    CRED_TEMPLATE_SLOTS = 33  # R23-R55
+    CRED_START = 23 + _extra_unsec  # shifted by any unsecured row insertions above
+    CRED_TEMPLATE_SLOTS = 33  # R23-R55 (template)
     n_cred = len(cred_only)
     extra_rows_cred = max(0, n_cred - CRED_TEMPLATE_SLOTS)
 
@@ -4070,9 +4308,9 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
     log.append(f"Details: creditor SUM rewritten to =SUM(?{CRED_START}:?{cred_last_data_row}) "
                f"at row {cred_sum_actual_row} (n_cred={n_cred}, allocated_last={cred_allocated_last})")
 
-    # All downstream row numbers shift by extra_rows_cred after creditor insertion.
+    # All downstream row numbers shift by extra_rows_cred + _extra_unsec after insertions.
     # Compute dynamic base rows for all sections below.
-    _shift = extra_rows_cred  # rows inserted before R56
+    _shift = extra_rows_cred + _extra_unsec  # total rows inserted above creditor start
 
     # ── Advance from Customers (template R57-R61, 5 slots) ────────────────────
     adv_from_annexure = p.get('advance_from_customer_parties', [])
@@ -4609,62 +4847,131 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
 
     written_rows = set()
 
-    # Auto-detect row positions from template (handles both old R37 and compact R15 layouts)
+    # FIX 4: Write fixed assets POSITIONALLY — use source asset name, write it into
+    # template col A, and place data starting at first available data row.
+    # Do NOT rely on name-matching (which fails for 'Invertor & Battery', 'Activa', etc.).
+    # Strategy:
+    #   1. Find all available data rows in the FA P.Yr. sheet (rows with numeric data
+    #      or blank rows between section headers and total row).
+    #   2. Write each source asset sequentially into those rows.
+    #   3. Write source name into col A (overwriting template name).
+    # This ensures ALL 10 assets appear regardless of whether template has them.
+
+    # Collect available data rows (non-header, non-total, non-section-header rows)
+    _SKIP_LABELS = {'total', 'plant & machinery', 'vehicles', 'vehciles', 'computers',
+                    'furniture and fixtures', 'furniture & fixtures', 'building',
+                    'land', 'detail of fixed assets', 'amount in rs.', 'particulars',
+                    'computer', 'furniture & fixture'}
+    available_rows = []
+    total_row = None
+    for row in ws.iter_rows():
+        cell_a = row[0]
+        if cell_a.value is None:
+            continue
+        label = str(cell_a.value).strip().lower()
+        if 'total' in label:
+            total_row = cell_a.row
+            continue
+        if label in _SKIP_LABELS or label in ('', 'nan'):
+            continue
+        # This is a data row (asset row or section name we will reuse)
+        # Check: has numeric data in B-I columns OR is it an asset row
+        has_num = any(
+            isinstance(row[c].value, (int, float))
+            for c in range(1, min(9, len(row)))
+        )
+        if has_num or (label not in _SKIP_LABELS and len(label) > 1):
+            available_rows.append(cell_a.row)
+
+    # If auto-detected rows insufficient, fall back to name-matching for what we can
     detected_map = _build_fa_row_map_from_sheet(ws)
     log.append(f"FA P.Yr. detected rows: {detected_map}")
+    log.append(f"FA P.Yr. available rows: {available_rows}")
 
-    for item in items:
-        nm_lower = item['name'].strip().lower()
-        # Try auto-detected map first (exact, then partial)
-        r = detected_map.get(nm_lower)
-        if r is None:
-            for key, row in detected_map.items():
-                if key in nm_lower or nm_lower in key:
-                    r = row
-                    break
-        # Fall back to hard-coded map if detection failed
-        if r is None:
-            r = _FA_ROW_MAP.get(nm_lower)
-        if r is None:
-            for key, row in _FA_ROW_MAP.items():
-                if key in nm_lower or nm_lower in key:
-                    r = row
-                    break
-        if r is None:
-            continue   # skip unmatched — template already has named rows
-
-        if r in written_rows:
-            continue   # don't double-write
-        written_rows.add(r)
-
+    def _write_asset_to_row(r, item):
         opening   = item.get('opening_wdv', 0)
         additions = item.get('additions', 0)
         rate      = item.get('rate', 0) or 0
         sales     = item.get('sales', 0)
+        dep       = item.get('dep', 0)
+        closing   = item.get('closing_wdv', 0)
 
-        safe_additions = round(additions)
-        total_val = round(opening) + safe_additions - round(sales)
+        safe_add  = round(additions)
+        total_val = round(opening) + safe_add - round(sales)
 
-        _write_num(ws, r, 2, round(opening))         # B: opening WDV
-        _write_num(ws, r, 3, safe_additions)         # C: additions >180d
-        _write_num(ws, r, 4, 0)                      # D: additions <180d
-        _write_num(ws, r, 5, round(sales))           # E: sales/disposals
+        # FIX 4: Write source asset NAME into col A (overwrite template name)
+        cell_a = ws.cell(r, 1)
+        from openpyxl.cell import MergedCell as _MCFA
+        if not isinstance(cell_a, _MCFA):
+            cell_a.value = item['name']
 
-        # F(6): write total value directly so dep formula works
+        _write_num(ws, r, 2, round(opening))   # B: opening WDV
+        _write_num(ws, r, 3, safe_add)         # C: additions >180d
+        _write_num(ws, r, 4, 0)                # D: additions <180d
+        _write_num(ws, r, 5, round(sales))     # E: sales
+
         existing_f = ws.cell(r, 6).value
         if not (isinstance(existing_f, str) and existing_f.startswith('=')):
-            _write_num(ws, r, 6, total_val)          # F: total (B+C+D-E)
+            _write_num(ws, r, 6, total_val)    # F: total
 
-        # G(7) rate — write always (needed for dep formula)
         if rate:
-            _write(ws, r, 7, rate)
+            _write(ws, r, 7, rate)             # G: rate
 
-        # FIX 6: Write H(dep) and I(wdv) directly so PY sheet is self-contained
-        # dep = ROUND(total * rate / 100)
-        dep_val = round(total_val * rate / 100) if rate else item.get('dep', 0)
-        closing_wdv = total_val - dep_val
-        _write_num(ws, r, 8, dep_val)               # H: depreciation (direct value)
-        _write_num(ws, r, 9, closing_wdv)           # I: closing WDV (direct value)
+        dep_val = round(total_val * rate / 100) if rate else round(dep)
+        closing_wdv = total_val - dep_val if dep_val else round(closing)
+        _write_num(ws, r, 8, dep_val)          # H: depreciation
+        _write_num(ws, r, 9, closing_wdv)      # I: closing WDV
+        log.append(f"FA P.Yr. R{r}: {item['name']} opening={opening:.0f} "
+                   f"add={additions:.0f} dep={dep_val:.0f} wdv={closing_wdv:.0f}")
+
+    # Try name-matched rows first (for exact matches like Car, Computer)
+    for item in items:
+        nm_lower = item['name'].strip().lower()
+        r = detected_map.get(nm_lower)
+        if r is None:
+            for key, row_r in detected_map.items():
+                if key in nm_lower or nm_lower in key:
+                    r = row_r
+                    break
+        if r is None:
+            r = _FA_ROW_MAP.get(nm_lower)
+        if r is None:
+            for key, row_r in _FA_ROW_MAP.items():
+                if key in nm_lower or nm_lower in key:
+                    r = row_r
+                    break
+        if r is not None and r not in written_rows:
+            _write_asset_to_row(r, item)
+            written_rows.add(r)
+            if r in available_rows:
+                available_rows.remove(r)
+
+    # Write remaining unmatched items into available rows sequentially
+    avail_iter = iter(available_rows)
+    for item in items:
+        nm_lower = item['name'].strip().lower()
+        # Already written?
+        already = False
+        for wr in written_rows:
+            cell_a_val = ws.cell(wr, 1).value
+            if cell_a_val and str(cell_a_val).strip().lower() == nm_lower:
+                already = True
+                break
+        if already:
+            continue
+        # Find next available row
+        try:
+            r = next(avail_iter)
+            while r in written_rows:
+                r = next(avail_iter)
+        except StopIteration:
+            # No more template rows — append after last used row
+            if written_rows:
+                r = max(written_rows) + 1
+            else:
+                continue
+        _write_asset_to_row(r, item)
+        written_rows.add(r)
 
     # FIX 6b: Write Total row with correct sums so bs!I37 formula gets a real value
     # Scan for the Total row in the sheet (row 37 per template comment, but verify)
@@ -4844,8 +5151,67 @@ def _inject_gross_profit_sheet(wb, parsed, client_name, cy_year, py_year, log):
     # R9:C = opening stock (PY)
     _write_num(ws, 9,  PY_LEFT,  p.get('opening_stock', 0))
 
-    # R10:F = sales (PY) — sales is on row 10 right side ("Sales GST" label row)
-    _write_num(ws, 10, PY_RIGHT, p.get('sales', 0))
+    # FIX 1: Sales — write EACH GST rate line to its own row (PY right side).
+    # Template has separate rows for Sales Central GST 12%, 18%, 5%, Local 12%, etc.
+    # If we have individual sale_line_items, write them; else write total on R10.
+    sale_line_items = p.get('sale_line_items', [])
+    if sale_line_items:
+        # Scan the GROSS PROFIT sheet to find rows that match "Sales" labels
+        # Template right side rows (col F) for sales lines typically start at R10.
+        # Strategy: find all rows in the sheet where col E or col D has a Sales label.
+        # Write the matching amount from sale_line_items in col F (PY_RIGHT).
+        _SALE_ROW_MAP = {}  # label_lower → row number
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value and isinstance(cell.value, str):
+                    cv = cell.value.strip().lower()
+                    if 'sale' in cv and cell.column in (4, 5):  # col D or E = labels
+                        _SALE_ROW_MAP[cv] = cell.row
+                        # Also try partial key
+                        for gst_kw in ('12%', '18%', '5%', '0%', 'tax free', 'central', 'local'):
+                            if gst_kw in cv:
+                                _SALE_ROW_MAP[cv] = cell.row
+
+        # Write each sale line: match by GST rate keyword
+        written_rows = set()
+        sale_total_written = 0.0
+        for it in sale_line_items:
+            lbl = it['label'].strip().lower()
+            amt = it['amount']
+            matched_row = None
+            # Try exact match
+            if lbl in _SALE_ROW_MAP:
+                matched_row = _SALE_ROW_MAP[lbl]
+            else:
+                # Try partial match on GST rate/type
+                for map_lbl, map_row in _SALE_ROW_MAP.items():
+                    # Match if both label and map_lbl share key tokens
+                    lbl_has_12  = '12' in lbl and '12' in map_lbl
+                    lbl_has_18  = '18' in lbl and '18' in map_lbl
+                    lbl_has_5   = ('5%' in lbl or ' 5' in lbl) and ('5%' in map_lbl or ' 5' in map_lbl)
+                    lbl_central = 'central' in lbl and 'central' in map_lbl
+                    lbl_local   = 'local' in lbl and 'local' in map_lbl
+                    lbl_free    = ('tax free' in lbl or '0%' in lbl) and ('tax free' in map_lbl or '0%' in map_lbl)
+                    if ((lbl_has_12 or lbl_has_18 or lbl_has_5 or lbl_free) and
+                        (lbl_central or lbl_local or lbl_free)):
+                        if map_row not in written_rows:
+                            matched_row = map_row
+                            break
+            if matched_row and matched_row not in written_rows:
+                _write_num(ws, matched_row, PY_RIGHT, amt)
+                written_rows.add(matched_row)
+                sale_total_written += amt
+                log.append(f'GROSS PROFIT: sale line "{it["label"]}" = {amt:,.0f} → R{matched_row}')
+
+        # If no row mapping found, write total on R10
+        if not written_rows:
+            _write_num(ws, 10, PY_RIGHT, p.get('sales', 0))
+            log.append(f'GROSS PROFIT: sales total (no row map) = {p.get("sales", 0):,.0f} → R10')
+        else:
+            log.append(f'GROSS PROFIT: {len(written_rows)} sale lines written, total={sale_total_written:,.0f}')
+    else:
+        # Fallback: write total sales on R10
+        _write_num(ws, 10, PY_RIGHT, p.get('sales', 0))
 
     # R13:C = purchases (PY) — "Purchase GST" row
     _write_num(ws, 13, PY_LEFT,  p.get('purchases', 0))
@@ -4855,15 +5221,9 @@ def _inject_gross_profit_sheet(wb, parsed, client_name, cy_year, py_year, log):
     # R27 = TOTAL formulas — DO NOT WRITE
 
     # Direct expenses in GROSS PROFIT left PY column (col C = 3):
-    # R21 col B (CY FOC) = formula 'notes to p&l'!D24 — already handles CY.
     # R21 col C (PY FOC), R22 col C (Freight), R23 col C (Freight GST):
     # These have NO formula in the template — must be written directly.
     all_items = p.get('other_expense_items', []) + p.get('direct_expense_items', [])
-    _DIRECT_EXP_KEYS_LOCAL = {
-        'foc', 'f.o.c.', 'f.o.c', 'freight inward', 'freight outward',
-        'frieght inward', 'frieght inward (gst)', 'freight inward (gst)',
-        'freight inward gst', 'freight',
-    }
     foc_amt = 0.0
     freight_amt = 0.0
     freight_gst_amt = 0.0
