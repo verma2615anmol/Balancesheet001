@@ -3,6 +3,37 @@ tshape_processor.py
 ===================
 T-Shaped Balance Sheet → Comparative Balance Sheet Converter
 
+v2.10 2026-08-19  Four formula-reference bugs fixed (all exposed by Bansal Pharmaceuticals):
+                  BUG 1 — Notes to BS R15 (Unsecured — from related parties) showed
+                           571,000 (Ridham Grover, last named party) instead of the
+                           14,947,800 total. Root: template formula =Details!E13 was
+                           never updated after 4 extra unsecured rows were inserted,
+                           so E13 pointed to the last named party, not the SUM row.
+                           Fix: _fix_details_formula_refs now adds Details!D13 →
+                           Details!D{unsec_sum_row} to the replacements dict whenever
+                           extra_unsec > 0.
+                  BUG 2 — Notes to BS R38/R39 (Trade Payables) showed blank/wrong
+                           because _fix_details_formula_refs computed cred_sum =
+                           62 + extra_cred (= D76) but the actual SUM row was at
+                           62 + extra_unsec + extra_cred (= D80). The unsecured
+                           insertion shift (extra_unsec=4) was missing from every
+                           cred/deb formula offset.
+                           Fix: all formula ref offsets now include extra_unsec.
+                  BUG 3 — Same root cause as Bug 2 but for debtor refs (D129/D136).
+                           Notes to BS R91/R97 (debtors >6m/<6m) pointed to wrong
+                           Details rows because extra_unsec was excluded.
+                           Fix: deb_gt6/deb_lt6 = 129/136 + extra_unsec + extra_cred
+                           + extra_deb (same fix propagated to internal Details SUM
+                           corrections and _shift_row_ref).
+                  BUG 4 — STL (Short-term Loans & Advances) total = 17,928,190
+                           instead of 18,545,528 (short by 617,338).
+                           Root: B-section loop was fixed at 7 slots (R134-R140)
+                           and C-section at 5 slots (R143-R147). Bansal has 10
+                           loans_to_other items and 7 revenue_auth items; overflow
+                           items (items 7-9 in B, items 5-6 in C) were written to
+                           rows beyond the SUM range and therefore not counted.
+                           Fix: loop bound = max(template_slots, len(items)); SUM
+                           formula dynamically covers all rows used.
 v2.9  2026-08-18  Two runtime bug fixes:
                   BUG A — NameError: 'unsec_parties' was referenced in the
                            _inject_details_sheet log line but was never assigned.
@@ -3571,12 +3602,21 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
     # R119 = SUM(E113:E118), R120 = R110+R119 — formulas, skip
 
     # ── Note 11: Short-term loans and advances ────────────────────────────────
-    # B section — Loans to Others: R134-R140 (7 slots)
-    # Template formula SUM(E138:E140) is too narrow — fix it to cover all 7 rows.
+    # BUG FIX v2.10: Previously the B section had a fixed 7-slot loop (R134-R140)
+    # and C section had a fixed 5-slot loop (R143-R147). When more items existed
+    # (e.g. Bansal has 10 loans_to_other + 7 revenue_auth), the overflow items were
+    # written to rows BEYOND the SUM range → their amounts were missing from Total(B)
+    # and Total(C), causing the STL total to be short by the overflow sum.
+    # Fix: use len(items) as the loop bound (minimum 7/5 for template compatibility),
+    # then write the SUM formula to cover the actual last row used.
+    #
+    # B section — Loans to Others: starts at R134
     loans_items = p.get('loans_to_other_items', p.get('loans_advances_items', []))
     loans_total = p.get('loans_advances', 0) or p.get('advances_security', 0)
-    for i in range(7):
-        r = 134 + i
+    loans_slots = max(7, len(loans_items))   # always at least 7 for template rows
+    STL_B_START = 134
+    for i in range(loans_slots):
+        r = STL_B_START + i
         if i < len(loans_items):
             itm = loans_items[i]
             _write(ws, r, 2, itm.get('name', ''))
@@ -3584,19 +3624,23 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
         else:
             _py(ws, r, PY, 0)
         _cy(ws, r, CY)
-    # If no itemised list but we have a total, lump into R134
+    # If no itemised list but we have a total, lump into first slot
     if not loans_items and loans_total:
-        _py(ws, 134, PY, loans_total)
-    # Fix Total(B) formula to cover all 7 rows R134:R140
-    _write(ws, 141, PY, '=SUM(E134:E140)')
-    _write(ws, 141, CY, '=SUM(D134:D140)')
+        _py(ws, STL_B_START, PY, loans_total)
+    # Total(B) row: immediately after the last used slot
+    stl_b_total_row = STL_B_START + loans_slots
+    _write(ws, stl_b_total_row, PY, f'=SUM(E{STL_B_START}:E{STL_B_START + loans_slots - 1})')
+    _write(ws, stl_b_total_row, CY, f'=SUM(D{STL_B_START}:D{STL_B_START + loans_slots - 1})')
+    log.append(f"STL B: {loans_slots} slots (R{STL_B_START}-R{STL_B_START+loans_slots-1}), "
+               f"Total at R{stl_b_total_row}")
 
-    # C section — Advance to Revenue Authorities: R143-R147 (5 slots)
-    # Template formula SUM(E143:E143) only covers 1 row — fix to cover all 5.
+    # C section — Advance to Revenue Authorities: starts right after Total(B) + 1 gap row
     rev_items = p.get('advance_to_revenue_items', [])
+    rev_slots = max(5, len(rev_items))       # always at least 5 for template rows
+    STL_C_START = stl_b_total_row + 2       # 1 blank/label row after Total(B)
     from openpyxl.cell import MergedCell as _MCrev
-    for i in range(5):
-        r = 143 + i
+    for i in range(rev_slots):
+        r = STL_C_START + i
         if i < len(rev_items):
             itm = rev_items[i]
             _write(ws, r, 2, itm.get('name', ''))
@@ -3604,16 +3648,16 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
         else:
             _py(ws, r, PY, 0)
         _cy(ws, r, CY)
-        # FIX L (2026-08-14): Preserve yellow highlight on PY (E) cell.
-        # _py()→_write_num() writes the value but never sets fill. The template
-        # has yellow (_INPUT_FILL) on IGST/GST/TDS rows so the CA can verify them.
-        # We apply _INPUT_FILL to the PY cell explicitly after writing.
+        # FIX L (2026-08-14): Preserve yellow highlight on PY (E) cell for GST/TDS rows.
         py_cell = ws.cell(row=r, column=PY)
         if not isinstance(py_cell, _MCrev):
             py_cell.fill = _INPUT_FILL
-    # Fix Total(C) formula to cover all 5 rows R143:R147
-    _write(ws, 148, PY, '=SUM(E143:E147)')
-    _write(ws, 148, CY, '=SUM(D143:D147)')
+    # Total(C) row immediately after last used slot
+    stl_c_total_row = STL_C_START + rev_slots
+    _write(ws, stl_c_total_row, PY, f'=SUM(E{STL_C_START}:E{STL_C_START + rev_slots - 1})')
+    _write(ws, stl_c_total_row, CY, f'=SUM(D{STL_C_START}:D{STL_C_START + rev_slots - 1})')
+    log.append(f"STL C: {rev_slots} slots (R{STL_C_START}-R{STL_C_START+rev_slots-1}), "
+               f"Total at R{stl_c_total_row}")
     # R150 Total(A+B+C) formula is already correct — skip
 
     # ── Note 12: Other current assets (R154-R159, 6 slots) ───────────────────
@@ -4560,10 +4604,15 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
     # After row insertion these shift. We track them precisely via DEB_START and deb_total_row.
     _extra_cred = extra_rows_cred           # rows inserted for creditor overflow
     _extra_deb  = extra_rows_deb            # rows inserted for debtor overflow
-    _cred_sum_row     = 62 + _extra_cred    # Details row that has =SUM(creditor amounts)
-    _msme_sum_row     = 68 + _extra_cred    # Details row with MSME SUM
+    # BUG FIX (v2.10): All rows BELOW the unsecured section also shift by extra_rows_unsec.
+    # Previous: _cred_sum_row = 62 + extra_cred   (missing the unsec shift).
+    # Correct: every template ref below R13 shifts by (extra_unsec + extra_cred [+ extra_deb]).
+    _cred_sum_row = 62 + _extra_unsec + _extra_cred   # Details row with creditor SUM
+    _msme_sum_row = 68 + _extra_unsec + _extra_cred   # Details row with MSME SUM
     _deb_gt6_total    = deb_total_row       # actual TOTAL row for debtors >6m (Advance-to-Sup)
     _deb_lt6_total    = _lt6_start + 2      # approximate TOTAL row for debtors <6m
+    # Unsecured SUM row (Details): template R13 shifts to unsec_sum_row after insertion.
+    _unsec_sum_row = unsec_sum_row          # = UNSEC_START + UNSEC_SLOTS + extra_unsec
 
     # FIX M (2026-08-14): Record the rows that _inject_details_sheet has ALREADY written
     # correct formulas to. The internal formula shift in _fix_details_formula_refs must
@@ -4583,8 +4632,10 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
         'msme_sum_row':      _msme_sum_row,
         'deb_gt6_total':     _deb_gt6_total,
         'deb_lt6_total':     _deb_lt6_total,
+        'extra_unsec':       _extra_unsec,          # BUG FIX v2.10: needed for all ref shifts
         'extra_cred':        _extra_cred,
         'extra_deb':         _extra_deb,
+        'unsec_sum_row':     _unsec_sum_row,        # BUG FIX v2.10: actual unsec SUM row
         'skip_rows':         _skip_rows,            # FIX M: rows to exclude from re-shift
     }
 
@@ -4625,45 +4676,50 @@ def _fix_details_formula_refs(wb, shifts, log):
     if 'notes to bs' not in wb.sheetnames:
         return
 
-    extra_cred = shifts.get('extra_cred', 0)
-    extra_deb  = shifts.get('extra_deb', 0)
+    extra_unsec = shifts.get('extra_unsec', 0)   # BUG FIX v2.10: rows inserted for unsec
+    extra_cred  = shifts.get('extra_cred', 0)
+    extra_deb   = shifts.get('extra_deb', 0)
 
-    # If no rows were inserted, nothing to fix
-    if extra_cred == 0 and extra_deb == 0:
+    # If no rows were inserted anywhere, nothing to fix
+    if extra_unsec == 0 and extra_cred == 0 and extra_deb == 0:
         log.append('Details formula refs: no row insertion, nothing to fix')
         return
 
     ws = wb['notes to bs']
 
-    # Map: (notes_to_bs_row, col_idx) → new Details row number
-    # Template original rows in Details: 62=credSUM, 68=MSME, 129=deb<6m TOTAL, 136=deb>6m TOTAL
-    # FIX N part 2: deb_gt6 and deb_lt6 must be computed by directly applying extra_cred
-    # shift to the TEMPLATE row numbers (129 and 136), NOT from the deb_gt6_total /
-    # deb_lt6_total tracker fields (which track the ADVANCE TO SUPPLIERS and _lt6_start+2
-    # rows — wrong rows for this cross-sheet reference fix).
-    # Template R129 (deb <6mo TOTAL) shifts by extra_cred (only creditor rows are inserted
-    # before R129, no debtor overflow for this client). Same for R136.
-    cred_sum = shifts.get('cred_sum_row',  62  + extra_cred)
-    msme_sum = shifts.get('msme_sum_row',  68  + extra_cred)
-    deb_gt6  = 129 + extra_cred + extra_deb   # template R129 shifted by all insertions
-    deb_lt6  = 136 + extra_cred + extra_deb   # template R136 shifted by all insertions
+    # BUG FIX v2.10: All template rows in Details shift by (extra_unsec + extra_cred [+ extra_deb]).
+    # Previous code missed extra_unsec, causing Notes to BS to reference the wrong Details rows.
+    # Correct row offsets (template → actual):
+    #   Details!D13  (unsecured SUM) → D{unsec_sum_row}    (shifts by extra_unsec)
+    #   Details!D62  (creditor SUM)  → D{62 + extra_unsec + extra_cred}
+    #   Details!D68  (MSME SUM)      → D{68 + extra_unsec + extra_cred}
+    #   Details!D129 (deb >6m total) → D{129 + extra_unsec + extra_cred + extra_deb}
+    #   Details!D136 (deb <6m total) → D{136 + extra_unsec + extra_cred + extra_deb}
+    cred_sum = shifts.get('cred_sum_row', 62  + extra_unsec + extra_cred)
+    msme_sum = shifts.get('msme_sum_row', 68  + extra_unsec + extra_cred)
+    deb_gt6  = 129 + extra_unsec + extra_cred + extra_deb
+    deb_lt6  = 136 + extra_unsec + extra_cred + extra_deb
 
-    # FIX N (2026-08-14): FIX C REMOVED.
-    # The template has notes to bs R91 → Details!D129 (trade receivable <6mo TOTAL)
-    # and R97 → Details!D136 (>6mo TOTAL). After 54 creditor rows are inserted:
-    #   D129 → D183 (correct <6mo total) via standard _shift_row_ref
-    #   D136 → D190 (correct >6mo total) via standard _shift_row_ref
-    # FIX C was adding extra replacements for Details!D171 → deb_lt6 which OVERWROTE
-    # the already-correctly-shifted formulas with D171 (ADVANCE TO SUPPLIERS — wrong).
-    # Solution: let the standard shift mechanism handle D129/D136 → D183/D190 naturally.
-    # No special D171 patching needed.
+    # BUG FIX v2.10 — Bug 1: unsecured SUM ref.
+    # Template Notes to BS R15 = =Details!D13 (unsecured related-party SUM).
+    # When extra_unsec > 0, the SUM row moves from D13 to D{unsec_sum_row}.
+    # Nothing previously updated this formula, causing the cell to show the value of
+    # the last individual lender row (e.g. Ridham Grover = 571,000) instead of the total.
+    unsec_sum_row = shifts.get('unsec_sum_row', 13 + extra_unsec)
+
     replacements = {}
-    if extra_cred > 0:
+    # Bug 1: update unsecured SUM reference whenever extra_unsec rows were inserted
+    if extra_unsec > 0:
+        replacements['Details!D13'] = f'Details!D{unsec_sum_row}'
+        replacements['Details!E13'] = f'Details!E{unsec_sum_row}'
+    # Bug 2: update creditor SUM reference (now includes extra_unsec offset)
+    if extra_unsec > 0 or extra_cred > 0:
         replacements['Details!D62'] = f'Details!D{cred_sum}'
         replacements['Details!E62'] = f'Details!E{cred_sum}'
         replacements['Details!D68'] = f'Details!D{msme_sum}'
         replacements['Details!E68'] = f'Details!E{msme_sum}'
-    if extra_cred > 0 or extra_deb > 0:
+    # Bug 3: update debtor SUM references (now includes extra_unsec offset)
+    if extra_unsec > 0 or extra_cred > 0 or extra_deb > 0:
         replacements['Details!D129'] = f'Details!D{deb_gt6}'
         replacements['Details!E129'] = f'Details!E{deb_gt6}'
         replacements['Details!D136'] = f'Details!D{deb_lt6}'
@@ -4678,6 +4734,13 @@ def _fix_details_formula_refs(wb, shifts, log):
         extra_replacements[old2] = new2
     replacements.update(extra_replacements)
 
+    # BUG FIX v2.10 (substring collision): sort replacements longest-key-first.
+    # 'Details!D13' is a substring of 'Details!D136' and 'Details!D129'.
+    # Without sorting, D13→D17 fires on =Details!D136 and corrupts it to =Details!D176
+    # before D136→D225 gets a chance to run.
+    # Longest keys first guarantees the most-specific replacement wins every time.
+    sorted_replacements = sorted(replacements.items(), key=lambda x: -len(x[0]))
+
     count = 0
     from openpyxl.cell import MergedCell as _MCF
     for row in ws.iter_rows():
@@ -4688,7 +4751,7 @@ def _fix_details_formula_refs(wb, shifts, log):
             if not isinstance(v, str) or 'Details' not in v:
                 continue
             new_v = v
-            for old_frag, new_frag in replacements.items():
+            for old_frag, new_frag in sorted_replacements:
                 if old_frag in new_v:
                     new_v = new_v.replace(old_frag, new_frag)
             if new_v != v:
@@ -4711,12 +4774,19 @@ def _fix_details_formula_refs(wb, shifts, log):
 
     # Build a row-shift map for absolute references in Details formulas:
     # Any row ref >= insertion_point shifts by extra_rows.
-    # Creditor insertion point = CRED_START + CRED_TEMPLATE_SLOTS = 23 + 33 = 56
-    # Debtor insertion point   = 74 + extra_cred + DEB_TMPL_SLOTS = 74+extra_cred+43
-    CRED_INSERT = 56   # rows >= 56 shift by extra_cred
-    DEB_INSERT  = 74 + extra_cred + 43  # rows >= this shift by extra_deb
+    # BUG FIX v2.10: CRED_INSERT and DEB_INSERT must account for extra_unsec too.
+    # Unsecured insertion point: UNSEC_START + UNSEC_SLOTS = 7+6 = 13
+    #   → rows >= 13 shift by extra_unsec
+    # Creditor insertion point (in original template, before any insertion):
+    #   CRED_START_TMPL + CRED_TEMPLATE_SLOTS = 23+33 = 56
+    #   But after unsec insertion, CRED_START shifts to 23+extra_unsec,
+    #   so the creditor block ends at (23+extra_unsec+33) = 56+extra_unsec.
+    # Debtor insertion point: 74 + extra_unsec + extra_cred + DEB_TMPL_SLOTS
+    UNSEC_INSERT = 13              # rows >= 13 shift by extra_unsec
+    CRED_INSERT  = 56 + extra_unsec  # rows >= this shift by extra_cred
+    DEB_INSERT   = 74 + extra_unsec + extra_cred + 43  # rows >= this shift by extra_deb
 
-    if extra_cred == 0 and extra_deb == 0:
+    if extra_unsec == 0 and extra_cred == 0 and extra_deb == 0:
         return  # nothing to fix
 
     import re as _re_int
@@ -4726,6 +4796,9 @@ def _fix_details_formula_refs(wb, shifts, log):
         col_letter = m.group(1) or ''
         row_num    = int(m.group(2))
         shifted    = row_num
+        # BUG FIX v2.10: apply extra_unsec shift for rows at or after unsec insertion point
+        if extra_unsec > 0 and row_num >= UNSEC_INSERT:
+            shifted += extra_unsec
         if extra_cred > 0 and row_num >= CRED_INSERT:
             shifted += extra_cred
         if extra_deb > 0 and row_num >= DEB_INSERT:
@@ -4773,11 +4846,12 @@ def _fix_details_formula_refs(wb, shifts, log):
     # become SUM(E131:E182) and SUM(E189:E189). Rewrite to correct ranges.
     # The correct start row for debtors in D col: DEB_START_TMPL+extra_cred = 74+extra_cred
     # In E col it should match D col exactly.
-    deb_start_actual = 74 + extra_cred   # actual first debtor data row in output
+    # BUG FIX v2.10: include extra_unsec in all debtor row calculations
+    deb_start_actual = 74 + extra_unsec + extra_cred   # actual first debtor data row
     deb_end_actual   = deb_start_actual + 43 + extra_deb - 1   # last debtor slot
 
-    # Debtor <6mo total row: template R129 + extra_cred + extra_deb
-    _lt6_total_row = 129 + extra_cred + extra_deb
+    # Debtor <6mo total row: template R129 shifted by all insertions
+    _lt6_total_row = 129 + extra_unsec + extra_cred + extra_deb
     try:
         ws_det.cell(_lt6_total_row, 4).value = f'=SUM(D{deb_start_actual}:D{deb_end_actual})'
         ws_det.cell(_lt6_total_row, 5).value = f'=SUM(E{deb_start_actual}:E{deb_end_actual})'
@@ -4787,7 +4861,8 @@ def _fix_details_formula_refs(wb, shifts, log):
         log.append(f"Details debtor SUM correction failed: {_e}")
 
     # Debtor >6mo total row: template R136 + extra_cred + extra_deb
-    _gt6_total_row = 136 + extra_cred + extra_deb
+    # BUG FIX v2.10: include extra_unsec
+    _gt6_total_row = 136 + extra_unsec + extra_cred + extra_deb
     try:
         _gt6_data_start = _gt6_total_row - 2   # 2 data rows above total
         _gt6_data_end   = _gt6_total_row - 1
