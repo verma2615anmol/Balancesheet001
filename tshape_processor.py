@@ -3,6 +3,20 @@ tshape_processor.py
 ===================
 T-Shaped Balance Sheet → Comparative Balance Sheet Converter
 
+v2.9  2026-08-18  Two runtime bug fixes:
+                  BUG A — NameError: 'unsec_parties' was referenced in the
+                           _inject_details_sheet log line but was never assigned.
+                           The variable is _deduped. Fixed: log now reads
+                           len(_deduped) instead of len(unsec_parties).
+                  BUG B — FIX D (Details R15 "From Other Parties") was
+                           overridden by v2.8's FIX 6 comment which cleared
+                           R15 to 0 for ALL clients ("For Bansal all lenders
+                           are related parties"). This broke Sachidanand where
+                           lenders are OTHER parties. Fixed: R15 is now computed
+                           as BS_total − sum(named_lenders). If all lenders are
+                           named → remainder = 0 (Bansal correct). If some are
+                           unnamed → remainder fills the gap (Sachidanand correct).
+                           Notes to BS R16 uses the same computed remainder.
 v2.8  2026-08-17  Nine fixes for Bansal Pharmaceuticals multi-section XLSX:
                   FIX 1 — Sales written per-line (each GST rate separately)
                            to GROSS PROFIT sheet; sales total summed correctly.
@@ -3385,8 +3399,14 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
     # Unsecured related parties: R15 C4/C5 = =Details!D13/E13 — FORMULA, DO NOT WRITE.
     # The Details sheet inject (R7-R12) feeds Details!R13 via SUM formula,
     # which then flows here automatically.
-    # R16 (from other parties) is writable but typically 0 for T-shaped clients.
-    _py(ws, 16, PY, 0);         _cy(ws, 16, CY)
+    # R16 (from other parties): write the remainder = BS total − named lenders.
+    # This matches the Details R15 "other parties" amount written by _inject_details_sheet,
+    # ensuring both the Details sheet and Notes to BS show consistent figures.
+    _unsec_named_sum = sum(x.get('amount', 0) for x in p.get('unsecured_loan_parties', []))
+    _unsec_bs_total  = unsecured  # already fetched above
+    _unsec_other_py  = max(0.0, round(_unsec_bs_total - _unsec_named_sum, 2))
+    _py(ws, 16, PY, _unsec_other_py); _cy(ws, 16, CY)
+    log.append(f"Notes to BS R16 (unsecured other parties): {_unsec_other_py:,.2f}")
     # R18 = SUM(E14:E17), R19 = R18+R10 — formulas, skip
 
     # ── Note 3: Short-term borrowings ─────────────────────────────────────────
@@ -4179,13 +4199,25 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
     ws.cell(unsec_sum_row, 5).value = f'=SUM(E{UNSEC_START}:E{last_unsec_data})'
     log.append(f"Details unsecured SUM rewritten: R{unsec_sum_row} = SUM(?{UNSEC_START}:?{last_unsec_data})")
 
-    # FIX 6: "From Other Parties" row (R15 originally, now R15+extra_rows_unsec).
-    # For Bansal all lenders are named individuals (related parties) — no "other parties".
-    # Clear this cell to 0 to prevent stale template PY value (2,061,391) from showing.
+    # FIX D (re-implemented in v2.9): "From Other Parties" row (R15 originally, now R15+extra_rows_unsec).
+    # Compute: other_parties_amt = BS unsecured total − sum of named lenders written to R7-R12 slots.
+    # Rationale:
+    #   - Details R7-R12 hold individual named lenders (written above as _deduped).
+    #   - Details R13 = SUM(R7:R12) = related-party subtotal (formula).
+    #   - Details R15 = "From Other Parties" — should hold whatever balance is NOT
+    #     accounted for by the named parties, so the grand total (R17) matches the BS figure.
+    #   - For Bansal: all lenders named → remainder = 0 → R15 = 0 (correct).
+    #   - For Sachidanand: lenders ARE "other parties" (not family/related) and may not
+    #     be fully captured; remainder ensures the total ties to the BS figure.
+    _related_sum = sum(x['amount'] for x in _deduped)
+    _bs_unsec_total = p.get('unsecured_loans', 0) or 0
+    _other_parties_amt = max(0.0, round(_bs_unsec_total - _related_sum, 2))
     unsec_other_row = unsec_sum_row + 2  # R15 = R13+2 in original template
-    _py(ws, unsec_other_row, PY, 0)
+    _py(ws, unsec_other_row, PY, _other_parties_amt)
     _cy(ws, unsec_other_row, CY)
-    log.append(f"Details R{unsec_other_row} (unsecured other parties): cleared to 0")
+    log.append(f"Details R{unsec_other_row} (unsecured other parties): "
+               f"{_other_parties_amt:,.2f} "
+               f"(BS={_bs_unsec_total:,.2f} − named={_related_sum:,.2f})")
 
     # Track unsecured row insertion for downstream shift (creditors etc.)
     # The creditor section starts after unsecured section; shift all downstream refs
@@ -4519,7 +4551,7 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
     _py(ws, _lt6_start + 1, PY, 0); _cy(ws, _lt6_start + 1, CY)
 
     log.append(
-        f'Details: {len(unsec_parties)} unsecured, {len(cred_only)} creditors, '
+        f'Details: {len(_deduped)} unsecured, {len(cred_only)} creditors, '
         f'{len(deb_parties)} debtors'
     )
 
