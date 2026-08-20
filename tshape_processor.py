@@ -3,6 +3,23 @@ tshape_processor.py
 ===================
 T-Shaped Balance Sheet → Comparative Balance Sheet Converter
 
+v2.11 2026-08-19  Two more bugs fixed (found by full-sheet audit of Bansal output):
+                  BUG 5 — Details R17 (Unsecured SUM) became =SUM(D7:D20) instead
+                           of =SUM(D7:D16), creating a circular reference.
+                           Root: _shift_row_ref in _fix_details_formula_refs
+                           processed the formula at R17 (unsec_sum_row) and shifted
+                           the range end 'D16' (≥ UNSEC_INSERT=13) by extra_unsec=4
+                           → D20. This corrupted the SUM to include R17 itself.
+                           Fix: add unsec_sum_row and unsec_other_row to _skip_rows
+                           so _shift_row_ref skips those cells entirely.
+                  BUG 6 — Notes to BS R150 (STL Grand Total) was overwritten by
+                           C-section revenue auth data (SGST Receivable=467,240).
+                           Root: with 10 B-items + 7 C-items, the C-section spills
+                           past R150 (the template's fixed Grand Total row), so the
+                           bs formula =notes to bs!D150 read SGST instead of 18.5M.
+                           Fix: always explicitly write the Grand Total formula at
+                           R150 after all sections are written, using dynamic
+                           references to Total(B) and Total(C) rows.
 v2.10 2026-08-19  Four formula-reference bugs fixed (all exposed by Bansal Pharmaceuticals):
                   BUG 1 — Notes to BS R15 (Unsecured — from related parties) showed
                            571,000 (Ridham Grover, last named party) instead of the
@@ -3602,20 +3619,55 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
     # R119 = SUM(E113:E118), R120 = R110+R119 — formulas, skip
 
     # ── Note 11: Short-term loans and advances ────────────────────────────────
-    # BUG FIX v2.10: Previously the B section had a fixed 7-slot loop (R134-R140)
-    # and C section had a fixed 5-slot loop (R143-R147). When more items existed
-    # (e.g. Bansal has 10 loans_to_other + 7 revenue_auth), the overflow items were
-    # written to rows BEYOND the SUM range → their amounts were missing from Total(B)
-    # and Total(C), causing the STL total to be short by the overflow sum.
-    # Fix: use len(items) as the loop bound (minimum 7/5 for template compatibility),
-    # then write the SUM formula to cover the actual last row used.
+    # BUG FIX v2.11 (final): Correct approach using row insertion in notes to bs.
+    # Template layout (fixed rows):
+    #   R134-R140: B section (7 slots)  R141: Total(B)   R142: blank
+    #   R143-R147: C section (5 slots)  R148: Total(C)   R149: blank
+    #   R150: Grand Total (A+B+C)  ← bs!E34 reads this — MUST stay here or be updated
+    #   R154-R159: OCA section (6 slots) R160: OCA Total ← bs!E35 reads this
     #
-    # B section — Loans to Others: starts at R134
+    # When B has more than 7 items or C has more than 5 items, we insert the extra
+    # rows directly in the notes_to_bs sheet (similar to Details sheet insertions).
+    # The Grand Total then shifts, and we update the bs sheet formula to follow.
+    #
     loans_items = p.get('loans_to_other_items', p.get('loans_advances_items', []))
     loans_total = p.get('loans_advances', 0) or p.get('advances_security', 0)
-    loans_slots = max(7, len(loans_items))   # always at least 7 for template rows
+    rev_items   = p.get('advance_to_revenue_items', [])
+
+    STL_B_SLOTS = 7    # template B slots (R134-R140)
+    STL_C_SLOTS = 5    # template C slots (R143-R147)
     STL_B_START = 134
-    for i in range(loans_slots):
+    STL_B_TOTAL = 141  # template Total(B) row
+    STL_C_START = 143  # template C-section start
+    STL_C_TOTAL = 148  # template Total(C) row
+    STL_GRAND   = 150  # template Grand Total row (bs reads this)
+    OCA_START   = 154  # template OCA start
+    OCA_TOTAL   = 160  # template OCA total (bs reads this)
+
+    extra_b = max(0, len(loans_items) - STL_B_SLOTS)
+    extra_c = max(0, len(rev_items)   - STL_C_SLOTS)
+
+    # Insert extra rows for B-section overflow (before Total(B) at R141)
+    if extra_b > 0:
+        ws.insert_rows(STL_B_TOTAL, extra_b)
+        log.append(f"STL: inserted {extra_b} B-section rows (Total(B) shifts from R141→R{STL_B_TOTAL+extra_b})")
+
+    # Compute actual row positions after B insertion
+    b_total_row = STL_B_TOTAL + extra_b       # Total(B) row
+    c_start_row = STL_C_START + extra_b       # C-section start
+    c_total_row = STL_C_TOTAL + extra_b       # Total(C) row (before C overflow)
+
+    # Insert extra rows for C-section overflow (before Total(C))
+    if extra_c > 0:
+        ws.insert_rows(c_total_row, extra_c)
+        log.append(f"STL: inserted {extra_c} C-section rows (Total(C) shifts from R{c_total_row}→R{c_total_row+extra_c})")
+
+    c_total_row  = c_total_row + extra_c      # actual Total(C) row after insertion
+    grand_row    = STL_GRAND  + extra_b + extra_c  # actual Grand Total row
+
+    # Write B-section data
+    n_b = max(STL_B_SLOTS, len(loans_items))
+    for i in range(n_b):
         r = STL_B_START + i
         if i < len(loans_items):
             itm = loans_items[i]
@@ -3624,23 +3676,18 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
         else:
             _py(ws, r, PY, 0)
         _cy(ws, r, CY)
-    # If no itemised list but we have a total, lump into first slot
     if not loans_items and loans_total:
         _py(ws, STL_B_START, PY, loans_total)
-    # Total(B) row: immediately after the last used slot
-    stl_b_total_row = STL_B_START + loans_slots
-    _write(ws, stl_b_total_row, PY, f'=SUM(E{STL_B_START}:E{STL_B_START + loans_slots - 1})')
-    _write(ws, stl_b_total_row, CY, f'=SUM(D{STL_B_START}:D{STL_B_START + loans_slots - 1})')
-    log.append(f"STL B: {loans_slots} slots (R{STL_B_START}-R{STL_B_START+loans_slots-1}), "
-               f"Total at R{stl_b_total_row}")
+    # Total(B)
+    _write(ws, b_total_row, PY, f'=SUM(E{STL_B_START}:E{b_total_row - 1})')
+    _write(ws, b_total_row, CY, f'=SUM(D{STL_B_START}:D{b_total_row - 1})')
+    log.append(f"STL B: {n_b} slots R{STL_B_START}-R{b_total_row-1}, Total at R{b_total_row}")
 
-    # C section — Advance to Revenue Authorities: starts right after Total(B) + 1 gap row
-    rev_items = p.get('advance_to_revenue_items', [])
-    rev_slots = max(5, len(rev_items))       # always at least 5 for template rows
-    STL_C_START = stl_b_total_row + 2       # 1 blank/label row after Total(B)
+    # Write C-section data
     from openpyxl.cell import MergedCell as _MCrev
-    for i in range(rev_slots):
-        r = STL_C_START + i
+    n_c = max(STL_C_SLOTS, len(rev_items))
+    for i in range(n_c):
+        r = c_start_row + i
         if i < len(rev_items):
             itm = rev_items[i]
             _write(ws, r, 2, itm.get('name', ''))
@@ -3648,22 +3695,47 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
         else:
             _py(ws, r, PY, 0)
         _cy(ws, r, CY)
-        # FIX L (2026-08-14): Preserve yellow highlight on PY (E) cell for GST/TDS rows.
         py_cell = ws.cell(row=r, column=PY)
         if not isinstance(py_cell, _MCrev):
             py_cell.fill = _INPUT_FILL
-    # Total(C) row immediately after last used slot
-    stl_c_total_row = STL_C_START + rev_slots
-    _write(ws, stl_c_total_row, PY, f'=SUM(E{STL_C_START}:E{STL_C_START + rev_slots - 1})')
-    _write(ws, stl_c_total_row, CY, f'=SUM(D{STL_C_START}:D{STL_C_START + rev_slots - 1})')
-    log.append(f"STL C: {rev_slots} slots (R{STL_C_START}-R{STL_C_START+rev_slots-1}), "
-               f"Total at R{stl_c_total_row}")
-    # R150 Total(A+B+C) formula is already correct — skip
+    # Total(C)
+    _write(ws, c_total_row, PY, f'=SUM(E{c_start_row}:E{c_total_row - 1})')
+    _write(ws, c_total_row, CY, f'=SUM(D{c_start_row}:D{c_total_row - 1})')
+    log.append(f"STL C: {n_c} slots R{c_start_row}-R{c_total_row-1}, Total at R{c_total_row}")
 
-    # ── Note 12: Other current assets (R154-R159, 6 slots) ───────────────────
+    # Grand Total — R132 is Total(A) (always fixed, no insertions above it)
+    _write(ws, grand_row, 2, 'Total Short-Term Loans and Advances (A+B+C)')
+    _write(ws, grand_row, PY, f'=E132+E{b_total_row}+E{c_total_row}')
+    _write(ws, grand_row, CY, f'=D132+D{b_total_row}+D{c_total_row}')
+    log.append(f"STL Grand Total at R{grand_row}: =E132+E{b_total_row}+E{c_total_row}")
+
+    # Update bs!E34/F34 if Grand Total shifted from R150
+    if grand_row != STL_GRAND and 'bs' in wb.sheetnames:
+        ws_bs = wb['bs']
+        for col in (5, 6):  # E and F columns
+            cell = ws_bs.cell(34, col)
+            v = cell.value
+            if isinstance(v, str) and f'D{STL_GRAND}' in v or f'E{STL_GRAND}' in v:
+                cell.value = v.replace(f'D{STL_GRAND}', f'D{grand_row}').replace(f'E{STL_GRAND}', f'E{grand_row}')
+        # Also update the formula that uses single-quoted sheet reference
+        for col in (5, 6):
+            cell = ws_bs.cell(34, col)
+            v = cell.value
+            if isinstance(v, str) and f'!D{STL_GRAND}' in v:
+                cell.value = v.replace(f'!D{STL_GRAND}', f'!D{grand_row}').replace(f'!E{STL_GRAND}', f'!E{grand_row}')
+        log.append(f"bs R34 updated to reference Grand Total at R{grand_row}")
+
+    # ── Note 12: Other current assets ────────────────────────────────────────
+    # BUG FIX v2.11: OCA start row must account for STL row insertions.
+    # Template: OCA at R154-R159, OCA Total at R160. bs!E35 = notes_to_bs!D160.
+    # When STL inserts extra_b + extra_c rows, everything below shifts.
+    # OCA actual start = 154 + extra_b + extra_c.
+    extra_stl = extra_b + extra_c   # total rows inserted in notes_to_bs for STL
+    OCA_START_ACTUAL  = 154 + extra_stl
+    OCA_TOTAL_ACTUAL  = 160 + extra_stl
     oca_items = p.get('other_current_asset_items', [])
     for i in range(6):
-        r = 154 + i
+        r = OCA_START_ACTUAL + i
         if i < len(oca_items):
             itm = oca_items[i]
             _write(ws, r, 2, itm.get('name', ''))
@@ -3671,7 +3743,19 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
         else:
             _py(ws, r, PY, 0)
         _cy(ws, r, CY)
-    # R160 = SUM formula, skip
+    _write(ws, OCA_TOTAL_ACTUAL, PY, f'=SUM(E{OCA_START_ACTUAL}:E{OCA_START_ACTUAL+5})')
+    _write(ws, OCA_TOTAL_ACTUAL, CY, f'=SUM(D{OCA_START_ACTUAL}:D{OCA_START_ACTUAL+5})')
+    # Update bs!E35/F35 if OCA total shifted from R160
+    if extra_stl > 0 and 'bs' in wb.sheetnames:
+        ws_bs = wb['bs']
+        for col in (5, 6):
+            cell = ws_bs.cell(35, col)
+            v = cell.value
+            if isinstance(v, str) and ('D160' in v or 'E160' in v):
+                cell.value = (v.replace(f'D160', f'D{OCA_TOTAL_ACTUAL}')
+                               .replace(f'E160', f'E{OCA_TOTAL_ACTUAL}'))
+        log.append(f"OCA section shifted to R{OCA_START_ACTUAL}-R{OCA_START_ACTUAL+5}, "
+                   f"Total at R{OCA_TOTAL_ACTUAL} (extra_stl={extra_stl})")
 
     log.append('Notes to BS injected')
 
@@ -4620,7 +4704,12 @@ def _inject_details_sheet(wb, parsed, client_name, cy_year, py_year, log):
     # post-insertion row numbers and a second shift would corrupt them.
     # These rows are: cred_sum_actual_row, deb_total_row, any Advance-to-Suppliers row,
     # and the Trade Receivable <6mo TOTAL row (_lt6_start + 2).
-    _skip_rows = {cred_sum_actual_row, deb_total_row, _lt6_start, _lt6_start+1, _lt6_start+2}
+    # FIX v2.11: add unsec_sum_row and unsec_other_row to skip_rows so that
+    # _shift_row_ref in _fix_details_formula_refs does NOT re-process these rows.
+    # Without this: =SUM(D7:D16) at R17 gets corrupted to =SUM(D7:D20) because
+    # _shift_row_ref sees 'D16' ≥ UNSEC_INSERT(13) and adds extra_unsec(4).
+    _skip_rows = {cred_sum_actual_row, deb_total_row, unsec_sum_row, unsec_other_row,
+                  _lt6_start, _lt6_start+1, _lt6_start+2}
     if _adv_sup_row is not None:
         _skip_rows.add(_adv_sup_row)
         if _adv_total_row is not None:
