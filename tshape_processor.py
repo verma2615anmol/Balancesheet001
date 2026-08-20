@@ -3,6 +3,26 @@ tshape_processor.py
 ===================
 T-Shaped Balance Sheet → Comparative Balance Sheet Converter
 
+v2.15 2026-08-20  FA chart complete rewrite — per-asset rows, exact decimals, source names:
+                  BUG 15 — Assets combined into one template row ("Activa, Motor Cycle,
+                           Scooter" at R21 with B=4848.5 instead of three separate rows).
+                           Root: the accumulator pattern from v2.14 merged all items
+                           mapping to the same template row (R21) into a single entry,
+                           so the CA saw one combined row instead of three individual
+                           ones with their source names and individual WDVs.
+                  BUG 16 — AC additions written as 38447 instead of exact 38446.76.
+                           Root: `safe_add = round(additions)` rounded the addition
+                           before writing to col C. Both opening WDV (col B) and
+                           additions (col C) must preserve source decimals.
+                  Fix strategy (replaces accumulator pattern entirely):
+                    • Build a sequential list of "section pools" from the template:
+                      P&M rows, Vehicle rows, Computers rows, Furniture rows, Building rows.
+                    • For each source asset, identify which section it belongs to by rate
+                      and name, then take the NEXT available row in that section pool.
+                    • Write source name to col A (always), exact opening to col B,
+                      exact additions to col C, exact sales to col E, rate to col G.
+                    • Never combine assets; each gets its own row.
+                    • FA C.Yr. uses the same section-pool approach for the CY opening WDV.
 v2.14 2026-08-20  Three FA chart fixes (from BS mismatch — images 1-3 this session):
                   BUG 12 — FA P.Yr. phantom depreciation on Shop (R10) and Property (R12).
                            Root: `if rate: _write(ws, r, 7, rate)` — when parsed rate=0
@@ -5201,6 +5221,20 @@ def _build_fa_row_map_from_sheet(ws):
 
 
 def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
+    """
+    Write source fixed assets into FA P.Yr. sheet.
+
+    v2.15 strategy — section-pool per asset, NO combining:
+      Template FA P.Yr. has named section headers (PLANT & MACHINERY, VEHICLE,
+      COMPUTERS, FURNITURE AND FIXTURES, BUILDING) each followed by blank data rows.
+      For each source asset we:
+        1. Classify it into a section by name/rate.
+        2. Take the next unused row in that section's pool.
+        3. Write source name → col A, exact opening → col B, exact additions → col C,
+           0 → col D, exact sales → col E, rate → col G.
+        4. Leave cols F, H, I as template formulas (=B+C+D-E, ROUND dep, =F-H).
+      Each source asset gets its OWN row with its OWN source name and exact decimals.
+    """
     if 'Fixed Assets P. Yr.' not in wb.sheetnames:
         return
     ws = wb['Fixed Assets P. Yr.']
@@ -5209,209 +5243,162 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
         log.append('Fixed Assets P.Yr.: no items to write')
         return
 
-    written_rows = set()
+    from openpyxl.cell import MergedCell as _MC
 
-    # FIX 4: Write fixed assets POSITIONALLY — use source asset name, write it into
-    # template col A, and place data starting at first available data row.
-    # Do NOT rely on name-matching (which fails for 'Invertor & Battery', 'Activa', etc.).
-    # Strategy:
-    #   1. Find all available data rows in the FA P.Yr. sheet (rows with numeric data
-    #      or blank rows between section headers and total row).
-    #   2. Write each source asset sequentially into those rows.
-    #   3. Write source name into col A (overwriting template name).
-    # This ensures ALL 10 assets appear regardless of whether template has them.
+    # ── Build section pools from the template ────────────────────────────────
+    # Scan col A for section headers; collect data rows (rows with H formula)
+    # between each header and the next header/Total.
+    # CRITICAL: only use EXACT full section-header strings.
+    # 'computer' (singular) is an asset row name, NOT a section header.
+    # 'computers' (plural) is the section header in the template.
+    _SECTION_HEADERS = {
+        'plant & machinery': 'pm',
+        'vehicle': 'vehicle', 'vehicles': 'vehicle', 'vehciles': 'vehicle',
+        'computers': 'computer',           # PLURAL only — singular 'Computer' is asset row
+        'furniture and fixtures': 'furniture', 'furniture & fixtures': 'furniture',
+        'building': 'building',
+    }
+    _STOP_LABELS = {'total', 'detail of fixed assets', 'amount in rs.', 'particulars'}
 
-    # Collect available data rows (non-header, non-total, non-section-header rows)
-    # BUG 13 FIX (v2.14): rows 1-7 are always title/header rows in FA P.Yr. template
-    # (title, sheet name, column headers). Never use them as data rows.
-    _SKIP_LABELS = {'total', 'plant & machinery', 'vehicles', 'vehciles', 'computers',
-                    'furniture and fixtures', 'furniture & fixtures', 'building',
-                    'land', 'detail of fixed assets', 'amount in rs.', 'particulars',
-                    'computer', 'furniture & fixture', 'vehicle'}
-    _HEADER_ROW_LIMIT = 8   # rows 1-7 are always title/col-header rows → exclude
-    available_rows = []
-    total_row = None
+    section_pools = {'pm': [], 'vehicle': [], 'computer': [], 'furniture': [], 'building': []}
+    current_section = None
+    total_row_num = None
     for row in ws.iter_rows():
         cell_a = row[0]
-        if cell_a.row < _HEADER_ROW_LIMIT:   # BUG 13 FIX: skip title/header rows
+        rnum = cell_a.row
+        if rnum < 8:
             continue
-        if cell_a.value is None:
+        a_val = cell_a.value
+        a_str = str(a_val).strip().lower() if a_val is not None else ''
+        # Section header?
+        if a_str in _SECTION_HEADERS:
+            current_section = _SECTION_HEADERS[a_str]
             continue
-        label = str(cell_a.value).strip().lower()
-        if 'total' in label:
-            total_row = cell_a.row
+        # Stop label?
+        if a_str in _STOP_LABELS:
+            if 'total' in a_str:
+                total_row_num = rnum
+            current_section = None
             continue
-        if label in _SKIP_LABELS or label in ('', 'nan'):
-            continue
-        # This is a data row (asset row or section name we will reuse)
-        # Check: has numeric data in B-I columns OR has a formula in G (rate)
-        has_num = any(
-            isinstance(row[c].value, (int, float))
-            for c in range(1, min(9, len(row)))
-        )
-        has_formula = any(
-            isinstance(row[c].value, str) and row[c].value.startswith('=')
-            for c in range(5, min(9, len(row)))
-        )
-        if has_num or has_formula or (label not in _SKIP_LABELS and len(label) > 1):
-            available_rows.append(cell_a.row)
+        # Data row: must have an H formula (dep formula) in col 8
+        h_val = row[7].value if len(row) > 7 else None
+        has_h_formula = isinstance(h_val, str) and h_val.startswith('=')
+        if current_section and has_h_formula:
+            section_pools[current_section].append(rnum)
 
-    # If auto-detected rows insufficient, fall back to name-matching for what we can
-    detected_map = _build_fa_row_map_from_sheet(ws)
-    log.append(f"FA P.Yr. detected rows: {detected_map}")
-    log.append(f"FA P.Yr. available rows: {available_rows}")
+    log.append(f"FA P.Yr. section pools: { {k: v for k, v in section_pools.items() if v} }")
 
-    # BUG 14 FIX (v2.14): Use two-pass accumulator approach (same as FA C.Yr.) so that
-    # multiple source assets mapping to the same template row are combined rather than
-    # the first one claiming the row and subsequent ones falling through to positional.
-    # Example: Motor Cycle + Scooter + Activa all map to R21 → B = sum of their WDVs.
-    # Example: Shop + Property both map to R31 (Building, rate=0) → B = sum.
-    #
-    # Pass 1: resolve each item's target row and accumulate B/C/D/E values per row.
-    row_accumulator = {}  # row_num → {opening, additions, sales, rate, names[]}
-    unmatched_items = []  # items with no row match → positional fallback
+    # ── Classify each item into a section ────────────────────────────────────
+    def _classify(name, rate):
+        """Return section key for this asset."""
+        nl = name.strip().lower()
+        # Two-wheelers (vehicle, rate=15)
+        if any(k in nl for k in ('motor cycle', 'motorcycle', 'scooter', 'activa', 'bike')):
+            return 'vehicle'
+        # Car (vehicle)
+        if 'car' in nl or 'vehicle' in nl or 'jeep' in nl or 'auto' in nl or 'van' in nl:
+            return 'vehicle'
+        # Computer (rate=40)
+        if 'computer' in nl or 'laptop' in nl or rate == 40:
+            return 'computer'
+        # Furniture
+        if any(k in nl for k in ('furniture', 'chair', 'table', 'cabin', 'almirah')):
+            return 'furniture'
+        # Non-depreciable (rate=0) → Building section
+        if rate == 0:
+            return 'building'
+        # Shop, property, land → Building
+        if any(k in nl for k in ('shop', 'property', 'building', 'land', 'godown')):
+            return 'building'
+        # Default: P&M
+        return 'pm'
 
-    def _resolve_row(nm_lower):
-        """Return template row for asset name, or None."""
-        # Try detected_map first (names auto-detected from the sheet)
-        r = detected_map.get(nm_lower)
-        if r is None:
-            for key, row_r in detected_map.items():
-                if key in nm_lower or nm_lower in key:
-                    r = row_r
-                    break
-        # Try _FA_ROW_MAP (hard-coded canonical names)
-        if r is None:
-            r = _FA_ROW_MAP.get(nm_lower)
-        if r is None:
-            for key, row_r in _FA_ROW_MAP.items():
-                if key in nm_lower or nm_lower in key:
-                    r = row_r
-                    break
-        return r
+    # ── Write each item into its section pool ─────────────────────────────────
+    pool_iters = {sec: iter(rows) for sec, rows in section_pools.items()}
+    pool_used  = {sec: [] for sec in section_pools}
 
     for item in items:
-        nm_lower = item['name'].strip().lower()
-        r = _resolve_row(nm_lower)
-        if r is not None:
-            if r not in row_accumulator:
-                row_accumulator[r] = {
-                    'opening': 0.0, 'additions': 0.0, 'sales': 0.0,
-                    'rate': item.get('rate', 0) or 0, 'names': []
-                }
-            row_accumulator[r]['opening']    += item.get('opening_wdv', 0)
-            row_accumulator[r]['additions']  += item.get('additions', 0)
-            row_accumulator[r]['sales']      += item.get('sales', 0)
-            # Use max rate (non-zero wins) when combining items of different rates
-            item_rate = item.get('rate', 0) or 0
-            if item_rate > row_accumulator[r]['rate']:
-                row_accumulator[r]['rate'] = item_rate
-            row_accumulator[r]['names'].append(item['name'].strip())
-        else:
-            unmatched_items.append(item)
+        name    = item.get('name', '').strip()
+        opening = item.get('opening_wdv', 0) or 0
+        add_gt  = item.get('additions', 0) or 0    # additions >180d
+        sales   = item.get('sales', 0) or 0
+        rate    = item.get('rate', 0) or 0
 
-    # Pass 2: write accumulated values to template rows
-    from openpyxl.cell import MergedCell as _MCFA, MergedCell as _MCFAB
-    for r, acc in row_accumulator.items():
-        opening   = acc['opening']
-        additions = acc['additions']
-        sales     = acc['sales']
-        rate      = acc['rate']
-        names     = acc['names']
-
-        safe_add  = round(additions)
-        total_val = opening + safe_add - round(sales)
-
-        # col A: write combined name (e.g. "Motor Cycle, Scooter, Activa") or single name
-        cell_a = ws.cell(r, 1)
-        if not isinstance(cell_a, _MCFA):
-            cell_a.value = ', '.join(names) if len(names) > 1 else names[0]
-
-        # col B: exact decimal opening WDV
-        cell_b = ws.cell(r, 2)
-        if not isinstance(cell_b, _MCFAB):
-            cell_b.value = float(opening)
-            cell_b.number_format = '#,##0.##'
-
-        # C: additions (>180d), D: additions (<180d), E: sales
-        _write_num(ws, r, 3, safe_add)
-        _write_num(ws, r, 4, 0)
-        _write_num(ws, r, 5, round(sales))
-
-        # F: only write if no formula exists
-        existing_f = ws.cell(r, 6).value
-        if not (isinstance(existing_f, str) and existing_f.startswith('=')):
-            _write_num(ws, r, 6, total_val)
-
-        # BUG 12 FIX: always write rate (including 0) to col G
-        _write(ws, r, 7, rate)
-
-        # H and I: NEVER write — let template ROUND and =F-H formulas stand
-        dep_calc = round(total_val * rate / 100) if rate else 0
-        log.append(f"FA P.Yr. R{r}: {'+'.join(names)} opening={opening:.2f} "
-                   f"add={additions:.0f} rate={rate} dep(calc)={dep_calc:.0f} "
-                   f"[H/I=template formulas]")
-        written_rows.add(r)
-
-    # Positional fallback: write unmatched items into remaining available rows
-    used_avail = set(available_rows) & written_rows
-    remaining_avail = [r for r in available_rows if r not in written_rows]
-    avail_iter = iter(remaining_avail)
-    for item in unmatched_items:
+        sec = _classify(name, rate)
         try:
-            r = next(avail_iter)
+            r = next(pool_iters[sec])
         except StopIteration:
-            r = max(written_rows) + 1 if written_rows else 40
-        opening   = item.get('opening_wdv', 0)
-        additions = item.get('additions', 0)
-        sales     = item.get('sales', 0)
-        rate      = item.get('rate', 0) or 0
-        safe_add  = round(additions)
-        total_val = opening + safe_add - round(sales)
+            # Section pool exhausted — fall back to P&M pool
+            sec2 = 'pm'
+            try:
+                r = next(pool_iters[sec2])
+            except StopIteration:
+                log.append(f"FA P.Yr.: no row available for {name!r} — skipped")
+                continue
+
+        # Write source name into col A
         cell_a = ws.cell(r, 1)
-        if not isinstance(cell_a, _MCFA):
-            cell_a.value = item['name']
+        if not isinstance(cell_a, _MC):
+            cell_a.value = name
+
+        # Col B: exact opening WDV (decimal preserved)
         cell_b = ws.cell(r, 2)
-        if not isinstance(cell_b, _MCFAB):
-            cell_b.value = float(opening)
+        if not isinstance(cell_b, _MC):
+            cell_b.value = float(opening) if opening else 0.0
             cell_b.number_format = '#,##0.##'
-        _write_num(ws, r, 3, safe_add)
-        _write_num(ws, r, 4, 0)
-        _write_num(ws, r, 5, round(sales))
+
+        # Col C: exact additions >180d (decimal preserved — BUG 16 FIX)
+        _cell_c = ws.cell(r, 3)
+        if not isinstance(_cell_c, _MC):
+            _cell_c.value = float(add_gt) if add_gt else 0.0
+            _cell_c.number_format = '#,##0.##'
+
+        _write_num(ws, r, 4, 0)                 # D: additions <180d
+        # Col E: exact sales
+        _cell_e = ws.cell(r, 5)
+        if not isinstance(_cell_e, _MC):
+            _cell_e.value = float(sales) if sales else 0.0
+
+        # F: only write if no formula (BUG 11 — keep template formula)
         existing_f = ws.cell(r, 6).value
         if not (isinstance(existing_f, str) and existing_f.startswith('=')):
+            total_val = opening + add_gt - sales
             _write_num(ws, r, 6, total_val)
+
+        # G: ALWAYS write rate (BUG 12 — write 0 to clear phantom 15%)
         _write(ws, r, 7, rate)
-        log.append(f"FA P.Yr. R{r} (positional): {item['name']} B={opening:.2f} rate={rate}")
-        written_rows.add(r)
 
-    # BUG 11 FIX (v2.13): Total row — write B, C, D, E, F only.
-    # Template FA P.Yr. has =SUM(H7:H36) and =SUM(I7:I36) at the total row.
-    # We must NOT overwrite those SUM formulas with hardcoded totals.
-    # Writing B/C/D/E is enough — F is also a SUM formula in the template
-    # so guard it the same way as individual rows.
-    total_opening = sum(it.get('opening_wdv', 0) for it in items)
-    total_additions = sum(it.get('additions', 0) for it in items)
-    total_sales = sum(it.get('sales', 0) for it in items)
-    total_f = round(total_opening + total_additions - total_sales)
+        # H and I: NEVER write — keep template ROUND and =F-H formulas (BUG 11)
 
-    # Write Total row at R37 (template fixed row) and also at R15 if that exists as Total
-    for total_row in [37, 15]:
-        cell_a = ws.cell(total_row, 1).value
-        if cell_a is not None and 'TOTAL' in str(cell_a).upper():
-            _write_num(ws, total_row, 2, round(total_opening))
-            _write_num(ws, total_row, 3, round(total_additions))
-            _write_num(ws, total_row, 4, 0)
-            _write_num(ws, total_row, 5, round(total_sales))
-            # F: only write if no formula (template has =SUM(F7:F36))
-            existing_tf = ws.cell(total_row, 6).value
-            if not (isinstance(existing_tf, str) and existing_tf.startswith('=')):
-                _write_num(ws, total_row, 6, total_f)
-            # H (=SUM(H7:H36)) and I (=SUM(I7:I36)): NEVER write — leave SUM formulas.
-            log.append(f"FA P.Yr. Total row R{total_row}: opening={total_opening:.0f} "
-                       f"add={total_additions:.0f} [H/I left as SUM formulas]")
+        pool_used[sec].append(r)
+        dep_calc = round((opening + add_gt - sales) * rate / 100) if rate else 0
+        log.append(f"FA P.Yr. R{r} [{sec}]: {name!r} B={opening} C={add_gt} "
+                   f"G={rate} dep(calc)={dep_calc}")
 
-    log.append(f'Fixed Assets P.Yr.: {len(items)} items processed ({len(written_rows)} rows written)')
+    # Clear any unused rows in each section (write 0 to B so template ROUND gives 0)
+    for sec, row_iter in pool_iters.items():
+        for r in row_iter:
+            cell_b = ws.cell(r, 2)
+            if not isinstance(cell_b, _MC) and cell_b.value not in (None, 0, 0.0):
+                cell_b.value = 0.0   # clear stale template opening
+
+    # Total row: write B, C only (H=SUM(H7:H36) and I=SUM formula stay intact)
+    total_opening   = sum(it.get('opening_wdv', 0) or 0 for it in items)
+    total_additions = sum(it.get('additions',   0) or 0 for it in items)
+    total_sales     = sum(it.get('sales',        0) or 0 for it in items)
+    if total_row_num:
+        _write_num(ws, total_row_num, 2, round(total_opening))
+        _write_num(ws, total_row_num, 3, round(total_additions))
+        _write_num(ws, total_row_num, 4, 0)
+        _write_num(ws, total_row_num, 5, round(total_sales))
+        existing_tf = ws.cell(total_row_num, 6).value
+        if not (isinstance(existing_tf, str) and existing_tf.startswith('=')):
+            _write_num(ws, total_row_num, 6, round(total_opening + total_additions - total_sales))
+        log.append(f"FA P.Yr. Total row R{total_row_num}: B={total_opening:.0f} "
+                   f"C={total_additions:.2f} [H/I=SUM formulas]")
+
+    total_items = sum(len(v) for v in pool_used.values())
+    log.append(f'Fixed Assets P.Yr.: {len(items)} items written to {total_items} rows')
 
 
 # ── GROSS PROFIT sheet ────────────────────────────────────────────────────────
@@ -5440,8 +5427,12 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
 def _inject_fixed_assets_cy_opening(wb, parsed, log):
     """
     Write PY closing WDV as CY opening WDV in Fixed Assets C. Yr. sheet.
-    PY closing WDV = opening + additions - sales - depreciation
-    dep = ROUND((opening + add_gt180 + add_lt180 - sales) * rate/100)
+
+    v2.15 strategy — section-pool per asset, NO combining:
+      Each source asset gets its own template row (by section classification),
+      with the source name written to col A and the exact PY closing WDV to col B.
+      Cols C-E = 0 (CA fills CY additions). Col G = rate.
+      Cols F, H, I are template formulas — never overwritten.
     """
     if 'Fixed Assets C. Yr.' not in wb.sheetnames:
         return
@@ -5450,147 +5441,131 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
     if not items:
         return
 
-    import math
+    from openpyxl.cell import MergedCell as _MC
 
-    # Mapping: asset name (lower) → FA C.Yr. row
-    # Plant & Machinery items occupy rows 11-21 in C.Yr. sheet
-    # Vehicles: Car=R24, Motor Cycle & Scooter=R25
-    # Furniture & Fixtures: Furniture & Fixture=R36
-    # Computer: R47
-    # Building: R60
-    _FA_CY_ROW_MAP = {
-        'camera & dvr':              11,
-        'digital moisture meter':    12,
-        'servo control voltage':     13,
-        'servo control':             13,
-        'water cooler':              14,
-        'machine':                   15,
-        # BUG 14 FIX (v2.14): add common asset names not previously mapped
-        'invertor & battery':        11,  # first P&M slot (combined with camera)
-        'invertor':                  11,
-        'ac':                        15,  # AC → Machine slot
-        'air conditioner':           15,
-        'mobile':                    16,
-        'electricals':               17,
-        'washing machine':           18,
-        'led':                       19,
-        'car':                       24,
-        'motor cycle & scooter':     25,
-        'motor cycle':               25,
-        'motorcycle':                25,
-        'scooter':                   25,
-        # BUG 14 FIX (v2.14): Activa is a two-wheeler → combine with Motor Cycle & Scooter
-        'activa':                    25,
-        'computer':                  47,
-        'chair':                     37,
-        'furniture & fixture ':      36,
-        'furniture & fixtures':      36,
-        'furniture & fixture':       36,
-        'furniture':                 36,
-        'building':                  60,
-        # BUG 14 FIX (v2.14): Shop and Property are zero-dep assets → Building row
-        'shop':                      60,
-        'property':                  60,
-        'land':                      60,
+    # ── Build section pools from the CY template ─────────────────────────────
+    # The CY template has:
+    #   R10 = PLANT & MACHINERY header → data rows R11-R21 (G=15)
+    #   R23 = VEHICLE header           → data rows R24-R33 (G=15)
+    #   R35 = FURNITURE AND FIXTURES   → data rows R36-R44 (G=10)
+    #   R46 = COMPUTER                 → data rows R47-R50 (G=40)
+    #   R52 = LAND                     → data rows R53-R57 (G=0)
+    #   R59 = BUILDING                 → data rows R60-R67 (G=10)
+    #   R68 = Total
+    _CY_SECTION_HEADERS = {
+        'plant & machinery': 'pm',
+        'vehicle': 'vehicle', 'vehicles': 'vehicle',
+        'computers': 'computer',           # PLURAL only
+        'computer': 'computer',            # CY template uses 'COMPUTER' (singular) as header
+        'furniture and fixtures': 'furniture', 'furniture & fixtures': 'furniture',
+        'land': 'land',
+        'building': 'building',
     }
+    _CY_STOP = {'total'}
 
-    # Build auto-detected map from the sheet's formula references
-    # Formula cells like ='Fixed Assets P. Yr.'!A11 tell us which row this is
-    detected_cy_map = {}
+    section_pools = {'pm': [], 'vehicle': [], 'computer': [], 'furniture': [],
+                     'land': [], 'building': []}
+    current_section = None
+    cy_total_row = None
+
     for row in ws.iter_rows():
         cell_a = row[0]
-        v = cell_a.value
-        if v is None:
+        rnum = cell_a.row
+        if rnum < 9:
             continue
-        if isinstance(v, str) and "'Fixed Assets P. Yr.'!A" in v:
-            try:
-                py_row_ref = int(v.split("!A")[1])
-                py_ws = wb.get('Fixed Assets P. Yr.') or wb.get('Fixed Assets P. Yr.')
-                if py_ws:
-                    py_cell_a = py_ws.cell(py_row_ref, 1).value
-                    if py_cell_a and isinstance(py_cell_a, str):
-                        detected_cy_map[py_cell_a.strip().lower()] = cell_a.row
-            except (ValueError, IndexError):
-                pass
-
-    if detected_cy_map:
-        log.append(f"FA C.Yr. auto-detected rows: {detected_cy_map}")
-
-    # First pass: accumulate CY opening WDV per template row (handles multi-source rows
-    # like Motor Cycle + Scooter → both map to template R25 "Motor Cycle & Scooter").
-    row_accumulator = {}   # row_num → {'wdv': float, 'rate': int, 'names': [str]}
-    for item in items:
-        name_lower = item['name'].strip().lower()
-        # Find matching row — try auto-detected map first, then fall back to hard-coded
-        r = None
-        for key, row_r in detected_cy_map.items():
-            if name_lower.startswith(key) or key.startswith(name_lower):
-                r = row_r
-                break
-        if r is None:
-            for key, row_r in _FA_CY_ROW_MAP.items():
-                if name_lower.startswith(key) or key.startswith(name_lower):
-                    r = row_r
-                    break
-        if r is None:
+        a_val = cell_a.value
+        a_str = str(a_val).strip().lower() if a_val is not None else ''
+        if a_str in _CY_SECTION_HEADERS:
+            current_section = _CY_SECTION_HEADERS[a_str]
             continue
+        if a_str == 'total':
+            cy_total_row = rnum
+            current_section = None
+            continue
+        # Data row: must have an H formula (dep formula) in col 8
+        h_val = row[7].value if len(row) > 7 else None
+        has_h_formula = isinstance(h_val, str) and h_val.startswith('=')
+        if current_section and has_h_formula:
+            section_pools[current_section].append(rnum)
 
-        opening  = item.get('opening_wdv', 0)
-        add_gt   = item.get('additions', 0)
-        sales    = item.get('sales', 0)
-        rate     = item.get('rate', 0) or 0
-        # PY closing WDV becomes CY opening WDV
-        dep_py = round((opening + add_gt - sales) * rate / 100)
-        cy_opening_wdv = opening + add_gt - sales - dep_py
+    log.append(f"FA C.Yr. section pools: { {k: v[:3] for k, v in section_pools.items() if v} }")
 
-        if cy_opening_wdv > 0:
-            if r not in row_accumulator:
-                row_accumulator[r] = {'wdv': 0.0, 'rate': rate, 'names': []}
-            row_accumulator[r]['wdv']  += cy_opening_wdv
-            row_accumulator[r]['rate']  = rate   # assume same rate for combined rows
-            row_accumulator[r]['names'].append(item['name'].strip())
+    # ── Classify each item into a CY section ─────────────────────────────────
+    def _classify_cy(name, rate):
+        nl = name.strip().lower()
+        if any(k in nl for k in ('motor cycle', 'motorcycle', 'scooter', 'activa', 'bike')):
+            return 'vehicle'
+        if 'car' in nl or 'jeep' in nl or 'van' in nl:
+            return 'vehicle'
+        if 'computer' in nl or 'laptop' in nl or rate == 40:
+            return 'computer'
+        if any(k in nl for k in ('furniture', 'chair', 'table', 'almirah')):
+            return 'furniture'
+        if any(k in nl for k in ('land',)):
+            return 'land'
+        if rate == 0:
+            return 'building'   # non-depreciable → building/land section
+        if any(k in nl for k in ('shop', 'property', 'building', 'godown')):
+            return 'building'
+        return 'pm'
 
-    # Second pass: write accumulated values to template rows
+    # ── Write each item into its CY section pool ──────────────────────────────
+    pool_iters = {sec: iter(rows) for sec, rows in section_pools.items()}
     count = 0
-    written_cy_rows = set()
-    for r, acc in row_accumulator.items():
-        combined_wdv = acc['wdv']
-        rate         = acc['rate']
-        names        = acc['names']
-        # Label: if multiple source assets combined, use template row's existing label
-        # (e.g. "Motor Cycle & Scooter"); if single, use source name
-        from openpyxl.cell import MergedCell as _MCCYA
+
+    for item in items:
+        name    = item.get('name', '').strip()
+        opening = item.get('opening_wdv', 0) or 0
+        add_gt  = item.get('additions', 0) or 0
+        sales   = item.get('sales', 0) or 0
+        rate    = item.get('rate', 0) or 0
+
+        # Compute PY closing WDV → becomes CY opening WDV
+        # Use source dep directly if available (more accurate than recomputing)
+        dep_py      = item.get('dep', 0) or 0
+        cy_open_wdv = opening + add_gt - sales - dep_py
+
+        if cy_open_wdv <= 0 and opening == 0 and add_gt == 0:
+            log.append(f"FA C.Yr.: {name!r} WDV=0 — skipped")
+            continue
+
+        sec = _classify_cy(name, rate)
+        try:
+            r = next(pool_iters[sec])
+        except StopIteration:
+            # Overflow — try PM pool as fallback
+            try:
+                r = next(pool_iters['pm'])
+            except StopIteration:
+                log.append(f"FA C.Yr.: no row available for {name!r} — skipped")
+                continue
+
+        # Write source name → col A
         cell_a = ws.cell(r, 1)
-        if not isinstance(cell_a, _MCCYA):
-            if len(names) == 1:
-                cell_a.value = names[0]
-            # else leave template label (e.g. "Motor Cycle & Scooter") unchanged
+        if not isinstance(cell_a, _MC):
+            cell_a.value = name
 
-        # BUG 9 FIX (v2.13): store exact decimal, NOT rounded integer.
-        # Motor Cycle PY closing = 3174.75 — round() gives 3175, which corrupts
-        # the CY dep chain. The template formula =F-H already handles display.
+        # Col B: exact PY closing WDV (= CY opening WDV)
         cell_b = ws.cell(r, 2)
-        if not isinstance(cell_b, _MCCYA):
-            cell_b.value = combined_wdv           # col B: opening WDV (exact)
-        ws.cell(r, 7).value = rate                # col G: rate
-        written_cy_rows.add(r)
+        if not isinstance(cell_b, _MC):
+            cell_b.value = float(cy_open_wdv) if cy_open_wdv != 0 else 0.0
+            cell_b.number_format = '#,##0.##'
+
+        # C, D, E = 0 (CA fills CY additions)
+        _write_num(ws, r, 3, 0)
+        _write_num(ws, r, 4, 0)
+        _write_num(ws, r, 5, 0)
+
+        # G: rate (already in template, but write to ensure correct value)
+        ws.cell(r, 7).value = rate
+
+        # F, H, I: NEVER write — all are template formulas
+
         count += 1
-        log.append(f"FA C.Yr. R{r}: {'+'.join(names)} → combined WDV={combined_wdv}")
+        log.append(f"FA C.Yr. R{r} [{sec}]: {name!r} CY_open={cy_open_wdv:.2f} "
+                   f"(PY: open={opening} add={add_gt} dep={dep_py})")
 
-    # FIX 7b: Write CY Total row at R17 if it's labeled Total
-    cy_total_opening = sum(
-        round(it.get('opening_wdv',0) + it.get('additions',0) - it.get('sales',0)) -
-        round((it.get('opening_wdv',0) + it.get('additions',0) - it.get('sales',0)) * (it.get('rate',0) or 0) / 100)
-        for it in items
-    )
-    for total_row in [17, 15]:
-        cell_a = ws.cell(total_row, 1).value
-        if cell_a is not None and 'TOTAL' in str(cell_a).upper():
-            ws.cell(total_row, 2).value = cy_total_opening
-            log.append(f"FA C.Yr. Total row R{total_row}: opening WDV={cy_total_opening}")
-            break
-
-    log.append(f"Fixed Assets C.Yr.: {count} opening WDV values written")
+    log.append(f"Fixed Assets C.Yr.: {count} items written")
 
 
 def _inject_gross_profit_sheet(wb, parsed, client_name, cy_year, py_year, log):
