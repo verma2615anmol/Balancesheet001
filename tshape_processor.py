@@ -3,6 +3,62 @@ tshape_processor.py
 ===================
 T-Shaped Balance Sheet → Comparative Balance Sheet Converter
 
+v2.13 2026-08-20  Four fixes from Bansal FA/OCL audit (images 1-4):
+                  BUG 8  — OCL missing "Shri Ganesh Ji" (Rs 11) entry.
+                           Root: _parse_multisection_xlsx only reads Annexure-D
+                           (col46/col50) for OCL items. The Rs 11 entry is in the
+                           BS BODY liabilities side (col 0 / col 3 = amount) at
+                           row 13, before PROP's CAPITAL — it is not in Annexure-D.
+                           Fix: after reading Annexure-D, scan BS body rows (col0
+                           label, col3 amount) for any entry that appears before
+                           SECURED LOAN / UNSECURED LOAN section and has an amount
+                           that does NOT match any main BS total — these are
+                           additional OCL-style entries to be appended.
+                  BUG 9  — FA C.Yr. opening WDV written as integer (rounded).
+                           Root: `ws.cell(r, 2).value = round(cy_opening_wdv)`.
+                           Motor Cycle: 3174.75 → 3175. Scooter: 946.75 → 947.
+                           The template C.Yr. has formula =F-H which auto-computes
+                           the exact WDV when B is correct. Rounding B corrupts the
+                           starting basis for the CY depreciation chain.
+                           Fix: store exact decimal — `ws.cell(r, 2).value =
+                           cy_opening_wdv` (no round()).
+                  BUG 10 — FA C.Yr. template formulas overwritten with hardcoded nums.
+                           Root: _inject_fixed_assets_cy_opening called
+                           `_write_num(ws, r, 8, dep_val)` and
+                           `_write_num(ws, r, 9, closing_wdv)`, overwriting the
+                           template formulas `=(B+C-E)*G/100+(D*G/200)` (H) and
+                           `=F-H` (I). The CA saw raw numbers instead of live
+                           formulas — no recalculation when they enter CY additions.
+                           Fix: only write col B (opening WDV) and col G (rate);
+                           never touch cols F, H, I — those are formula columns.
+                  BUG 11 — FA P.Yr. template formulas overwritten with hardcoded nums.
+                           Root: `_write_asset_to_row` called `_write_num(ws,r,8,…)`
+                           and `_write_num(ws,r,9,…)` for dep and WDV, overwriting
+                           the ROUND formula in H and =F-H in I. Also wrote F
+                           unconditionally when no formula existed (for rows where
+                           the template has no F formula this is correct, but some
+                           rows do have it). Now writes only B, C, D, E, G and
+                           leaves F, H, I intact when they contain template formulas.
+                           Total row: also stop writing H/I totals as raw numbers
+                           (template has =SUM(H7:H36) and =SUM(I7:I36) formulas).
+v2.12 2026-08-20  One operator-precedence bug fixed in _inject_notes_bs:
+                  BUG 7 — bs!R34 (STL Grand Total reference) update could crash
+                           with TypeError when cell value is None/numeric, and
+                           could silently skip the E-column replacement even when
+                           it was needed.
+                           Root: line `if isinstance(v, str) and '...' in v or '...' in v`
+                           — Python evaluates `and` before `or`, so the second
+                           `'E150' in v` check ran WITHOUT the isinstance(v, str)
+                           guard. If v was None, this threw TypeError. If v was a
+                           formula string not containing D150 but containing E150,
+                           the replacement branch ran with a non-string v.replace()
+                           call and would also crash.
+                           Fix: parenthesise the disjunction:
+                           `if isinstance(v, str) and (f'D{STL_GRAND}' in v or
+                            f'E{STL_GRAND}' in v)`
+                           Also merged the redundant second loop (was checking
+                           !D{STL_GRAND} separately) into the single guard so
+                           all patterns are handled in one place.
 v2.11 2026-08-19  Two more bugs fixed (found by full-sheet audit of Bansal output):
                   BUG 5 — Details R17 (Unsecured SUM) became =SUM(D7:D20) instead
                            of =SUM(D7:D16), creating a circular reference.
@@ -869,7 +925,66 @@ def _parse_multisection_xlsx(filepath: str) -> dict:
         if isinstance(c50, (int, float)) and c50 > 0 and not nm:
             other_payables = other_payables or c50  # total row
 
-    log.append(f'OCL items: {len(other_payable_items)}, total={other_payables:.0f}')
+    log.append(f'OCL items from Annexure-D: {len(other_payable_items)}, total={other_payables:.0f}')
+
+    # BUG 8 FIX (v2.13): Also scan BS BODY (col0 label, col3 amount) for additional
+    # OCL-style entries that appear in the liabilities side of the BS main table but
+    # are NOT listed in Annexure-D.  In Bansal Pharmaceuticals the entry "Shri Ganesh Ji"
+    # = Rs 11 appears at row 13 (between the BS header and PROP's CAPITAL) with amount
+    # at col 3.  The Annexure-D total (36,207.41) only covers the three items parsed
+    # above.  These body entries must be appended to other_payable_items.
+    #
+    # Detection strategy:
+    #   • Scan BS body rows (col0 non-empty, col3 positive numeric).
+    #   • Skip known main-section labels (CAPITAL, SECURED, UNSECURED, CREDITOR, etc.).
+    #   • Skip rows whose col3 amount matches any known BS main total
+    #     (capital_closing, secured_loans, unsecured_loans, sundry_creditors,
+    #     other_payables).  Those are main-section totals already captured.
+    #   • What remains are sub-items on the liabilities side — if the amount
+    #     is small (< other_payables total * 2 and not a main-section amount)
+    #     treat as additional OCL entry.
+    _KNOWN_BS_TOTALS = {round(v, 2) for v in [
+        capital_closing, secured_loans, unsecured_loans,
+        sundry_creditors, other_payables, cash_bank,
+        sundry_debtors, advances_security, fixed_assets_wdv,
+    ] if v > 0}
+    _BS_SECTION_SKIP = (
+        'CAPITAL', 'SECURED LOAN', 'UNSECURED', 'SUNDRY CREDITOR',
+        'OTHER PAYABLE', 'CASH AND BANK', 'CASH & BANK',
+        'SUNDRY DEBTOR', 'FIXED ASSET', 'SECURITIES', 'ADVANCES',
+        'LIABILITIES', 'ASSETS', 'TOTAL', 'AUDITOR', 'BALANCE SHEET',
+    )
+    existing_ocl_amts = {round(it['amount'], 2) for it in other_payable_items}
+    for i, row in enumerate(rows[:35]):   # BS body is always in first ~35 rows
+        col0 = _sv(row[0]).strip()
+        col3 = row[3] if 3 < len(row) else None
+        if not col0 or len(col0) < 3:
+            continue
+        col0_u = col0.upper()
+        # Skip known main-section headers
+        if any(k in col0_u for k in _BS_SECTION_SKIP):
+            continue
+        # Must have a positive numeric amount at col3
+        if not isinstance(col3, (int, float)) or col3 <= 0:
+            continue
+        amt3 = round(float(col3), 2)
+        # Skip if this amount is one of the main BS section totals
+        if amt3 in _KNOWN_BS_TOTALS:
+            continue
+        # Skip if already captured from Annexure-D
+        if amt3 in existing_ocl_amts:
+            continue
+        # Skip if amount is extremely large (> other_payables total * 5)
+        # to avoid misidentifying stray numbers
+        if other_payables > 0 and amt3 > other_payables * 5:
+            continue
+        # This is a genuine additional OCL body entry
+        other_payable_items.append({'name': col0, 'amount': float(col3)})
+        existing_ocl_amts.add(amt3)
+        log.append(f'OCL body entry: {col0!r} = {col3:,.2f}')
+
+    log.append(f'OCL items total (incl body scan): {len(other_payable_items)}, '
+               f'Annexure-D total={other_payables:.0f}')
 
     # ── Fixed Assets (col51=label, cols52-59=values) ──────────────────────────
     # Header R11: col51='Particulars'  cols 52-59 = Value/Addition/Sale/Total/Rate/Dep/WDV
@@ -3529,10 +3644,23 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
             log.append(f"OCL filter: rejected P&L item '{item['name']}'")
             continue
 
-        # Hard reject: person-name prefix (Smt., Sh., Rohit, etc.) = lender, not payable
+        # Hard reject: person-name prefix (Smt., Sh., Rohit, etc.) = lender, not payable.
+        # EXCEPTION (v2.13): items that came directly from the parser's other_payable_items
+        # list (Annexure-D + BS body scan) and are NOT known lenders or creditors should
+        # be trusted as genuine OCL entries even if their name starts with a honorific.
+        # "Shri Ganesh Ji" (Rs 11) is a valid BS-body OCL entry — rejecting it because it
+        # starts with 'shri ' is wrong.  Only apply the prefix filter when the name is
+        # ALSO a known lender (already caught above) OR when it has an amount large enough
+        # to be a lender (> 1000) and no OCL signal.  Rs 11 trivially fails the lender-
+        # amount threshold, so it is always safe to pass through.
         if any(nm_l.startswith(pfx) for pfx in _PERSON_PREFIXES):
-            log.append(f"OCL filter: rejected person name '{item['name']}' (likely lender)")
-            continue
+            # Check if amount is plausibly a lender amount (> 1000) rather than a payable
+            item_amt = item.get('amount', 0)
+            if item_amt > 1000:
+                log.append(f"OCL filter: rejected person name '{item['name']}' amt={item_amt} (likely lender)")
+                continue
+            # Small amounts (≤ 1000) with a shri/smt prefix → genuine OCL micro-entry
+            log.append(f"OCL filter: kept small-amt person name '{item['name']}' amt={item_amt} (OCL body entry)")
 
         # Hard reject: numeric-only names (stray amounts printed as labels)
         try:
@@ -3710,19 +3838,21 @@ def _inject_notes_bs(wb, parsed, client_name, cy_year, py_year, log):
     log.append(f"STL Grand Total at R{grand_row}: =E132+E{b_total_row}+E{c_total_row}")
 
     # Update bs!E34/F34 if Grand Total shifted from R150
+    # BUG FIX v2.12: operator precedence — `and` binds tighter than `or`, so the
+    # old guard `isinstance(v, str) and '...' in v or '...' in v` ran the second
+    # `in v` WITHOUT the isinstance guard when v was None/numeric → TypeError.
+    # Fix: wrap the two `in` checks in parens so both are guarded by isinstance.
+    # Also: merged the former second loop (that checked !D{STL_GRAND}) into this
+    # single loop — after the replace() below, any !D150/!E150 patterns are also
+    # updated because they contain the plain D150/E150 substrings.
     if grand_row != STL_GRAND and 'bs' in wb.sheetnames:
         ws_bs = wb['bs']
         for col in (5, 6):  # E and F columns
             cell = ws_bs.cell(34, col)
             v = cell.value
-            if isinstance(v, str) and f'D{STL_GRAND}' in v or f'E{STL_GRAND}' in v:
-                cell.value = v.replace(f'D{STL_GRAND}', f'D{grand_row}').replace(f'E{STL_GRAND}', f'E{grand_row}')
-        # Also update the formula that uses single-quoted sheet reference
-        for col in (5, 6):
-            cell = ws_bs.cell(34, col)
-            v = cell.value
-            if isinstance(v, str) and f'!D{STL_GRAND}' in v:
-                cell.value = v.replace(f'!D{STL_GRAND}', f'!D{grand_row}').replace(f'!E{STL_GRAND}', f'!E{grand_row}')
+            if isinstance(v, str) and (f'D{STL_GRAND}' in v or f'E{STL_GRAND}' in v):
+                cell.value = (v.replace(f'D{STL_GRAND}', f'D{grand_row}')
+                               .replace(f'E{STL_GRAND}', f'E{grand_row}'))
         log.append(f"bs R34 updated to reference Grand Total at R{grand_row}")
 
     # ── Note 12: Other current assets ────────────────────────────────────────
@@ -5093,7 +5223,8 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
         closing   = item.get('closing_wdv', 0)
 
         safe_add  = round(additions)
-        total_val = round(opening) + safe_add - round(sales)
+        # Use exact opening (not rounded) so TOTAL formula =B+C+D-E is correct
+        total_val = opening + safe_add - round(sales)
 
         # FIX 4: Write source asset NAME into col A (overwrite template name)
         cell_a = ws.cell(r, 1)
@@ -5101,24 +5232,40 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
         if not isinstance(cell_a, _MCFA):
             cell_a.value = item['name']
 
-        _write_num(ws, r, 2, round(opening))   # B: opening WDV
+        # BUG 11 FIX (v2.13): Only write B, C, D, E, G — NEVER overwrite H or I.
+        # Template FA P.Yr. has:
+        #   F(6) = =B+C+D-E  (formula — already guarded below, keep guard)
+        #   H(8) = =ROUND(((B+C-E)*G%+D*G%/2),0)  (formula — MUST NOT overwrite)
+        #   I(9) = =F-H                              (formula — MUST NOT overwrite)
+        # Overwriting H/I with _write_num turns live formulas into static numbers;
+        # the CA then sees non-recalculating values when they add CY data.
+        #
+        # BUG 9 FIX part 2 (v2.13): write opening WDV as exact decimal, not rounded.
+        # Motor Cycle opening = 3734.75 → round() = 3735, which gives wrong dep baseline.
+        # The template ROUND formula in H computes dep from B, so B must be exact.
+        _cell_b = ws.cell(r, 2)
+        from openpyxl.cell import MergedCell as _MCFAB
+        if not isinstance(_cell_b, _MCFAB):
+            _cell_b.value = float(opening)     # B: opening WDV (exact decimal)
+            _cell_b.number_format = '#,##0.##'
         _write_num(ws, r, 3, safe_add)         # C: additions >180d
         _write_num(ws, r, 4, 0)                # D: additions <180d
         _write_num(ws, r, 5, round(sales))     # E: sales
 
+        # F: only write if no formula exists (some rows have =B+C+D-E, some have hardcoded 0)
         existing_f = ws.cell(r, 6).value
         if not (isinstance(existing_f, str) and existing_f.startswith('=')):
-            _write_num(ws, r, 6, total_val)    # F: total
+            _write_num(ws, r, 6, total_val)    # F: total (only when no formula)
 
         if rate:
             _write(ws, r, 7, rate)             # G: rate
 
+        # H and I: NEVER write — let template ROUND and =F-H formulas stand.
         dep_val = round(total_val * rate / 100) if rate else round(dep)
         closing_wdv = total_val - dep_val if dep_val else round(closing)
-        _write_num(ws, r, 8, dep_val)          # H: depreciation
-        _write_num(ws, r, 9, closing_wdv)      # I: closing WDV
         log.append(f"FA P.Yr. R{r}: {item['name']} opening={opening:.0f} "
-                   f"add={additions:.0f} dep={dep_val:.0f} wdv={closing_wdv:.0f}")
+                   f"add={additions:.0f} dep(calc)={dep_val:.0f} wdv(calc)={closing_wdv:.0f} "
+                   f"[H/I left as template formulas]")
 
     # Try name-matched rows first (for exact matches like Car, Computer)
     for item in items:
@@ -5169,14 +5316,15 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
         _write_asset_to_row(r, item)
         written_rows.add(r)
 
-    # FIX 6b: Write Total row with correct sums so bs!I37 formula gets a real value
-    # Scan for the Total row in the sheet (row 37 per template comment, but verify)
+    # BUG 11 FIX (v2.13): Total row — write B, C, D, E, F only.
+    # Template FA P.Yr. has =SUM(H7:H36) and =SUM(I7:I36) at the total row.
+    # We must NOT overwrite those SUM formulas with hardcoded totals.
+    # Writing B/C/D/E is enough — F is also a SUM formula in the template
+    # so guard it the same way as individual rows.
     total_opening = sum(it.get('opening_wdv', 0) for it in items)
     total_additions = sum(it.get('additions', 0) for it in items)
     total_sales = sum(it.get('sales', 0) for it in items)
     total_f = round(total_opening + total_additions - total_sales)
-    total_dep = sum(round((round(it.get('opening_wdv',0)) + round(it.get('additions',0)) - round(it.get('sales',0))) * (it.get('rate',0) or 0) / 100) for it in items)
-    total_wdv = total_f - total_dep
 
     # Write Total row at R37 (template fixed row) and also at R15 if that exists as Total
     for total_row in [37, 15]:
@@ -5186,10 +5334,13 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
             _write_num(ws, total_row, 3, round(total_additions))
             _write_num(ws, total_row, 4, 0)
             _write_num(ws, total_row, 5, round(total_sales))
-            _write_num(ws, total_row, 6, total_f)
-            _write_num(ws, total_row, 8, total_dep)
-            _write_num(ws, total_row, 9, total_wdv)
-            log.append(f"FA P.Yr. Total row R{total_row}: WDV={total_wdv}")
+            # F: only write if no formula (template has =SUM(F7:F36))
+            existing_tf = ws.cell(total_row, 6).value
+            if not (isinstance(existing_tf, str) and existing_tf.startswith('=')):
+                _write_num(ws, total_row, 6, total_f)
+            # H (=SUM(H7:H36)) and I (=SUM(I7:I36)): NEVER write — leave SUM formulas.
+            log.append(f"FA P.Yr. Total row R{total_row}: opening={total_opening:.0f} "
+                       f"add={total_additions:.0f} [H/I left as SUM formulas]")
 
     log.append(f'Fixed Assets P.Yr.: {len(items)} items processed ({len(written_rows)} rows written)')
 
@@ -5285,8 +5436,9 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
     if detected_cy_map:
         log.append(f"FA C.Yr. auto-detected rows: {detected_cy_map}")
 
-    count = 0
-    written_cy_rows = set()
+    # First pass: accumulate CY opening WDV per template row (handles multi-source rows
+    # like Motor Cycle + Scooter → both map to template R25 "Motor Cycle & Scooter").
+    row_accumulator = {}   # row_num → {'wdv': float, 'rate': int, 'names': [str]}
     for item in items:
         name_lower = item['name'].strip().lower()
         # Find matching row — try auto-detected map first, then fall back to hard-coded
@@ -5312,11 +5464,38 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
         cy_opening_wdv = opening + add_gt - sales - dep_py
 
         if cy_opening_wdv > 0:
-            ws.cell(r, 1).value = item['name'].strip()  # col A: asset name
-            ws.cell(r, 2).value = round(cy_opening_wdv) # col B: opening WDV
-            ws.cell(r, 7).value = rate                   # col G: rate (for CA to compute CY dep)
-            written_cy_rows.add(r)
-            count += 1
+            if r not in row_accumulator:
+                row_accumulator[r] = {'wdv': 0.0, 'rate': rate, 'names': []}
+            row_accumulator[r]['wdv']  += cy_opening_wdv
+            row_accumulator[r]['rate']  = rate   # assume same rate for combined rows
+            row_accumulator[r]['names'].append(item['name'].strip())
+
+    # Second pass: write accumulated values to template rows
+    count = 0
+    written_cy_rows = set()
+    for r, acc in row_accumulator.items():
+        combined_wdv = acc['wdv']
+        rate         = acc['rate']
+        names        = acc['names']
+        # Label: if multiple source assets combined, use template row's existing label
+        # (e.g. "Motor Cycle & Scooter"); if single, use source name
+        from openpyxl.cell import MergedCell as _MCCYA
+        cell_a = ws.cell(r, 1)
+        if not isinstance(cell_a, _MCCYA):
+            if len(names) == 1:
+                cell_a.value = names[0]
+            # else leave template label (e.g. "Motor Cycle & Scooter") unchanged
+
+        # BUG 9 FIX (v2.13): store exact decimal, NOT rounded integer.
+        # Motor Cycle PY closing = 3174.75 — round() gives 3175, which corrupts
+        # the CY dep chain. The template formula =F-H already handles display.
+        cell_b = ws.cell(r, 2)
+        if not isinstance(cell_b, _MCCYA):
+            cell_b.value = combined_wdv           # col B: opening WDV (exact)
+        ws.cell(r, 7).value = rate                # col G: rate
+        written_cy_rows.add(r)
+        count += 1
+        log.append(f"FA C.Yr. R{r}: {'+'.join(names)} → combined WDV={combined_wdv}")
 
     # FIX 7b: Write CY Total row at R17 if it's labeled Total
     cy_total_opening = sum(
