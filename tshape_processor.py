@@ -3,6 +3,32 @@ tshape_processor.py
 ===================
 T-Shaped Balance Sheet → Comparative Balance Sheet Converter
 
+v2.14 2026-08-20  Three FA chart fixes (from BS mismatch — images 1-3 this session):
+                  BUG 12 — FA P.Yr. phantom depreciation on Shop (R10) and Property (R12).
+                           Root: `if rate: _write(ws, r, 7, rate)` — when parsed rate=0
+                           (Shop and Property are non-depreciable), the template G column
+                           value of 15 was NEVER overwritten. The ROUND formula then used
+                           rate=15% on 1,527,000 (Shop) and 2,443,000 (Property), adding
+                           229,050 + 366,450 = 595,500 phantom depreciation, making total
+                           FA WDV 3,977,074 instead of 4,630,246 (off by 653,172).
+                           Fix: ALWAYS write rate to col G, even when rate=0.
+                           `_write(ws, r, 7, rate)` (unconditional).
+                  BUG 13 — FA P.Yr. positional write lands on header/title rows.
+                           Root: `available_rows` scan started at row 1, so 'Activa'
+                           (the sheet title in R1) and other header text was included.
+                           Unmatched assets (Activa, AC) then got written to R1/R2 instead
+                           of proper data rows, corrupting the sheet header and leaving
+                           those assets missing from the actual data section.
+                           Fix: exclude rows < 8 from available_rows (rows 1-7 are always
+                           title/header rows in the FA P.Yr. template).
+                  BUG 14 — FA P.Yr./C.Yr. name-map missing 'activa', 'shop', 'property'.
+                           Activa (Honda Activa scooter) should combine with Motor Cycle
+                           at R21 (P.Yr.) / R25 (C.Yr.), exactly like Scooter does.
+                           Shop and Property are zero-dep assets → map to Building row
+                           R31 (P.Yr.) / R60 (C.Yr.) so they get rate=0 written and
+                           never land in a positional slot with wrong template rate.
+                           'invertor & battery' (source name) → added explicitly to maps.
+                           FA C.Yr. _FA_CY_ROW_MAP also updated with same additions.
 v2.13 2026-08-20  Four fixes from Bansal FA/OCL audit (images 1-4):
                   BUG 8  — OCL missing "Shri Ganesh Ji" (Rs 11) entry.
                            Root: _parse_multisection_xlsx only reads Annexure-D
@@ -5117,6 +5143,11 @@ _FA_ROW_MAP = {
     'servo control':             11,
     'water cooler':              12,
     'machine':                   13,
+    # BUG 14 FIX (v2.14): add common P&M asset names found in Bansal/similar clients
+    'invertor & battery':        9,   # Invertor & Battery → first P&M slot (same as Camera)
+    'invertor':                  9,
+    'ac':                        13,  # AC/Air Conditioner → Machine slot
+    'air conditioner':           13,
     'mobile':                    14,
     'electricals':               15,
     'washing machine':           16,
@@ -5126,6 +5157,8 @@ _FA_ROW_MAP = {
     'motor cycle':               21,
     'motorcycle':                21,
     'scooter':                   21,
+    # BUG 14 FIX (v2.14): Activa is a two-wheeler → combine with Motor Cycle & Scooter
+    'activa':                    21,
     'computer':                  24,
     'chair':                     27,
     'furniture & fixture ':      28,
@@ -5133,6 +5166,11 @@ _FA_ROW_MAP = {
     'furniture & fixture':       28,
     'furniture':                 28,
     'building':                  31,
+    # BUG 14 FIX (v2.14): Shop and Property are non-depreciable → Building row (rate=0)
+    # This ensures rate=0 is written to G and they don't land in P&M slots with rate=15
+    'shop':                      31,
+    'property':                  31,
+    'land':                      31,
 }
 
 
@@ -5184,14 +5222,19 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
     # This ensures ALL 10 assets appear regardless of whether template has them.
 
     # Collect available data rows (non-header, non-total, non-section-header rows)
+    # BUG 13 FIX (v2.14): rows 1-7 are always title/header rows in FA P.Yr. template
+    # (title, sheet name, column headers). Never use them as data rows.
     _SKIP_LABELS = {'total', 'plant & machinery', 'vehicles', 'vehciles', 'computers',
                     'furniture and fixtures', 'furniture & fixtures', 'building',
                     'land', 'detail of fixed assets', 'amount in rs.', 'particulars',
-                    'computer', 'furniture & fixture'}
+                    'computer', 'furniture & fixture', 'vehicle'}
+    _HEADER_ROW_LIMIT = 8   # rows 1-7 are always title/col-header rows → exclude
     available_rows = []
     total_row = None
     for row in ws.iter_rows():
         cell_a = row[0]
+        if cell_a.row < _HEADER_ROW_LIMIT:   # BUG 13 FIX: skip title/header rows
+            continue
         if cell_a.value is None:
             continue
         label = str(cell_a.value).strip().lower()
@@ -5201,12 +5244,16 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
         if label in _SKIP_LABELS or label in ('', 'nan'):
             continue
         # This is a data row (asset row or section name we will reuse)
-        # Check: has numeric data in B-I columns OR is it an asset row
+        # Check: has numeric data in B-I columns OR has a formula in G (rate)
         has_num = any(
             isinstance(row[c].value, (int, float))
             for c in range(1, min(9, len(row)))
         )
-        if has_num or (label not in _SKIP_LABELS and len(label) > 1):
+        has_formula = any(
+            isinstance(row[c].value, str) and row[c].value.startswith('=')
+            for c in range(5, min(9, len(row)))
+        )
+        if has_num or has_formula or (label not in _SKIP_LABELS and len(label) > 1):
             available_rows.append(cell_a.row)
 
     # If auto-detected rows insufficient, fall back to name-matching for what we can
@@ -5214,68 +5261,26 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
     log.append(f"FA P.Yr. detected rows: {detected_map}")
     log.append(f"FA P.Yr. available rows: {available_rows}")
 
-    def _write_asset_to_row(r, item):
-        opening   = item.get('opening_wdv', 0)
-        additions = item.get('additions', 0)
-        rate      = item.get('rate', 0) or 0
-        sales     = item.get('sales', 0)
-        dep       = item.get('dep', 0)
-        closing   = item.get('closing_wdv', 0)
+    # BUG 14 FIX (v2.14): Use two-pass accumulator approach (same as FA C.Yr.) so that
+    # multiple source assets mapping to the same template row are combined rather than
+    # the first one claiming the row and subsequent ones falling through to positional.
+    # Example: Motor Cycle + Scooter + Activa all map to R21 → B = sum of their WDVs.
+    # Example: Shop + Property both map to R31 (Building, rate=0) → B = sum.
+    #
+    # Pass 1: resolve each item's target row and accumulate B/C/D/E values per row.
+    row_accumulator = {}  # row_num → {opening, additions, sales, rate, names[]}
+    unmatched_items = []  # items with no row match → positional fallback
 
-        safe_add  = round(additions)
-        # Use exact opening (not rounded) so TOTAL formula =B+C+D-E is correct
-        total_val = opening + safe_add - round(sales)
-
-        # FIX 4: Write source asset NAME into col A (overwrite template name)
-        cell_a = ws.cell(r, 1)
-        from openpyxl.cell import MergedCell as _MCFA
-        if not isinstance(cell_a, _MCFA):
-            cell_a.value = item['name']
-
-        # BUG 11 FIX (v2.13): Only write B, C, D, E, G — NEVER overwrite H or I.
-        # Template FA P.Yr. has:
-        #   F(6) = =B+C+D-E  (formula — already guarded below, keep guard)
-        #   H(8) = =ROUND(((B+C-E)*G%+D*G%/2),0)  (formula — MUST NOT overwrite)
-        #   I(9) = =F-H                              (formula — MUST NOT overwrite)
-        # Overwriting H/I with _write_num turns live formulas into static numbers;
-        # the CA then sees non-recalculating values when they add CY data.
-        #
-        # BUG 9 FIX part 2 (v2.13): write opening WDV as exact decimal, not rounded.
-        # Motor Cycle opening = 3734.75 → round() = 3735, which gives wrong dep baseline.
-        # The template ROUND formula in H computes dep from B, so B must be exact.
-        _cell_b = ws.cell(r, 2)
-        from openpyxl.cell import MergedCell as _MCFAB
-        if not isinstance(_cell_b, _MCFAB):
-            _cell_b.value = float(opening)     # B: opening WDV (exact decimal)
-            _cell_b.number_format = '#,##0.##'
-        _write_num(ws, r, 3, safe_add)         # C: additions >180d
-        _write_num(ws, r, 4, 0)                # D: additions <180d
-        _write_num(ws, r, 5, round(sales))     # E: sales
-
-        # F: only write if no formula exists (some rows have =B+C+D-E, some have hardcoded 0)
-        existing_f = ws.cell(r, 6).value
-        if not (isinstance(existing_f, str) and existing_f.startswith('=')):
-            _write_num(ws, r, 6, total_val)    # F: total (only when no formula)
-
-        if rate:
-            _write(ws, r, 7, rate)             # G: rate
-
-        # H and I: NEVER write — let template ROUND and =F-H formulas stand.
-        dep_val = round(total_val * rate / 100) if rate else round(dep)
-        closing_wdv = total_val - dep_val if dep_val else round(closing)
-        log.append(f"FA P.Yr. R{r}: {item['name']} opening={opening:.0f} "
-                   f"add={additions:.0f} dep(calc)={dep_val:.0f} wdv(calc)={closing_wdv:.0f} "
-                   f"[H/I left as template formulas]")
-
-    # Try name-matched rows first (for exact matches like Car, Computer)
-    for item in items:
-        nm_lower = item['name'].strip().lower()
+    def _resolve_row(nm_lower):
+        """Return template row for asset name, or None."""
+        # Try detected_map first (names auto-detected from the sheet)
         r = detected_map.get(nm_lower)
         if r is None:
             for key, row_r in detected_map.items():
                 if key in nm_lower or nm_lower in key:
                     r = row_r
                     break
+        # Try _FA_ROW_MAP (hard-coded canonical names)
         if r is None:
             r = _FA_ROW_MAP.get(nm_lower)
         if r is None:
@@ -5283,37 +5288,101 @@ def _inject_fixed_assets_py(wb, parsed, client_name, py_year, log):
                 if key in nm_lower or nm_lower in key:
                     r = row_r
                     break
-        if r is not None and r not in written_rows:
-            _write_asset_to_row(r, item)
-            written_rows.add(r)
-            if r in available_rows:
-                available_rows.remove(r)
+        return r
 
-    # Write remaining unmatched items into available rows sequentially
-    avail_iter = iter(available_rows)
     for item in items:
         nm_lower = item['name'].strip().lower()
-        # Already written?
-        already = False
-        for wr in written_rows:
-            cell_a_val = ws.cell(wr, 1).value
-            if cell_a_val and str(cell_a_val).strip().lower() == nm_lower:
-                already = True
-                break
-        if already:
-            continue
-        # Find next available row
+        r = _resolve_row(nm_lower)
+        if r is not None:
+            if r not in row_accumulator:
+                row_accumulator[r] = {
+                    'opening': 0.0, 'additions': 0.0, 'sales': 0.0,
+                    'rate': item.get('rate', 0) or 0, 'names': []
+                }
+            row_accumulator[r]['opening']    += item.get('opening_wdv', 0)
+            row_accumulator[r]['additions']  += item.get('additions', 0)
+            row_accumulator[r]['sales']      += item.get('sales', 0)
+            # Use max rate (non-zero wins) when combining items of different rates
+            item_rate = item.get('rate', 0) or 0
+            if item_rate > row_accumulator[r]['rate']:
+                row_accumulator[r]['rate'] = item_rate
+            row_accumulator[r]['names'].append(item['name'].strip())
+        else:
+            unmatched_items.append(item)
+
+    # Pass 2: write accumulated values to template rows
+    from openpyxl.cell import MergedCell as _MCFA, MergedCell as _MCFAB
+    for r, acc in row_accumulator.items():
+        opening   = acc['opening']
+        additions = acc['additions']
+        sales     = acc['sales']
+        rate      = acc['rate']
+        names     = acc['names']
+
+        safe_add  = round(additions)
+        total_val = opening + safe_add - round(sales)
+
+        # col A: write combined name (e.g. "Motor Cycle, Scooter, Activa") or single name
+        cell_a = ws.cell(r, 1)
+        if not isinstance(cell_a, _MCFA):
+            cell_a.value = ', '.join(names) if len(names) > 1 else names[0]
+
+        # col B: exact decimal opening WDV
+        cell_b = ws.cell(r, 2)
+        if not isinstance(cell_b, _MCFAB):
+            cell_b.value = float(opening)
+            cell_b.number_format = '#,##0.##'
+
+        # C: additions (>180d), D: additions (<180d), E: sales
+        _write_num(ws, r, 3, safe_add)
+        _write_num(ws, r, 4, 0)
+        _write_num(ws, r, 5, round(sales))
+
+        # F: only write if no formula exists
+        existing_f = ws.cell(r, 6).value
+        if not (isinstance(existing_f, str) and existing_f.startswith('=')):
+            _write_num(ws, r, 6, total_val)
+
+        # BUG 12 FIX: always write rate (including 0) to col G
+        _write(ws, r, 7, rate)
+
+        # H and I: NEVER write — let template ROUND and =F-H formulas stand
+        dep_calc = round(total_val * rate / 100) if rate else 0
+        log.append(f"FA P.Yr. R{r}: {'+'.join(names)} opening={opening:.2f} "
+                   f"add={additions:.0f} rate={rate} dep(calc)={dep_calc:.0f} "
+                   f"[H/I=template formulas]")
+        written_rows.add(r)
+
+    # Positional fallback: write unmatched items into remaining available rows
+    used_avail = set(available_rows) & written_rows
+    remaining_avail = [r for r in available_rows if r not in written_rows]
+    avail_iter = iter(remaining_avail)
+    for item in unmatched_items:
         try:
             r = next(avail_iter)
-            while r in written_rows:
-                r = next(avail_iter)
         except StopIteration:
-            # No more template rows — append after last used row
-            if written_rows:
-                r = max(written_rows) + 1
-            else:
-                continue
-        _write_asset_to_row(r, item)
+            r = max(written_rows) + 1 if written_rows else 40
+        opening   = item.get('opening_wdv', 0)
+        additions = item.get('additions', 0)
+        sales     = item.get('sales', 0)
+        rate      = item.get('rate', 0) or 0
+        safe_add  = round(additions)
+        total_val = opening + safe_add - round(sales)
+        cell_a = ws.cell(r, 1)
+        if not isinstance(cell_a, _MCFA):
+            cell_a.value = item['name']
+        cell_b = ws.cell(r, 2)
+        if not isinstance(cell_b, _MCFAB):
+            cell_b.value = float(opening)
+            cell_b.number_format = '#,##0.##'
+        _write_num(ws, r, 3, safe_add)
+        _write_num(ws, r, 4, 0)
+        _write_num(ws, r, 5, round(sales))
+        existing_f = ws.cell(r, 6).value
+        if not (isinstance(existing_f, str) and existing_f.startswith('=')):
+            _write_num(ws, r, 6, total_val)
+        _write(ws, r, 7, rate)
+        log.append(f"FA P.Yr. R{r} (positional): {item['name']} B={opening:.2f} rate={rate}")
         written_rows.add(r)
 
     # BUG 11 FIX (v2.13): Total row — write B, C, D, E, F only.
@@ -5396,6 +5465,11 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
         'servo control':             13,
         'water cooler':              14,
         'machine':                   15,
+        # BUG 14 FIX (v2.14): add common asset names not previously mapped
+        'invertor & battery':        11,  # first P&M slot (combined with camera)
+        'invertor':                  11,
+        'ac':                        15,  # AC → Machine slot
+        'air conditioner':           15,
         'mobile':                    16,
         'electricals':               17,
         'washing machine':           18,
@@ -5405,6 +5479,8 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
         'motor cycle':               25,
         'motorcycle':                25,
         'scooter':                   25,
+        # BUG 14 FIX (v2.14): Activa is a two-wheeler → combine with Motor Cycle & Scooter
+        'activa':                    25,
         'computer':                  47,
         'chair':                     37,
         'furniture & fixture ':      36,
@@ -5412,6 +5488,10 @@ def _inject_fixed_assets_cy_opening(wb, parsed, log):
         'furniture & fixture':       36,
         'furniture':                 36,
         'building':                  60,
+        # BUG 14 FIX (v2.14): Shop and Property are zero-dep assets → Building row
+        'shop':                      60,
+        'property':                  60,
+        'land':                      60,
     }
 
     # Build auto-detected map from the sheet's formula references
