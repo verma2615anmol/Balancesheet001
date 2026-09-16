@@ -3,6 +3,35 @@ tshape_processor.py
 ===================
 T-Shaped Balance Sheet → Comparative Balance Sheet Converter
 
+v2.16 2026-09-16  DETECTION FIX — standard vertical BS misrouted to T-shape tool:
+                  BUG 17 — _detect_input_format() returned 'tshape_xlsx' for EVERY .xlsx
+                           file. Its only non-tshape xlsx outcome was 'multisection'
+                           (which required a two-sided header AND >50 columns); the
+                           documented 'unknown' return was never produced. As a result
+                           app.py's /process router (is_tshape = fmt in
+                           {'tshape_xlsx','multisection'}) claimed ordinary vertical /
+                           comparative balance sheets (e.g. A.S. TRADERS, LIFE LINE
+                           ENTERPRISES) for the T-shape converter. Those files were then
+                           injected into Output_sample_format.xlsx, producing a generic
+                           'M/S CLIENT' template with the wrong structure, no year shift,
+                           and no data transfer — exactly the "processed file = unchanged"
+                           symptom the year-shift tool was blamed for. The year-shift
+                           processor (processor.py / lumid_compat.py) was never at fault.
+                  Fix    — Require POSITIVE evidence of a T-account layout: a two-sided
+                           header where LIABILITIES and ASSETS appear in two DIFFERENT
+                           columns of the same row (within the first 15 rows). A single
+                           cell containing both words (e.g. a "Statement of Assets and
+                           Liabilities" title) is ignored, so it can't false-trigger.
+                           • header present + >50 cols  -> 'multisection' (unchanged)
+                           • header present             -> 'tshape_xlsx'
+                           • header absent              -> 'unknown'  (routes to year-shift)
+                           • detection exception        -> 'unknown'  (safer default: the
+                             primary year-shift tool, not the template-injecting T-shape
+                             tool) — was 'tshape_xlsx'.
+                  Note   — Genuine T-shaped .xls (early 'tshape_xls' return) and real
+                           T-shaped / multisection .xlsx are unaffected: they still carry
+                           the two-sided header and route to the T-shape converter as before.
+
 v2.15 2026-08-20  FA chart complete rewrite — per-asset rows, exact decimals, source names:
                   BUG 15 — Assets combined into one template row ("Activa, Motor Cycle,
                            Scooter" at R21 with B=4848.5 instead of three separate rows).
@@ -385,12 +414,14 @@ def _detect_input_format(filepath: str) -> str:
       'multisection'  — NOT supported (.xlsx, >50 columns on one sheet)
       'unknown'       — unrecognised layout
 
-    Multi-section fingerprint (Bansal / GD Singla combined style):
-      • Single sheet (or sheet named after the firm)
-      • Row 11 (0-indexed row 10) has 'LIABILITIES' in col 0 AND 'ASSETS' somewhere
-        in the same row  →  confirmed T-shaped BS header
-      • XLSX file AND ws.max_column > 50  →  multi-section (annexures packed right)
-      • XLS or XLSX with max_column ≤ 50 →  standard T-shaped
+    T-account fingerprint (required for any .xlsx tshape/multisection verdict):
+      • Some row in the first 15 has 'LIABILITIES' and 'ASSETS' as headers of TWO
+        DIFFERENT columns  →  confirmed two-sided (T-shaped) BS header.
+      • A single cell containing both words (a title) does NOT count.
+      • header present AND ws.max_column > 50  →  'multisection' (annexures packed right)
+      • header present AND max_column ≤ 50     →  'tshape_xlsx'
+      • header ABSENT (standard vertical/comparative BS) → 'unknown'
+        → app.py then routes the file to the year-shift processor.
     """
     ext = os.path.splitext(filepath)[1].lower()
 
@@ -413,22 +444,48 @@ def _detect_input_format(filepath: str) -> str:
             for _row in _ws.iter_rows(max_row=20):
                 _ncols = max(_ncols, len(_row))
 
-        # Check for BS header in first 15 rows
-        _has_bs_header = False
+        # ── Two-sided (T-account) header detection ────────────────────────────
+        # A genuine T-shaped balance sheet places LIABILITIES and ASSETS as
+        # headers of TWO DIFFERENT columns in the same row.  A standard vertical
+        # / comparative BS stacks them in different ROWS, so it never matches.
+        # A single cell holding both words (e.g. a "Statement of Assets and
+        # Liabilities" title) is skipped so it can't false-trigger.
+        _has_tshape_header = False
         for _r in _ws.iter_rows(max_row=15, values_only=True):
-            _rs = ' '.join(str(v).upper() for v in _r if v is not None)
-            if 'LIABILIT' in _rs and 'ASSET' in _rs and 'AMOUNT' in _rs:
-                _has_bs_header = True
+            _liab_col = _asset_col = None
+            for _ci, _v in enumerate(_r):
+                if _v is None:
+                    continue
+                _cell = str(_v).upper()
+                _hasL = 'LIABILIT' in _cell
+                _hasA = 'ASSET' in _cell
+                if _hasL and _hasA:
+                    # combined title cell — not a two-sided column header
+                    continue
+                if _hasL and _liab_col is None:
+                    _liab_col = _ci
+                if _hasA and _asset_col is None:
+                    _asset_col = _ci
+            if (_liab_col is not None and _asset_col is not None
+                    and _liab_col != _asset_col):
+                _has_tshape_header = True
                 break
 
         _wb.close()
 
-        if _has_bs_header and _ncols > 50:
+        if not _has_tshape_header:
+            # No T-account layout → standard vertical/comparative BS.
+            # Return 'unknown' so app.py routes it to the year-shift processor.
+            return 'unknown'
+        if _ncols > 50:
             return 'multisection'
         return 'tshape_xlsx'
 
     except Exception:
-        return 'tshape_xlsx'   # if detection fails, let the parser try and fail naturally
+        # Detection failed to read the file. Default to the PRIMARY year-shift
+        # tool rather than the template-injecting T-shape tool, which would
+        # silently emit a generic 'M/S CLIENT' template.
+        return 'unknown'
 
 
 
