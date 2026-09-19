@@ -358,10 +358,12 @@ def _s(v):
 
 
 def _n(v, default=0.0):
-    """Cell → float."""
+    """Cell → float.  Returns default (0.0) for None, NaN, and non-numeric strings."""
     if v is None:
         return default
-    if isinstance(v, (int, float)) and not (isinstance(v, float) and str(v) == 'nan'):
+    if isinstance(v, float) and (v != v):  # v!=v is True only for IEEE 754 NaN
+        return default
+    if isinstance(v, (int, float)):
         return float(v)
     try:
         return float(re.sub(r'[,\s]', '', str(v)))
@@ -1682,22 +1684,27 @@ def _scan_bs_totals(rows, bs_header_row, liab_col, asset_col, result, log):
                     break
 
         # Closing stock: only when label explicitly contains 'Closing stock' on asset side
-        # AND it appears in the right half of the row
+        # AND it appears in the right half of the row.
+        # Also catch layouts where 'CURRENT ASSETS :-' IS the closing-stock row (GD Singla
+        # Ashok-style: the stock amount is placed at the CURRENT ASSETS header row in col 10,
+        # and Debtors/Advances/Cash are separate sub-rows below — so CURRENT ASSETS total = stock).
         if result['closing_stock'] == 0:
-            # Only set closing stock when 'CLOSING STOCK' or 'STOCK' label is in
-            # the ASSET section (first few cols of the right half), not the P&L section.
-            # Check if any col in liab_col+1 to asset_col+4 has 'CLOSING' or 'STOCK'.
             asset_label_range = range(liab_col + 1, min(asset_col + 5, len(row)))
             has_stock_label = any(
                 'STOCK' in _s(row[j]).upper() and 'CLOSING' in _s(row[j]).upper()
                 for j in asset_label_range
             )
-            if has_stock_label:
+            has_current_assets_label = any(
+                'CURRENT ASSET' in _s(row[j]).upper()
+                for j in asset_label_range
+            )
+            if has_stock_label or has_current_assets_label:
                 for j in range(asc_min, min(asset_col + 6, len(row))):
                     v = _n(row[j])
                     if v > 10000:
                         result['closing_stock'] = v
-                        log.append(f"R{i}: Closing stock = {v} (col {j})")
+                        src = 'Closing stock' if has_stock_label else 'Current assets (stock)'
+                        log.append(f"R{i}: {src} = {v} (col {j})")
                         break
 
         if ('SUNDRY DEBTOR' in rs_right or 'DEBTORS & ADVANCES' in rs_right) \
@@ -1719,6 +1726,7 @@ def _scan_bs_totals(rows, bs_header_row, liab_col, asset_col, result, log):
                     break
 
         if ('ADVANCES & SECURITY' in rs_right or 'ADVANCE & SECURITY' in rs_right or
+            'ADVANCES & SECURITIES' in rs_right or 'ADVANCE & SECURITIES' in rs_right or
             ('ADVANCES' in rs_right and 'LOAN' in rs_right and 'SECURITIES' in rs_right)) \
            and result['advances_security'] == 0:
             for j in range(asc_min, asc_max):
@@ -1782,7 +1790,10 @@ def _extract_capital(rows, result, log):
         # partnership rows where the capital account is on the liabilities side but the
         # main label has PARTNER not PROP.
         has_annex_a = ("'A'" in rs or "ANNEXURE-A" in rs or "`A'" in rs)
-        is_prop_cap = has_annex_a and ('CAPITAL' in rs or 'PROP' in rs or 'HUF' in rs)
+        # IMPORTANT: is_prop_cap must require the capital keyword to appear in col 0 (label),
+        # NOT just anywhere in the row. Some rows have "ANNEXURE-A" and "CAPITAL" as annexure
+        # section headings in far-right cols while col 0 is blank — those must NOT trigger.
+        is_prop_cap = has_annex_a and ('CAPITAL' in label or 'PROP' in label or 'HUF' in label)
         # Exclude partnership rows where PARTNER'S CAPITAL appears (handled separately)
         is_prop_cap = is_prop_cap and 'PARTNER' not in label
 
@@ -1881,8 +1892,9 @@ def _extract_capital(rows, result, log):
                 log.append(f"Capital (prop/huf): {name} = {closing}")
                 break  # Only one capital block for proprietorship/HUF
 
-        # Partnership: "PARTNER'S CAPITAL" header then partner names below
-        if "PARTNER'S CAPITAL" in label or "PARTNER CAPITAL" in label:
+        # Partnership: "PARTNER'S CAPITAL" / "PARTNER CAPITAL" / "PARTNERS CAPITAL" header
+        # NOTE: some CA templates spell it "PARTNERS CAPITAL A/C" (no apostrophe, S after PARTNER)
+        if "PARTNER'S CAPITAL" in label or "PARTNER CAPITAL" in label or "PARTNERS CAPITAL" in label:
             result['entity_type'] = 'partnership'
             # Scan next rows for partner names + amounts in col 0 + col 3
             for k in range(i + 1, min(i + 20, len(rows))):
@@ -2204,7 +2216,7 @@ def _extract_creditor_annexure(rows, result, log):
     cred_start = 8
     for i, row in enumerate(rows):
         rs = ' '.join(_s(v).upper() for v in row if v is not None)
-        if 'SUNDRY CREDITOR' in rs and 'ANNEXURE-C' in rs:
+        if 'SUNDRY CREDITOR' in rs and ('ANNEXURE-C' in rs or 'ANNEXURE-D' in rs):
             cred_start = i + 1
             break
 
@@ -2212,6 +2224,7 @@ def _extract_creditor_annexure(rows, result, log):
     all_blocks = (
         _collect_creditor_block(rows, 32, 33, 38, cred_start) +
         _collect_creditor_block(rows, 39, 40, 45, cred_start) +
+        _collect_creditor_block(rows, 39, 40, 48, cred_start) +  # Nagpal layout: M/s.=col40, name=col41, amt=col49
         _collect_creditor_block(rows, 46, 47, 52, cred_start) +
         _collect_creditor_block(rows, 25, 26, 31, cred_start)
     )
@@ -2618,7 +2631,7 @@ def _extract_unsecured_annexure_b(rows, result, log):
 
         if not in_section:
             if ('UNSECURED LOAN' in rs_full or 'UN-SECURED LOAN' in rs_full) and \
-               ('ANNEXURE-B' in rs_full or "'B'" in rs_full):
+               ('ANNEXURE-B' in rs_full or 'ANNEXURE-C' in rs_full or "'B'" in rs_full or "'C'" in rs_full):
                 in_section = True
                 # Record where the header appeared to anchor name/amt cols
                 for ci, v in enumerate(row):
@@ -2628,7 +2641,7 @@ def _extract_unsecured_annexure_b(rows, result, log):
                         break
                 for ci, v in enumerate(row):
                     sv = _s(v).upper()
-                    if 'ANNEXURE-B' in sv or ("'B'" in sv and ci > 20):
+                    if 'ANNEXURE-B' in sv or 'ANNEXURE-C' in sv or ("'B'" in sv and ci > 20) or ("'C'" in sv and ci > 20):
                         header_amt_col = ci
                         break
                 log.append(f"Unsecured Annexure-B header at row {i}: "
@@ -2697,7 +2710,7 @@ def _extract_unsecured_annexure_b(rows, result, log):
                                if row[c] is not None)
             if not in_section2:
                 if ('UNSECURED LOAN' in rs_full or 'UN-SECURED LOAN' in rs_full) and \
-                   ('ANNEXURE-B' in rs_full or "'B'" in rs_full):
+                   ('ANNEXURE-B' in rs_full or 'ANNEXURE-C' in rs_full or "'B'" in rs_full or "'C'" in rs_full):
                     in_section2 = True
                 continue
             if any(kw in rs_zone for kw in _STOP_HEADERS_LENDER_ZONE):
@@ -3159,16 +3172,68 @@ def _extract_dep_chart(rows, result, log):
     for i, row in enumerate(rows):
         rs = ' '.join(_s(v).upper() for v in row if v is not None)
         if not in_dep:
-            if 'DEPRECIATION CHART' in rs or ('FIXED ASSET' in rs and 'DEP' in rs and 'CHART' in rs):
+            # Match both correct spelling (DEPRECIATION) and common CA typo (DEPRECATION)
+            _dep_trigger = ('DEPRECIATION CHART' in rs or 'DEPRECATION CHART' in rs or
+                            ('FIXED ASSET' in rs and 'DEP' in rs and 'CHART' in rs))
+            if _dep_trigger:
                 in_dep = True
                 log.append(f"Dep chart found at row {i}")
-                # Detect which column 'DEPRECIATION CHART' is in
-                dep_col = next((j for j, v in enumerate(row)
-                                if 'DEPRECIATION' in _s(v).upper()), 0)
-                # GD Singla layout: dep chart label is 2 cols to the RIGHT of asset names.
-                # So name_col = dep_col - 2. num_start = name_col + 1.
+                # Detect which column the depreciation header is in.
+                # Accept both 'DEPRECIATION' and 'DEPRECATION' (common CA typo).
+                dep_col = next(
+                    (j for j, v in enumerate(row)
+                     if 'DEPRECAT' in _s(v).upper() or 'DEPRECIATION' in _s(v).upper()),
+                    None
+                )
+                if dep_col is None:
+                    # Fallback: find any cell containing 'CHART'
+                    dep_col = next((j for j, v in enumerate(row)
+                                    if 'CHART' in _s(v).upper()), None)
+                if dep_col is None or dep_col < 10:
+                    # dep_col at 0 means the header keyword was in a combined cell like
+                    # "DETAILS OF FIXED ASSETS & DEPRECATION CHART" at col 0/40 or the
+                    # actual dep-chart header is further right. Scan for DEPRECAT in row.
+                    for j, v in enumerate(row):
+                        sv = _s(v).upper()
+                        if 'DEPRECAT' in sv or ('CHART' in sv and j > 10):
+                            dep_col = j
+                            break
+                if dep_col is None:
+                    dep_col = 0
+                # GD Singla layout: dep chart label is 2–3 cols to the RIGHT of asset names.
+                # Initial estimate: name_col = dep_col - 2, num_start = name_col + 1.
+                # We then VERIFY by scanning the first few data rows after the header to find
+                # the actual leftmost text cell (= name_col) and leftmost numeric cell in the
+                # dep-chart region (= num_start). This handles layouts where the spacer between
+                # name col and numbers is 1 or 2 cols wide (dep_col-2 vs dep_col-3).
                 name_col = max(0, dep_col - 2)
                 num_start = name_col + 1
+                # Calibrate from first real data row (look up to 10 rows ahead)
+                _search_min = max(0, dep_col - 5)
+                for _k in range(i + 1, min(i + 10, len(rows))):
+                    _r2 = rows[_k]
+                    # Find leftmost non-empty text cell in dep-chart region
+                    _txt_col = None
+                    for _j in range(_search_min, min(dep_col + 2, len(_r2))):
+                        _sv = _s(_r2[_j]).strip()
+                        if _sv and not any(x in _sv.upper() for x in
+                                           ('LIABILIT', 'ASSET', 'TOTAL', 'AMOUNT',
+                                            'PARTICUL', 'DATE', 'PATICULAR')):
+                            _txt_col = _j
+                            break
+                    # Find leftmost numeric cell to the RIGHT of _txt_col
+                    _num_col = None
+                    if _txt_col is not None:
+                        for _j in range(_txt_col + 1, min(_txt_col + 6, len(_r2))):
+                            _v = _r2[_j]
+                            if isinstance(_v, (int, float)) and not (isinstance(_v, float) and str(_v) == 'nan') and float(_v) > 0:
+                                _num_col = _j
+                                break
+                    if _txt_col is not None and _num_col is not None:
+                        name_col = _txt_col
+                        num_start = _num_col
+                        break
+                log.append(f"Dep chart: dep_col={dep_col}, name_col={name_col}, num_start={num_start}")
             continue
 
         # Skip rows where the dep chart name column is blank (these are BS/P&L rows mixed in)
@@ -3323,7 +3388,9 @@ def _extract_cash_bank(rows, result, log):
 
             if not in_h:
                 rs = ' '.join(_s(v).upper() for v in row if v is not None)
-                if 'CASH' in rs and 'BANK' in rs and 'ANNEXURE-H' in rs:
+                # Accept both ANNEXURE-H and ANNEXURE-I as the Cash & Bank annexure header;
+                # some GD Singla templates label the cash block as Annexure-I (Advances=H, Cash=I).
+                if 'CASH' in rs and 'BANK' in rs and ('ANNEXURE-H' in rs or 'ANNEXURE-I' in rs):
                     in_h = True
                 continue
 
@@ -3360,7 +3427,8 @@ def _extract_cash_bank(rows, result, log):
         return in_h, cash_h, banks_h, total_h
 
     # FIX 3: Try all column layouts, accept first one with real (non-NaN) amounts
-    for name_col, amt_col in [(53, 62), (50, 58), (51, 59), (52, 61)]:
+    # (49, 54) = GD Singla Ashok/Nagpal layout (0-indexed: name col50→idx49, amt col55→idx54)
+    for name_col, amt_col in [(49, 54), (53, 62), (50, 58), (51, 59), (52, 61)]:
         in_h, cash_h, banks_h, total_h = _try_annexure_h(rows, name_col, amt_col)
         if in_h and (cash_h > 0 or any(_is_real_num(b['amount']) for b in banks_h)):
             result['cash_in_hand'] = cash_h
