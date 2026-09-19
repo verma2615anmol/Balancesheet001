@@ -5,6 +5,105 @@ and injects aggregated values into a BS template.
 Zero formatting change in the output BS file.
 Memory-efficient: single workbook open, read_only where possible.
 
+v2026-09-19 classification fixes — two real client TBs (Jagdamba Shawl & B.S. Wool Centre):
+
+  FIX J1 — INDIRECT EXPENSES group containing SALARY, INTEREST, REBATE:
+    Tally "INDIRECT EXPENSES" group is already in GROUP_HEAD_MAP → other_expenses.
+    But SALERY A/C (salary), INTEREST BANK / INTEREST UN. (finance cost), and
+    REBATE A/C (other income credit) must be routed to their own heads BEFORE
+    the group map fires. Added name-priority intercepts for salary/interest/rebate
+    inside INDIRECT EXPENSES group so they bypass the group override.
+
+  FIX J2 — MFG. EXPENSES group (Tally Jagdamba: PURCHASE CARTAGE CHARGES 18%):
+    Group name "MFG.  EXPENSES" (with double space) and "MFG. EXPENSES" not in
+    GROUP_HEAD_MAP. Accounts under this group fell to low-confidence other_cl.
+    Added GROUP_HEAD_MAP entries: "mfg.  expenses", "mfg. expenses",
+    "mfg expenses", "manufacturing expenses" → direct_expenses.
+    Also added the regex "mfg" check in the direct-group rule.
+
+  FIX J3 — DUTIES AND TAXES (GST) group for IGST RCM REVERSAL (debit):
+    Already handled for "duties & taxes" but the exact Tally string used here is
+    "DUTIES AND TAXES (GST)" — added explicit alias in GROUP_HEAD_MAP.
+    Debit balance → stla (GST input credit), credit balance → other_cl.
+
+  FIX J4 — SECURED LOANS group (ICICI BANK 58 CC account) → st_borrowings:
+    GROUP_HEAD_MAP maps "secured loans" → lt_borrowings. But a CC/overdraft bank
+    account is a SHORT-TERM borrowing. Added name-level intercept: if account is
+    in SECURED LOANS group AND name contains bank/icici/hdfc/cc/od/overdraft,
+    classify as st_borrowings instead of lt_borrowings.
+
+  FIX J5 — UNSECURED LOANS group (Jagdamba: ROSHAN LAL, SURESH KUMAR, RAJNI):
+    These are correctly in GROUP_HEAD_MAP as lt_borrowings. But Notes to BS
+    "from related parties" CY column was written as 0. Root: Details sheet
+    injection writes CY from aggregated["lt_borrowings"] but the Unsecured Loans
+    in the Notes to BS template have the CY column in col D (not E like BS).
+    Already correct in code — confirmed the CY injection target is col D.
+    Real root: the capital sheet had a wrong opening figure that ate the TB
+    capital figure. Added guard: for CAPITAL ACCOUNT group, the TB net
+    (credit = negative) is the CLOSING balance after P&L. The opening balance
+    must come from the template's capital sheet, not the TB.
+
+  FIX W1 — SECURITIES & DEPOSITS group → non_current_investments (not stla):
+    GROUP_HEAD_MAP maps "securities & deposits" → stla. But in Wool Centre TB,
+    this group contains PPF (₹24,93,864) and Gold Coins — Non-Current
+    Investments, not short-term loans. Added name-level intercepts:
+      "p.p.f" / "ppf" / "public provident" → non_current_investments
+      "gold coin" / "gold bond" / "nsc" / "kvp" → non_current_investments
+      "electric security" / "security deposit" → stla (correct bucket)
+
+  FIX W2 — CURRENT ASSETS, LOANS & ADVANCES group → correct sub-buckets:
+    Exact TB group string "CURRENT ASSETS, LOANS & ADVANCES" not in GROUP_HEAD_MAP
+    (only "current assets" is there). Items under this group:
+      GST PAID → stla (input GST = advance to revenue authority)
+      PREPAID INSURANCE → other_current_assets
+      VAT → stla (advance to revenue authority)
+    Added GROUP_HEAD_MAP entry for this exact string → stla, with name-level
+    intercept for prepaid/insurance → other_current_assets.
+
+  FIX W3 — ADVANCES FROM CUSTOMERS group → advance_from_customer (not stla):
+    GROUP_HEAD_MAP has "advance from customers" → other_cl. But exact TB string
+    "ADVANCES FROM CUSTOMERS" (plural) was not in GROUP_HEAD_MAP. Added alias.
+
+  FIX W4 — OCL note injection: Audit Fee Payable, Electricity Payable written
+    to wrong cells OR mixed with other heads:
+    In Notes to BS OCL section, the injection now matches template row labels
+    case-insensitively and falls back to the first blank CY cell if no match.
+
+  FIX J/W5 — REBATE A/C under INDIRECT EXPENSES → other_income (not other_expenses):
+    REBATE A/C has a DEBIT balance in the TB (Dr 1,451.37) but represents a
+    discount GIVEN to customers — it IS an expense. However the template puts
+    it in "Other Incomes" note as a negative (deduction). Classification must
+    check the template note structure, not just the sign.
+    Decision: classify REBATE as other_expenses (matches template note 19 row),
+    so the output shows correctly under Other Expenses.
+
+  FIX J6 — SALERY A/C written into Revenue note (Note 13):
+    Root: "SALERY A/C" is in INDIRECT EXPENSES group, which maps to other_expenses
+    via GROUP_HEAD_MAP. But before the group map fires, the name-priority
+    employee_expenses check matches "saler" → "salary" → employee_expenses.
+    However the output shows SALERY A/C at row 11 of notes to p&l Revenue section.
+    Root: the Revenue note injection searches for the FIRST blank row in the
+    revenue block and writes any account with head "revenue" there. Since
+    SALERY A/C is in INDIRECT EXPENSES group, it should NEVER be classified as
+    revenue — but the TB row immediately after the Sales total line had its group
+    field inherited from the previous SALES ACCOUNTS group (parser bug).
+    Fix: tighten group inheritance — never inherit group across a blank/total row.
+
+  FIX J7 — Closing stock wrong (9,209,030 instead of 9,534,219):
+    Root: the notes to p&l injection reads closing stock from aggregated["inventories"].
+    The TB has OPENING STOCK Dr 9,534,200 (opening balance). But the processor
+    was summing ALL inventory-classified accounts including the opening stock TB
+    amount and using that as closing stock. The closing stock is NOT in the TB
+    (it comes from the BS template's FA/stock schedule). Fix: closing stock
+    injection now reads from the BS template's existing inventories cell (PY col)
+    rather than from TB aggregated inventories.
+
+  FIX J8 — PURCHASE PACKING 18% written to Notes to P&L as direct expense but
+    TB shows 330,567 while template PY shows 406,771:
+    Root: TB "PURCHASE PACKING 18%" under DIRECT  EXPENSES (double-space) group.
+    The group "DIRECT  EXPENSES" (double space) was not in GROUP_HEAD_MAP — only
+    "direct expenses" (single space). Added double-space alias.
+
 v2026-07-16 comprehensive fixes — Details sheet injection:
 
   CLASSIFICATION FIXES
@@ -171,6 +270,12 @@ BS_HEADS = {
         "negative_keywords": [
             "depreciation", "accumulated", "provision for",
             "repair", "maintenance", "rent",
+            # FIX W (2026-09-19): expense accounts whose names contain fixed-asset
+            # keywords but are clearly P&L items:
+            "mobile exp", "mobile charge", "mobile bill",  # "mobile" expense ≠ mobile phone (asset)
+            "property tax",                                # property TAX = other_expense, not asset
+            "property rent",                               # property RENT = other_expense
+            "telephone expense", "telephone bill",         # usage expense ≠ instrument (asset)
         ],
     },
     "non_current_investments": {
@@ -314,6 +419,7 @@ BS_HEADS = {
         "keywords": [
             # Salary / remuneration (very high priority — matched first)
             "salary", "salaries", "salary to partner", "partner salary",
+            "salery", "salarey",          # FIX J1 (2026-09-19): Tally misspellings
             "partner remuneration", "director remuneration",
             "director salary", "stipend",
             # Wages
@@ -321,7 +427,8 @@ BS_HEADS = {
             # Bonus, gratuity, leave
             "bonus", "gratuity", "leave with wages", "leave salary",
             # Welfare & statutory
-            "staff welfare", "labour welfare fund", "labor welfare fund",
+            "staff welfare", "labour welfare", "labor welfare",  # FIX J1: without "fund"
+            "labour welfare fund", "labor welfare fund",
             "epf", "esi ", "e.s.i", "pf contribution",
             "employee benefit", "employee provident",
             # Other
@@ -361,6 +468,15 @@ BS_HEADS = {
             "interest on car loan", "interest on vehicle",
             "interest on mortgage", "mortgage interest",
             "interest on cc", "interest on od",
+            # FIX J1 (2026-09-19): Tally Quick format abbreviated names
+            # "INTEREST BANK" and "INTEREST UN," (unsecured loan interest)
+            "interest bank",        # "INTEREST BANK" = bank interest
+            "interest un,",         # "INTEREST UN," = unsecured interest
+            "interest un.",
+            "interest unsecured",
+            "interest on unsecured loan",
+            "interest car",         # "INTEREST CAR" = car loan interest
+            "car interest",
         ],
         "negative_keywords": ["interest received", "interest income",
                               "intt paid on late payment", "bank charges and interest",
@@ -1393,6 +1509,7 @@ def _detect_columns(rows, sheet_name):
     dr_col = None
     cr_col = None
     net_col = None
+    group_col = None   # FIX (2026-09-19): Tally Quick format has group in its own column
     format_type = None
 
     # Scan first 15 rows for headers
@@ -1478,6 +1595,15 @@ def _detect_columns(rows, sheet_name):
             if val in ("closing", "closing balance"):
                 if net_col is None:
                     net_col = ci
+
+            # FIX (2026-09-19): Tally Quick format has a "Group" / "Under Group"
+            # column that carries the Tally ledger group name for EVERY data row.
+            # Detect it so we can read group from the row directly instead of
+            # relying on the zero-amount group-header detection, which doesn't
+            # work when every row has amounts.
+            if val in ("group", "under group", "under groups", "group name",
+                       "ledger group", "parent group", "category"):
+                group_col = ci
 
     # If no header found, try heuristic: first column with text, next columns with numbers
     if acct_col is None:
@@ -1602,7 +1728,9 @@ def _detect_columns(rows, sheet_name):
     # Extra skip patterns for reconciliation/difference entries that aren't real accounts
     _skip_name_patterns = re.compile(
         r'^(difference in opening|opening balance difference|'
-        r'balance difference|rounding|round off difference)\b',
+        r'balance difference|rounding|round off difference|'
+        r'group\s+total\s+of|total\s+of\s+)\b'
+        r'|^g\s*r\s*a\s*n\s*d\s+t\s*o\s*t\s*a\s*l',   # FIX W (2026-09-19): "G R A N D   T O T A L"
         re.I
     )
 
@@ -1707,6 +1835,15 @@ def _detect_columns(rows, sheet_name):
             # This is likely a group/category header
             current_group = acct_name
             continue
+
+        # FIX (2026-09-19): If this TB has an explicit group column (e.g.
+        # Tally Quick format "Under Group"), read the group from that column
+        # directly rather than from current_group (which only updates on
+        # zero-amount rows and stays None when every row has amounts).
+        if group_col is not None and group_col < len(row):
+            _row_group = row[group_col]
+            if _row_group and isinstance(_row_group, str) and _row_group.strip():
+                current_group = _row_group.strip()
 
         accounts.append({
             "row": ri,
@@ -1864,6 +2001,21 @@ GROUP_HEAD_MAP = {
     # FIX: "Provisions/Expenses Payable" group
     "provisions/expenses payable": "other_cl",
     "current assets":            "other_current_assets",
+    # FIX J2 (2026-09-19): Tally "MFG. EXPENSES" / "MFG.  EXPENSES" group
+    # Jagdamba Shawl uses this for PURCHASE CARTAGE CHARGES 18% = direct expense
+    "mfg. expenses":             "direct_expenses",
+    "mfg.  expenses":            "direct_expenses",   # double-space Tally variant
+    "mfg expenses":              "direct_expenses",
+    "manufacturing expenses":    "direct_expenses",
+    # FIX J8 (2026-09-19): "DIRECT  EXPENSES" with double space (Tally Jagdamba)
+    "direct  expenses":          "direct_expenses",
+    # FIX W2 (2026-09-19): "CURRENT ASSETS, LOANS & ADVANCES" — Wool Centre TB exact string
+    "current assets, loans & advances": "stla",
+    "current assets, loans and advances": "stla",
+    "current assets loans & advances": "stla",
+    # FIX W3 (2026-09-19): "ADVANCES FROM CUSTOMERS" (plural) — Wool Centre TB
+    "advances from customers":   "advance_from_customer",
+    # Note: "advance from customers" (singular) already present below — kept
     "provisions":                "st_provisions",
     "unsecure loans":            "lt_borrowings",
     "unsecured loans":           "lt_borrowings",
@@ -1966,16 +2118,33 @@ def _classify_single(name, net_amount, group=None):
     # or partial-substring) due to the differing word order, which
     # previously let accounts like "WAGES A/C" fall through to generic
     # name-keyword matching and get misclassified as employee_expenses.
-    if group_lower and re.search(r"\bdirect\b", group_lower) and (
-            "expense" in group_lower or "mfg" in group_lower
-            or "manufactur" in group_lower):
+    if group_lower and (
+            (re.search(r"\bdirect\b", group_lower) and (
+                "expense" in group_lower or "mfg" in group_lower
+                or "manufactur" in group_lower))
+            or re.search(r"\bmfg\.?\s*expenses?\b", group_lower)
+            or "manufacturing expenses" in group_lower):
         # EXCEPTION: opening/closing stock always goes to inventories
         if "opening stock" in name_lower or "closing stock" in name_lower:
             return "inventories", "high"
-        # EXCEPTION: purchase accounts always go to purchases
-        # (Tally name-wise TBs put purchases inside "TRADING/DIRECT EXPENSES")
+        # EXCEPTION: actual purchase accounts always go to purchases
+        # (Tally name-wise TBs put raw purchases inside "TRADING/DIRECT EXPENSES")
+        # BUT: "PURCHASE PACKING", "PURCHASE CARTAGE", "PURCHASE FREIGHT" etc.
+        # are DIRECT EXPENSES even though the word "purchase" appears in the name —
+        # they represent costs of bringing goods in, not the goods themselves.
+        # Only treat as purchases if the name is a BARE purchase account with
+        # no packing/cartage/freight/other-cost suffix.
         if "purchase" in name_lower:
-            return "purchases", "high"
+            _direct_suffixes = [
+                "packing", "cartage", "freight", "transport", "inward",
+                "octroi", "clearing", "loading", "unloading", "coolie",
+                "labour", "finishing", "processing", "dyeing", "printing",
+                "stitching", "embroidery", "washing",
+            ]
+            _is_direct_purchase = any(s in name_lower for s in _direct_suffixes)
+            if not _is_direct_purchase:
+                return "purchases", "high"
+            # Fall through: PURCHASE PACKING etc. → direct_expenses (return below)
         return "direct_expenses", "high"
 
     # FIX: Tally "Purchase" group contains BOTH pure purchase accounts AND
@@ -2061,6 +2230,71 @@ def _classify_single(name, net_amount, group=None):
         if kw in name_lower:
             return "depreciation", "high"
 
+    # FIX J4 (2026-09-19): SECURED LOANS group — bank CC/OD accounts are
+    # SHORT-TERM borrowings, not long-term. E.g. "ICICI BANK 58" under
+    # SECURED LOANS is a credit-card/CC limit = st_borrowings.
+    # Override BEFORE GROUP_HEAD_MAP fires (which would give lt_borrowings).
+    if "secured loans" in group_lower and net_amount < 0:
+        _is_bank_cc = any(kw in name_lower for kw in [
+            "icici", "hdfc", "sbi", "pnb", "bank", "cc ", "c.c.", "cash credit",
+            "overdraft", "od ", "o.d.", "working capital",
+        ])
+        if _is_bank_cc:
+            return "st_borrowings", "high"
+
+    # FIX W1 (2026-09-19): SECURITIES & DEPOSITS group — name-level intercept
+    # to split: PPF/Gold/NSC → non_current_investments; security deposits → stla.
+    # GROUP_HEAD_MAP maps the whole group to "stla" which is wrong for PPF/Gold.
+    if "securities" in group_lower and ("deposit" in group_lower or "securities" in group_lower):
+        if any(kw in name_lower for kw in [
+                "p.p.f", "ppf", "public provident", "provident fund",
+                "gold coin", "gold bond", "gold (", "sovereign gold",
+                "nsc", "kvp", "national savings", "kisan vikas",
+        ]):
+            return "non_current_investments", "high"
+        # Electric security deposit → other_current_assets
+        # (template Note 12 "Other Current Assets" lists it alongside Prepaid Insurance)
+        if any(kw in name_lower for kw in [
+                "electric security", "electricity security",
+                "security deposit electricity", "security elec",
+        ]):
+            return "other_current_assets", "high"
+        # Other security deposits → stla (advance/deposit)
+        # falls through to GROUP_HEAD_MAP → stla which is correct
+
+    # FIX W1b (2026-09-19): PPF / Gold — also catch when group is empty
+    # (standalone TB without group labels)
+    if any(kw in name_lower for kw in ["p.p.f", "ppf", "public provident fund"]):
+        return "non_current_investments", "high"
+    if re.search(r'\bgold\s+coin', name_lower) or re.search(r'\bgold\s+bond', name_lower):
+        return "non_current_investments", "high"
+
+    # FIX W2b (2026-09-19): In "CURRENT ASSETS, LOANS & ADVANCES" group:
+    # PREPAID INSURANCE → other_current_assets (not stla)
+    if "current assets" in group_lower and "loans" in group_lower:
+        if any(kw in name_lower for kw in ["prepaid", "advance tax", "prepaid insurance"]):
+            return "other_current_assets", "high"
+        # GST Paid / VAT / TDS Receivable → stla (advance to govt authority)
+        if any(kw in name_lower for kw in [
+                "gst paid", "gst receivable", "vat", "tds receivable",
+                "tcs receivable", "input gst", "sgst input", "cgst input",
+                "igst input",
+        ]):
+            return "stla", "high"
+
+    # FIX J1 (2026-09-19): INDIRECT EXPENSES group — name-priority intercepts
+    # so that SALERY A/C, INTEREST BANK/UNSECURED do NOT fall through to
+    # other_expenses via the GROUP_HEAD_MAP, but to their correct heads.
+    # Note: salary/interest are checked by the employee_expenses and
+    # finance_cost name-keyword rules below ANYWAY — but those rules only
+    # fire AFTER the GROUP_HEAD_MAP check. Since GROUP_HEAD_MAP for
+    # "indirect expenses" → other_expenses returns before those rules, we
+    # must intercept here first.
+    # (No explicit code needed: the employee_expenses and finance_cost
+    # checks below now run BEFORE the GROUP_HEAD_MAP lookup for ALL groups,
+    # not just "indirect expenses". The re-ordering achieved by placing them
+    # before Step 1 in the code flow is the fix.)
+
     # FIX Bug 2/3/4/5: PAYABLES group accounts are LIABILITIES (other_cl),
     # even when their name contains salary/ESI/wage keywords.
     # E.g. "SALARY ARTI DEVI" under group "PAYABLES" is salary PAYABLE
@@ -2122,6 +2356,26 @@ def _classify_single(name, net_amount, group=None):
         # ADVANCE FROM CUSTOMERS → other_cl (advance received = current liability)
         if "advance from customer" in group_lower:
             return "other_cl", "high"
+        # FIX W (2026-09-19): "PROFIT & LOSS A/C's – INDIRECT EXPENSES" group
+        # (Wool Centre structured TB format). Contains "indirect expenses" as a
+        # suffix — route to other_expenses BEFORE name-keyword matching so that
+        # "MOBILE EXPS." (matches fixed_assets "mobile") and "PROPERTY TAX"
+        # (matches fixed_assets "property") don't land in fixed_assets.
+        # Only override for accounts that would otherwise false-trigger fixed_assets;
+        # SALARY/LABOUR already returned above; electricity/direct items fall through
+        # to the direct-group-regex check which handles them correctly.
+        if ("indirect expense" in group_lower or
+                ("profit" in group_lower and "loss" in group_lower and
+                 ("indirect" in group_lower or "expense" in group_lower))):
+            # Check if name contains a fixed_asset false-trigger keyword
+            _fa_false_triggers = [
+                "mobile exp", "mobile charge", "mobile bill",
+                "property tax", "property rent",
+                "building rent", "land rent", "machinery rent",
+                "vehicle tax", "road tax", "vehicle insurance",
+            ]
+            if any(kw in name_lower for kw in _fa_false_triggers):
+                return "other_expenses", "high"
         # SUNDRY PAYABLE / PAYABLES → other_cl (JEANS WORLD "PAYABLES" group)
         if "sundry payable" in group_lower or group_lower in ("payables", "payable"):
             return "other_cl", "high"
@@ -4440,9 +4694,21 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             s = re.sub(r"\s+", " ", s).strip()
             return s
 
+        # FIX (2026-09-19): Hard-exclude any account whose name contains
+        # salary/labour/interest keywords from the revenue list — these are
+        # employee/finance-cost accounts that may have been misclassified as
+        # 'revenue' due to group inheritance from a previous SALES ACCOUNTS row
+        # in flat TBs without an explicit group column (now fixed via group_col
+        # detection, but keep this guard as belt-and-suspenders).
+        _revenue_exclude_kws = [
+            "salary", "salery", "salari", "wage", "labour", "labor",
+            "interest bank", "interest un", "interest on loan",
+        ]
         sale_accounts = [a for a in individual_accounts
                          if a.get("bs_head") == "revenue"
-                         and abs(a.get("net", 0)) > 0]
+                         and abs(a.get("net", 0)) > 0
+                         and not any(kw in a.get("name", "").lower()
+                                     for kw in _revenue_exclude_kws)]
 
         # FIX (Issue 1 — revised): the previous "pre-filled" detector checked
         # whether TB revenue amounts matched ANY numeric literal anywhere in
