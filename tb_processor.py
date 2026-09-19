@@ -2798,6 +2798,34 @@ def _fuzzy_match_name(tb_name, template_name):
         s = re.sub(r'(?<=\w)\.(?=\s)', ' ', s)        # trailing dot on words
         s = re.sub(r'[^a-z0-9\s]', ' ', s)
         s = re.sub(r'\s+', ' ', s).strip()
+        # FIX (2026-09-19): Normalise common Indian name spelling variants so
+        # Tally TB names (e.g. "BALVINDER KAUR") match template names
+        # (e.g. "Balwinder Kaur"). These pairs are phonetically identical but
+        # Tally and the CA's template may use different romanisations.
+        # All variants are mapped ONE-WAY to a canonical form so both sides
+        # normalise to the same string (no circular substitutions).
+        _NAME_CANONICAL = {
+            # balvinder/balwinder → balwinder (canonical)
+            'balvinder': 'balwinder',
+            # Common v/w alternation in Punjabi names
+            'ravinder': 'rawinder',  'rawinder': 'rawinder',
+            'davinder': 'dawinder',  'dawinder': 'dawinder',
+            'kulvinder': 'kulwinder','kulwinder': 'kulwinder',
+            'satinder': 'satwinder', 'satvinder': 'satwinder', 'satwinder': 'satwinder',
+            'jasvinder': 'jaswinder','jaswinder': 'jaswinder',
+            # Common eer/ir/eer alternation
+            'baljit': 'baljeet', 'baljeet': 'baljeet',
+            'manjit': 'manjeet', 'manjeet': 'manjeet',
+            'harjit': 'harjeet', 'harjeet': 'harjeet',
+            'gurjit': 'gurjeet', 'gurjeet': 'gurjeet',
+            'surjit': 'surjeet', 'surjeet': 'surjeet',
+            # Common a/e alternation in South Indian / Hindi names
+            'mahender': 'mahinder', 'mahinder': 'mahinder',
+            'rajni': 'rajni',       'rani': 'rani',    # keep distinct
+            'simranjit': 'simranjeet', 'simranjeet': 'simranjeet',
+        }
+        _words = s.split()
+        s = ' '.join(_NAME_CANONICAL.get(w, w) for w in _words)
         return s
 
     a = normalize(tb_name)
@@ -3187,7 +3215,18 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             if "Details" in wb.sheetnames and unsecured_accounts:
                 ws_det_ltb = wb["Details"]
                 # Find a section whose header mentions "unsecured loan"
-                # and locate its name-labeled rows + Total row.
+                # and locate its name-labeled rows + GRAND Total row.
+                # FIX (2026-09-19): previously stopped at the FIRST "Total" row
+                # (e.g. "FROM RELATED PARTIES" sub-total), missing the
+                # "FROM OTHER PARTIES" sub-section that follows it.
+                # Example: Jagdamba template has:
+                #   R4  UNSECURED LOAN (header)
+                #   R7  Roshan Lal & Sons HUF
+                #   R10 Total (from related parties sub-total)  ← was section_end
+                #   R12 Nil / Shree Ganesh Ji (FROM OTHER PARTIES)  ← was skipped
+                #   R13 Total (other parties sub-total)
+                #   R14 TOTAL (grand total)                     ← correct section_end
+                # Now looks for the last "TOTAL" (all-caps or col A) as the boundary.
                 section_start, section_end = None, None
                 for r in range(1, min(ws_det_ltb.max_row, 60) + 1):
                     a_val = ws_det_ltb.cell(r, 1).value
@@ -3195,10 +3234,18 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                         section_start = r
                         break
                 if section_start:
-                    for r in range(section_start, section_start + 30):
+                    for r in range(section_start, section_start + 40):
+                        a_val = ws_det_ltb.cell(r, 1).value
                         b_val = ws_det_ltb.cell(r, 2).value
-                        if b_val and str(b_val).strip().lower() == "total":
+                        # Grand TOTAL row: text in col A (not col B) and says "TOTAL"
+                        if (a_val and str(a_val).strip().upper() == "TOTAL"
+                                and r > section_start + 2):
                             section_end = r
+                            break
+                        # Fallback: stop at a new section that is NOT part of the loan block
+                        if (a_val and r > section_start + 5
+                                and "sundry" in str(a_val).lower()):
+                            section_end = r - 1
                             break
                 if section_start and section_end:
                     still_unmatched_ltb = []
@@ -3218,7 +3265,41 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                                 )
                                 written_rows.add(("details_ltb", matched_r))
                                 continue
-                        still_unmatched_ltb.append(acct)
+                        # FIX (2026-09-19): unmatched unsecured accounts go to
+                        # "FROM OTHER PARTIES" sub-section (look for a "Nil" row
+                        # or blank name row in that sub-block and repurpose it).
+                        _placed_other = False
+                        for r in range(section_start, section_end):
+                            b_val = ws_det_ltb.cell(r, 2).value
+                            a_val = ws_det_ltb.cell(r, 1).value
+                            b_str = str(b_val or "").strip().lower()
+                            a_str = str(a_val or "").strip().lower()
+                            # Skip: section headers (col A has meaningful text that
+                            # is NOT a party prefix like "M/s." or row number)
+                            _a_is_header = (a_val is not None
+                                            and not str(a_val).strip().startswith(("M/s", "m/s"))
+                                            and not str(a_val).strip().isdigit())
+                            if _a_is_header:
+                                continue
+                            if b_str in ("nil", "", " ") or b_val is None:
+                                # Skip sub-total / total rows
+                                if "total" in a_str or "total" in b_str:
+                                    continue
+                                # Skip sub-section header rows (FROM RELATED, FROM OTHER)
+                                if "from " in b_str:
+                                    continue
+                                d_val = ws_det_ltb.cell(r, 4).value
+                                if d_val is None or d_val == 0:
+                                    ws_det_ltb.cell(r, 2).value = name
+                                    if _safe_write(ws_det_ltb, r, 4, amt):
+                                        injected.append(
+                                            f"Details!D{r} (unsecured other: {name}) = {amt:,.2f}"
+                                        )
+                                        written_rows.add(("details_ltb", r))
+                                        _placed_other = True
+                                        break
+                        if not _placed_other:
+                            still_unmatched_ltb.append(acct)
                     unsecured_remaining = still_unmatched_ltb
 
             # Unsecured → rows unsecured_start onward as fallback (any
@@ -3670,8 +3751,174 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
                     injected.append(f"notes to bs!D{r} (STLA lump) = {stla_amt:,.2f}")
                     break
 
-    # ────────────────────────────────────────────────────────────────
-    # 3. DETAILS — individual creditor/debtor amounts (CACHE-BASED)
+        # ── Advance to Supplier → STLA "Loans to Others" sub-row ──────────
+        # FIX (2026-09-19): advance_to_supplier accounts (debit-balance
+        # creditors, e.g. SH.PRINCE KANSAL) were correctly classified but
+        # NEVER written into the notes to bs STLA section. They ended up
+        # at Details R42 (outside the debtor SUM range) — visible in the
+        # sheet but excluded from every formula total.
+        # Fix: scan notes to bs for "Loans to Others" / "B" section under
+        # STLA and write the advance amounts into blank value rows there.
+        if individual_accounts:
+            adv_sup_accts = [a for a in individual_accounts
+                             if a.get("bs_head") == "advance_to_supplier"
+                             and abs(a.get("net", 0)) > 0]
+            if adv_sup_accts:
+                _stla_loans_other_row = None
+                _stla_loans_other_end = None
+                for r in range(100, 200):
+                    lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                    col_a = str(ws_n.cell(r, 1).value or "").strip()
+                    # "B" label in col A + "Loans to Others" in col B
+                    if (col_a == "B" and "loan" in lbl and "other" in lbl):
+                        _stla_loans_other_row = r + 1  # first data row
+                    if _stla_loans_other_row and "total" in lbl and r > _stla_loans_other_row:
+                        _stla_loans_other_end = r
+                        break
+                for adv_acct in adv_sup_accts:
+                    _placed = False
+                    if _stla_loans_other_row and _stla_loans_other_end:
+                        for r in range(_stla_loans_other_row, _stla_loans_other_end):
+                            d = ws_n.cell(r, 4).value
+                            b = ws_n.cell(r, 2).value
+                            if (d is None or d == 0) and not _is_formula(d):
+                                if b is None or str(b).strip() == "":
+                                    ws_n.cell(r, 2).value = f"Advance to Supplier ({adv_acct['name'].strip()})"
+                                ws_n.cell(r, 4).value = abs(adv_acct["net"])
+                                injected.append(
+                                    f"notes to bs!D{r} (Adv to Supplier: {adv_acct['name'].strip()}) "
+                                    f"= {abs(adv_acct['net']):,.2f}"
+                                )
+                                _placed = True
+                                break
+                    if not _placed:
+                        skipped.append(
+                            f"Advance to Supplier '{adv_acct['name'].strip()}' "
+                            f"= {abs(adv_acct['net']):,.2f}: no free row in STLA Loans-to-Others"
+                        )
+
+        # ── Non-Current Investments → notes to bs NCI sub-rows ─────────────
+        # FIX (2026-09-19): non_current_investments (PPF, Gold Coins, NSC,
+        # FDR etc.) were classified correctly but NEVER injected anywhere.
+        # The Notes to BS has a "Non Current Investments" section with
+        # individual label rows (Gold coins, PPF, etc.) and a Total row
+        # whose formula flows to bs!E28. Inject by fuzzy-matching each
+        # account to a template sub-row; unmatched go into blank rows.
+        if individual_accounts:
+            nci_accounts = [a for a in individual_accounts
+                            if a.get("bs_head") == "non_current_investments"
+                            and abs(a.get("net", 0)) > 0]
+            if nci_accounts:
+                # Find NCI section in notes to bs
+                _nci_start = None
+                _nci_end = None
+                for r in range(70, 200):
+                    lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                    if "non current invest" in lbl or "non-current invest" in lbl:
+                        _nci_start = r + 1
+                    if _nci_start and "total" in lbl and r > _nci_start:
+                        _nci_end = r
+                        break
+
+                if _nci_start and _nci_end:
+                    # Build template sub-row map (label → row)
+                    _nci_template = {}
+                    for r in range(_nci_start, _nci_end):
+                        b = ws_n.cell(r, 2).value
+                        if b and isinstance(b, str) and b.strip():
+                            _nci_template[r] = b.strip().lower()
+
+                    _nci_written = set()
+                    # Phase 1: fuzzy-match to existing label rows
+                    for acct in nci_accounts:
+                        for r, lbl in _nci_template.items():
+                            if r in _nci_written:
+                                continue
+                            if _fuzzy_match_name(acct["name"], lbl):
+                                ws_n.cell(r, 4).value = abs(acct["net"])
+                                _nci_written.add(r)
+                                injected.append(
+                                    f"notes to bs!D{r} (NCI: {acct['name'].strip()}) "
+                                    f"= {abs(acct['net']):,.2f}"
+                                )
+                                break
+
+                    # Phase 2: unmatched → write to blank rows + add label
+                    for acct in nci_accounts:
+                        if any(_fuzzy_match_name(acct["name"],
+                               _nci_template.get(r, "")) for r in _nci_written):
+                            continue  # already placed
+                        for r in range(_nci_start, _nci_end):
+                            if r in _nci_written:
+                                continue
+                            d = ws_n.cell(r, 4).value
+                            b = ws_n.cell(r, 2).value
+                            if (d is None or d == 0) and not _is_formula(d):
+                                if b is None or str(b).strip() == "":
+                                    ws_n.cell(r, 2).value = acct["name"].strip()
+                                ws_n.cell(r, 4).value = abs(acct["net"])
+                                _nci_written.add(r)
+                                injected.append(
+                                    f"notes to bs!D{r} (NCI new: {acct['name'].strip()}) "
+                                    f"= {abs(acct['net']):,.2f}"
+                                )
+                                break
+                        else:
+                            skipped.append(
+                                f"NCI '{acct['name'].strip()}' = {abs(acct['net']):,.2f}: "
+                                f"no free row in NCI section"
+                            )
+                else:
+                    skipped.append(
+                        "Non-Current Investments section not found in notes to bs. "
+                        "Accounts: " + ", ".join(a["name"].strip() for a in nci_accounts)
+                    )
+
+        # ── Trade Payables total → notes to bs creditor note ────────────────
+        # FIX (2026-09-19): The trade payables total from the TB was NEVER
+        # written to Notes to BS "(b) total outstanding dues of creditors
+        # other than MSME" row. That row's formula (=Details!D27 or similar)
+        # usually pulls from the Details creditor TOTAL row — but when the
+        # Details TOTAL row formula =SUM(D18:D22) isn't being populated
+        # (because individual creditors weren't name-matched), the note shows
+        # 0. We now write the trade_payables aggregate directly to the first
+        # writable "(b) total outstanding / creditors other than MSME" row
+        # in notes to bs, overriding any stale formula that points to 0.
+        tp_amt = aggregated_values.get("trade_payables", 0)
+        if tp_amt:
+            _tp_row = None
+            for r in range(30, 80):
+                lbl = (ws_n.cell(r, 2).value or "").strip().lower()
+                if ("total outstanding" in lbl or "other than micro" in lbl
+                        or "other than msme" in lbl or
+                        ("total" in lbl and "trade payable" in lbl)):
+                    # Prefer the "(b)" row that mentions non-MSME creditors
+                    if "msme" in lbl or "micro" in lbl or "other than" in lbl:
+                        _tp_row = r
+                        break
+                    elif "total trade payable" in lbl:
+                        _tp_row = r  # fallback: the grand total row
+            if _tp_row:
+                existing = ws_n.cell(_tp_row, 4).value
+                # Only write if: None, 0, or a formula that resolves to 0
+                if existing is None or existing == 0 or (
+                        isinstance(existing, str) and existing.startswith("=")):
+                    ws_n.cell(_tp_row, 4).value = tp_amt
+                    injected.append(
+                        f"notes to bs!D{_tp_row} (Trade payables creditors) = {tp_amt:,.2f}"
+                    )
+                # Also write the MSME disclosure "Principal" row right below
+                for r2 in range(_tp_row + 1, _tp_row + 10):
+                    lbl2 = (ws_n.cell(r2, 2).value or "").strip().lower()
+                    if "principal" in lbl2:
+                        if ws_n.cell(r2, 4).value in (None, 0):
+                            ws_n.cell(r2, 4).value = tp_amt
+                        break
+            else:
+                skipped.append(
+                    f"Trade payables {tp_amt:,.2f}: could not find 'total outstanding' "
+                    f"row in notes to bs (rows 30-80)"
+                )
     # ────────────────────────────────────────────────────────────────
     if "Details" in wb.sheetnames and individual_accounts:
         ws_det  = wb["Details"]
@@ -4513,12 +4760,16 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
             max_r = _actual_max if _actual_max else max(recv_written)
 
             _lt6_row, _gt6_row = None, None
+            _lt6_secured_row = None   # FIX (2026-09-19): (a) Secured row
             _found_lt6_header = False
             for _nr in range(1, 300):
                 _nb   = ws_nbs_fix.cell(_nr, 2).value   # col B = always the text label
                 _nlbl = str(_nb or "").strip().lower()
                 if "trade receivable" in _nlbl:
                     _found_lt6_header = True
+                if _found_lt6_header and "(a)" in _nlbl and "secured" in _nlbl and "unsecured" not in _nlbl:
+                    if _lt6_secured_row is None:
+                        _lt6_secured_row = _nr
                 if _found_lt6_header and "(b)" in _nlbl and "unsecured" in _nlbl:
                     if _lt6_row is None:
                         _lt6_row = _nr
@@ -4528,6 +4779,20 @@ def inject_into_bs(bs_template_path, output_path, aggregated_values,
 
             if _lt6_row is None: _lt6_row = 80
             if _gt6_row is None: _gt6_row = 86
+
+            # FIX (2026-09-19): Clear the (a) Secured row to prevent double-count.
+            # The template often has =Details!D40 (the debtors TOTAL) at the Secured
+            # row — same value as the Unsecured SUM formula — counting debts twice.
+            # Standard CA practice: all trade debtors are Unsecured unless the CA
+            # explicitly marks some as secured. Clear (a) Secured to 0.
+            if _lt6_secured_row:
+                _secured_val = ws_nbs_fix.cell(_lt6_secured_row, 4).value
+                if _secured_val is not None and _secured_val != 0:
+                    ws_nbs_fix.cell(_lt6_secured_row, 4).value = None
+                    log.append(
+                        f"✓ Cleared notes to bs!D{_lt6_secured_row} (Secured debtors) "
+                        f"from {repr(_secured_val)} → None (debtors are unsecured)"
+                    )
 
             _lt6_val = ws_nbs_fix.cell(_lt6_row, 4).value
             # Always replace if it's a single-cell ref OR a stale SUM
