@@ -12384,7 +12384,7 @@ convertBtn.addEventListener('click',async()=>{
       const a=document.createElement('a');a.href=url;a.download=name;
       document.body.appendChild(a);a.click();document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      showStatus('✅ Downloaded <strong>'+name+'</strong>. Open it in Excel and you\'re done!','success');
+      showStatus('✅ Downloaded <strong>'+name+'</strong>. Open it in Excel and you’re done!','success');
     }
   }catch(err){
     showStatus('❌ Network / server error: '+err.message,'error');
