@@ -1425,7 +1425,18 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       </div>
     </a>
 
-    <div class="tool-card coming disabled anim-up anim-d6">
+    <a href="/tool/pdf-to-tb" class="tool-card free-card anim-up anim-d6">
+      <span class="corner-badge cb-free">Free</span>
+      <div class="tool-icon" style="background:linear-gradient(135deg,#ECFDF5,#A7F3D0)">📄</div>
+      <h2>PDF → Trial Balance</h2>
+      <p>Convert any Tally / Busy / Marg Trial Balance PDF into a clean editable Excel — proper Debit/Credit columns, live SUM totals, no merged cells.</p>
+      <div class="tool-footer">
+        <span class="tool-tag tag-live-free">✓ Live · Free</span>
+        <span class="tool-arrow">→</span>
+      </div>
+    </a>
+
+    <div class="tool-card coming disabled anim-up anim-d7">
       <div class="tool-icon" style="background:linear-gradient(135deg,#F0FDFA,#CCFBF1)">🚀</div>
       <h2>More Tools Coming</h2>
       <p>New utilities added regularly based on your feedback. Stay tuned!</p>
@@ -1442,7 +1453,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <!-- ── STATS BAR ──────────────────────────────────────────────── -->
 <div class="stats-row">
   <div class="stats-inner">
-    <div class="stat-item anim-up anim-d1"><span class="stat-icon">🧰</span><div class="stat-n"><em>9</em>+</div><div class="stat-l">CA Tools Live</div></div>
+    <div class="stat-item anim-up anim-d1"><span class="stat-icon">🧰</span><div class="stat-n"><em>10</em>+</div><div class="stat-l">CA Tools Live</div></div>
     <div class="stat-item anim-up anim-d2"><span class="stat-icon">✔️</span><div class="stat-n">100%</div><div class="stat-l">Formatting Preserved</div></div>
     <div class="stat-item anim-up anim-d3"><span class="stat-icon">⚡</span><div class="stat-n">&lt;<em>10s</em></div><div class="stat-l">Processing Time</div></div>
     <div class="stat-item anim-up anim-d4"><span class="stat-icon">📄</span><div class="stat-n"><em>∞</em></div><div class="stat-l">Templates Supported</div></div>
@@ -9499,6 +9510,17 @@ try:
 except ImportError:
     TB_PROCESSOR_AVAILABLE = False
 
+# ── PDF → Trial Balance (Excel) — standalone free feature ─────────────────────
+# Reads a Tally / Busy / Marg / other Indian-accounting-software Trial Balance
+# PDF and emits an editable .xlsx with Debit/Credit columns, section totals as
+# SUM formulas, and a Grand Total. Does NOT share code with processor.py or
+# tb_processor.py — removing pdf_tb_processor.py leaves those untouched.
+try:
+    from pdf_tb_processor import convert_pdf_to_tb_excel
+    PDF_TB_PROCESSOR_AVAILABLE = True
+except ImportError:
+    PDF_TB_PROCESSOR_AVAILABLE = False
+
 
 @app.route("/tool/tb-to-bs")
 def tb_to_bs_page():
@@ -12133,6 +12155,309 @@ function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&
 </div>
 <script>function openHelp(){document.getElementById('helpOverlay').classList.add('open')}function closeHelp(){document.getElementById('helpOverlay').classList.remove('open')}document.getElementById('helpOverlay').addEventListener('click',function(e){if(e.target===this)closeHelp()})</script>
 </body></html>"""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PDF → TRIAL BALANCE (EXCEL) — FREE FEATURE
+#  Standalone tool. Reads any Trial Balance PDF (Tally / Busy / Marg / other
+#  Indian accounting software) and returns a clean, editable .xlsx with real
+#  SUM formulas and no merged cells.
+#  Does not consume upload quota — completely free, no login required.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+PDF_TB_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PDF to Trial Balance – CA Toolkit</title>
+<style>
+""" + BASE_CSS + """
+.hero-card{max-width:820px;margin:32px auto;background:#fff;border-radius:20px;
+  box-shadow:0 8px 24px rgba(0,0,0,.06);border:1px solid #E5E7EB;overflow:hidden}
+.hero-hd{background:linear-gradient(135deg,#0B5D4A,#0E8A7B);color:#fff;
+  padding:30px 32px}
+.hero-hd h1{font-family:'Plus Jakarta Sans',sans-serif;font-size:24px;
+  font-weight:800;margin:0 0 6px}
+.hero-hd p{margin:0;font-size:13px;color:rgba(255,255,255,.85);line-height:1.6}
+.badge-free{display:inline-block;background:rgba(255,255,255,.18);color:#fff;
+  padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;
+  letter-spacing:.6px;margin-bottom:10px}
+.hero-body{padding:28px 32px}
+.upload-zone{border:2px dashed #A7F3D0;background:#F0FDF4;border-radius:14px;
+  padding:32px 20px;text-align:center;cursor:pointer;transition:.2s;
+  margin-bottom:20px}
+.upload-zone:hover{border-color:#059669;background:#DCFCE7}
+.upload-zone.dragover{border-color:#059669;background:#BBF7D0}
+.upload-zone .u-icon{font-size:36px;margin-bottom:10px}
+.upload-zone .u-txt{font-size:14px;color:#065F46;font-weight:600;margin-bottom:4px}
+.upload-zone .u-sub{font-size:12px;color:#059669}
+#pdfFile{display:none}
+.picked{display:none;background:#ECFDF5;border:1px solid #A7F3D0;border-radius:10px;
+  padding:12px 16px;margin-bottom:16px;font-size:13px;color:#065F46}
+.picked.show{display:flex;justify-content:space-between;align-items:center}
+.picked .remove{background:none;border:none;color:#DC2626;cursor:pointer;
+  font-size:18px;font-weight:700}
+.action-row{display:flex;gap:12px;flex-wrap:wrap}
+.btn-convert{flex:1;min-width:200px;background:linear-gradient(135deg,#059669,#047857);
+  color:#fff;border:none;padding:14px 22px;border-radius:12px;font-size:14px;
+  font-weight:700;cursor:pointer;transition:.2s;font-family:inherit}
+.btn-convert:hover:not(:disabled){transform:translateY(-1px);
+  box-shadow:0 6px 16px rgba(5,150,105,.25)}
+.btn-convert:disabled{opacity:.5;cursor:not-allowed}
+.btn-back{background:#F3F4F6;color:#374151;border:none;padding:14px 22px;
+  border-radius:12px;font-size:14px;font-weight:600;cursor:pointer;
+  text-decoration:none;display:inline-flex;align-items:center;
+  font-family:inherit}
+.btn-back:hover{background:#E5E7EB}
+.status-box{margin-top:16px;padding:14px 18px;border-radius:10px;font-size:13px;
+  line-height:1.6;display:none}
+.status-box.show{display:block}
+.status-box.info{background:#EFF6FF;color:#1E40AF;border:1px solid #BFDBFE}
+.status-box.error{background:#FEF2F2;color:#991B1B;border:1px solid #FECACA}
+.status-box.success{background:#F0FDF4;color:#065F46;border:1px solid #A7F3D0}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.3);
+  border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;
+  vertical-align:-2px;margin-right:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px}
+@media(max-width:600px){.info-grid{grid-template-columns:1fr}}
+.info-tile{background:#F9FAFB;border:1px solid #E5E7EB;border-radius:12px;
+  padding:16px}
+.info-tile h4{margin:0 0 6px;font-family:'Plus Jakarta Sans',sans-serif;
+  font-size:13px;font-weight:800;color:#0B5D4A}
+.info-tile p{margin:0;font-size:12px;color:#4B5563;line-height:1.55}
+</style></head><body>
+
+<!-- NAV -->
+<header class="site-header">
+  <div class="site-header-inner">
+    <a href="/" class="site-brand"><span class="brand-mark">✦</span> CA Toolkit</a>
+    <nav class="site-nav">
+      <a href="/">Home</a>
+      <a href="/ca-tools-hub">All Tools</a>
+      {% if username %}<a href="/logout">Logout</a>{% else %}<a href="/login">Login</a>{% endif %}
+    </nav>
+  </div>
+</header>
+
+<div class="hero-card">
+  <div class="hero-hd">
+    <span class="badge-free">🆓 FREE · No login needed</span>
+    <h1>📄 PDF → Trial Balance (Excel)</h1>
+    <p>Upload any Trial Balance PDF exported from Tally, Busy, Marg or other
+    accounting software. Get back a clean, editable .xlsx with proper
+    Debit/Credit columns, section totals, and Grand Total — no merged cells,
+    all totals as live SUM formulas.</p>
+  </div>
+
+  <div class="hero-body">
+    <label for="pdfFile" class="upload-zone" id="dropZone">
+      <div class="u-icon">📎</div>
+      <div class="u-txt">Click here or drop your Trial Balance PDF</div>
+      <div class="u-sub">Supports Tally, Busy, Marg &amp; other GST-software exports</div>
+      <input type="file" id="pdfFile" accept=".pdf,application/pdf">
+    </label>
+
+    <div class="picked" id="picked">
+      <span id="pickedName">–</span>
+      <button class="remove" id="removeBtn" title="Remove">×</button>
+    </div>
+
+    <div class="action-row">
+      <a href="/" class="btn-back">← Back</a>
+      <button class="btn-convert" id="convertBtn" disabled>
+        <span id="btnText">Convert to Excel</span>
+      </button>
+    </div>
+
+    <div class="status-box" id="statusBox"></div>
+
+    <div class="info-grid">
+      <div class="info-tile">
+        <h4>✓ Preserves Format</h4>
+        <p>Debit amounts land in the Debit column, Credit amounts in Credit —
+        never mixed. Grouping and sub-groups are kept.</p>
+      </div>
+      <div class="info-tile">
+        <h4>✓ Editable Output</h4>
+        <p>Zero merged cells. Every total is a live SUM formula. Change a
+        value and every total recalculates instantly.</p>
+      </div>
+      <div class="info-tile">
+        <h4>✓ Every Format</h4>
+        <p>Group-wise with "Total :" rows or Tally hierarchical with parent
+        subtotals — both handled automatically.</p>
+      </div>
+      <div class="info-tile">
+        <h4>✓ Truly Free</h4>
+        <p>No login, no upload counter, no watermark. Convert as many PDFs
+        as you like.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const fileInput=document.getElementById('pdfFile');
+const dropZone=document.getElementById('dropZone');
+const picked=document.getElementById('picked');
+const pickedName=document.getElementById('pickedName');
+const removeBtn=document.getElementById('removeBtn');
+const convertBtn=document.getElementById('convertBtn');
+const btnText=document.getElementById('btnText');
+const statusBox=document.getElementById('statusBox');
+
+function showStatus(msg,kind){
+  statusBox.className='status-box show '+kind;
+  statusBox.innerHTML=msg;
+}
+function clearStatus(){statusBox.className='status-box';statusBox.innerHTML='';}
+
+function setFile(f){
+  if(!f){picked.classList.remove('show');convertBtn.disabled=true;return;}
+  if(!f.name.toLowerCase().endsWith('.pdf')){
+    showStatus('Only PDF files are accepted.','error');return;
+  }
+  pickedName.textContent=f.name+' ('+(f.size/1024).toFixed(1)+' KB)';
+  picked.classList.add('show');
+  convertBtn.disabled=false;
+  clearStatus();
+}
+
+fileInput.addEventListener('change',e=>setFile(e.target.files[0]));
+removeBtn.addEventListener('click',e=>{
+  e.preventDefault();e.stopPropagation();
+  fileInput.value='';setFile(null);
+});
+['dragenter','dragover'].forEach(ev=>dropZone.addEventListener(ev,e=>{
+  e.preventDefault();dropZone.classList.add('dragover');
+}));
+['dragleave','drop'].forEach(ev=>dropZone.addEventListener(ev,e=>{
+  e.preventDefault();dropZone.classList.remove('dragover');
+}));
+dropZone.addEventListener('drop',e=>{
+  const f=e.dataTransfer.files[0];
+  if(f){fileInput.files=e.dataTransfer.files;setFile(f);}
+});
+
+convertBtn.addEventListener('click',async()=>{
+  const f=fileInput.files[0];
+  if(!f){showStatus('Please choose a PDF first.','error');return;}
+  convertBtn.disabled=true;
+  btnText.innerHTML='<span class="spinner"></span>Converting…';
+  showStatus('Extracting text and building your Excel file. This usually takes 3–10 seconds.','info');
+  const fd=new FormData();fd.append('pdf_file',f);
+  try{
+    const resp=await fetch('/pdf-to-tb-process',{method:'POST',body:fd});
+    const ct=resp.headers.get('content-type')||'';
+    if(!resp.ok || ct.indexOf('application/json')!==-1){
+      const j=await resp.json();
+      showStatus('❌ '+(j.message||'Conversion failed'),'error');
+    } else {
+      const blob=await resp.blob();
+      const cd=resp.headers.get('content-disposition')||'';
+      let name=f.name.replace(/[.]pdf$/i,'')+'_TrialBalance.xlsx';
+      const m=cd.match(/filename="?([^";]+)"?/i);
+      if(m) name=m[1];
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');a.href=url;a.download=name;
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showStatus('✅ Downloaded <strong>'+name+'</strong>. Open it in Excel and you\'re done!','success');
+    }
+  }catch(err){
+    showStatus('❌ Network / server error: '+err.message,'error');
+  }finally{
+    convertBtn.disabled=false;
+    btnText.textContent='Convert to Excel';
+  }
+});
+</script>
+</body></html>"""
+
+
+@app.route("/tool/pdf-to-tb")
+def tool_pdf_to_tb():
+    """Free PDF → Trial Balance converter. No login required."""
+    ctx = {"username": None}
+    if "uid" in session:
+        user = get_user_by_id(session["uid"])
+        if user:
+            ctx = user_ctx(user)
+    from flask import make_response
+    resp = make_response(render_template_string(PDF_TB_T, **ctx))
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
+@app.route("/pdf-to-tb-process", methods=["POST"])
+def pdf_to_tb_process():
+    """
+    Accept a PDF upload, convert to Trial Balance .xlsx via pdf_tb_processor,
+    stream the file back. No login, no quota — this is a free tool.
+    """
+    if not PDF_TB_PROCESSOR_AVAILABLE:
+        return jsonify({
+            "status": "error",
+            "message": ("PDF converter is not available on this server. "
+                        "Please contact " + CONTACT_EMAIL + " if this persists.")
+        }), 500
+
+    pdf_file = request.files.get("pdf_file")
+    if not pdf_file or not pdf_file.filename:
+        return jsonify({"status": "error",
+                        "message": "Please choose a PDF file to upload."}), 400
+
+    if not pdf_file.filename.lower().endswith(".pdf"):
+        return jsonify({"status": "error",
+                        "message": "Only .pdf files are accepted."}), 400
+
+    import tempfile
+    tmpdir = tempfile.mkdtemp(prefix="pdftb_")
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_",
+                       os.path.splitext(pdf_file.filename)[0])[:60] or "TrialBalance"
+    in_path = os.path.join(tmpdir, safe_stem + ".pdf")
+    out_path = os.path.join(tmpdir, safe_stem + "_TrialBalance.xlsx")
+    download_name = safe_stem + "_TrialBalance.xlsx"
+
+    try:
+        pdf_file.save(in_path)
+        result = convert_pdf_to_tb_excel(in_path, out_path)
+
+        if result.get("status") != "success":
+            msg = result.get("message", "Conversion failed.")
+            return jsonify({"status": "error", "message": msg}), 400
+
+        if not os.path.exists(out_path):
+            return jsonify({
+                "status": "error",
+                "message": "Output file was not produced. Please try again."
+            }), 500
+
+        return send_file(
+            out_path,
+            as_attachment=True,
+            download_name=download_name,
+            mimetype=("application/vnd.openxmlformats-officedocument"
+                      ".spreadsheetml.sheet"),
+        )
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "status": "error",
+            "message": f"Unexpected error while converting: {e}"
+        }), 500
+    finally:
+        # Best-effort temp cleanup. send_file streams synchronously here so
+        # by the time we reach 'finally' the response has been served for
+        # error paths; for the success path Flask holds a fd until the body
+        # is written, so we defer cleanup by trying quickly and ignoring
+        # errors — /tmp will reap eventually.
+        try:
+            if os.path.exists(in_path):
+                os.remove(in_path)
+        except Exception:
+            pass
 
 
 init_db()
