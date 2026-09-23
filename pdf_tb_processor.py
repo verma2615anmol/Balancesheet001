@@ -68,9 +68,11 @@ _X_TOL = 8.0
 # Patterns to strip page headers/footers regardless of format family
 _JUNK_PATTERNS = [
     re.compile(r'^\s*Continue to next page', re.I),
+    re.compile(r'^\s*Continued\s+On\s+Page\b', re.I),   # Super Scales / other exports
     re.compile(r'^\s*continued\s*\.{2,}\s*$', re.I),
     re.compile(r'^\s*Page\s*:?\s*\d+\s*(/\s*\d+)?\s*$', re.I),
     re.compile(r'^\s*Page\s+\d+\s*$', re.I),
+    re.compile(r'\bPage\s+No\s*\.?\s*\d', re.I),         # "Page No. 1" without colon
     re.compile(r'^\s*C\s*a\s*r\s*r\s*i\s*e\s*d\s+O\s*v\s*e\s*r\b', re.I),
     re.compile(r'^\s*B\s*r\s*o\s*u\s*g\s*h\s*t\s+F\s*o\s*r\s*w\s*a\s*r\s*d\b', re.I),
     # Column-header rows come in many shapes across accounting-software exports:
@@ -202,20 +204,34 @@ def _find_column_boundaries(all_lines: List[List[dict]]) -> Optional[Tuple[float
     Returns (debit_right_x1, credit_right_x1) — the right edges we use to
     classify subsequent value words into columns.
 
-    We take the FIRST such header we find; every page in a TB export uses the
-    same column geometry, so one is enough.
+    Some exports write the header as 'Debit Amount' / 'Credit Amount' rather
+    than plain 'Debit' / 'Credit'; we detect BOTH forms by walking the
+    header line and taking:
+      • debit_right  = x1 of the last word between "Debit" and "Credit"
+                       (that's "Debit" itself, or "Amount" after it, etc.)
+      • credit_right = x1 of the last word on the line
+                       (that's "Credit" itself, or "Amount" after it, etc.)
+
+    We take the FIRST such header we find; every page in a TB export uses
+    the same column geometry, so one is enough.
     """
     for line in all_lines:
-        debit_x1 = None
-        credit_x1 = None
-        for w in line:
+        debit_idx = None
+        credit_idx = None
+        for i, w in enumerate(line):
             t = w['text'].strip().lower()
-            if t == 'debit' and debit_x1 is None:
-                debit_x1 = w['x1']
-            elif t == 'credit' and credit_x1 is None:
-                credit_x1 = w['x1']
-        if debit_x1 is not None and credit_x1 is not None and credit_x1 > debit_x1:
-            return (debit_x1, credit_x1)
+            if t == 'debit' and debit_idx is None:
+                debit_idx = i
+            elif t == 'credit' and credit_idx is None:
+                credit_idx = i
+        if debit_idx is None or credit_idx is None or credit_idx <= debit_idx:
+            continue
+        # last word in the debit column = word immediately before Credit
+        debit_right = line[credit_idx - 1]['x1']
+        # last word in the credit column = last word on the line
+        credit_right = line[-1]['x1']
+        if credit_right > debit_right:
+            return (debit_right, credit_right)
     return None
 
 
@@ -341,12 +357,13 @@ def _looks_like_page_top_matter(line: List[dict], page_height: float) -> bool:
 
 def _detect_format(all_lines: List[List[dict]]) -> str:
     """
-    Return 'A' for group-wise with "Total :" markers, 'B' for Tally
+    Return 'A' for group-wise (with EITHER "Total :" markers OR unlabeled
+    bare-number subtotals like Marg / Super Scales exports), 'B' for Tally
     hierarchical, or 'flat' as a last-resort fallback.
     """
     total_hits = 0
     subgroup_hits = 0
-    hierarchy_signal = 0
+    numeric_only_hits = 0
 
     left_x_seen: List[float] = []
 
@@ -358,9 +375,13 @@ def _detect_format(all_lines: List[List[dict]]) -> str:
             subgroup_hits += 1
         if line and line[0]['x0'] < 200:  # ignore letterhead
             left_x_seen.append(line[0]['x0'])
+        # Unlabeled numeric-only line — Marg / Super Scales subtotal signal.
+        # Must be non-empty and every word must be an amount.
+        if line and all(_is_amount(w['text']) for w in line):
+            numeric_only_hits += 1
 
-    # Format A signal: many "Total :" lines
-    if total_hits >= 3:
+    # Group-wise signal: many "Total :" lines OR many unlabeled subtotals
+    if total_hits >= 3 or numeric_only_hits >= 3:
         return 'A'
 
     # Format B signal: multiple distinct indent levels among data lines
@@ -368,10 +389,7 @@ def _detect_format(all_lines: List[List[dict]]) -> str:
         # Round to nearest 3pt bucket and count distinct
         buckets = set(round(x / 3) * 3 for x in left_x_seen)
         if len(buckets) >= 3:
-            hierarchy_signal = len(buckets)
-
-    if hierarchy_signal >= 3:
-        return 'B'
+            return 'B'
 
     return 'flat'
 
@@ -400,9 +418,13 @@ def _extract_metadata(all_pages_lines: List[List[List[dict]]]) -> Dict[str, str]
     report_lines: List[str] = []
 
     def _strip_page_marker(text: str) -> str:
-        # "Group Wise Trial Balance AS On 31/03/2026 Page: 1 / 7"
-        # → "Group Wise Trial Balance AS On 31/03/2026"
-        return re.sub(r'\s*Page\s*:?\s*\d+\s*(?:/\s*\d+)?\s*$', '', text).strip()
+        # Strip trailing page markers in every form Indian TB PDFs emit:
+        #   "... Page: 1 / 7"      (Busy / Marg with colon)
+        #   "... Page 2"           (Tally continuation)
+        #   "... Page No. 1"       (Super Scales / other exports)
+        return re.sub(
+            r'\s*Page\s*(?:No\s*\.?)?\s*:?\s*\d+\s*(?:/\s*\d+)?\s*$',
+            '', text).strip()
 
     for line in first:
         if not line:
@@ -414,32 +436,42 @@ def _extract_metadata(all_pages_lines: List[List[List[dict]]]) -> Dict[str, str]
         x0 = line[0]['x0']
         has_num = any(_is_amount(w['text']) for w in line)
 
-        # Letterhead band (top ~13 % of page, centred).  Company name +
+        # Classify what this line represents BEFORE deciding which bucket
+        # it goes into.  A report-title / period line must always land in
+        # report_lines even if it sits inside the letterhead y-band —
+        # otherwise "TRIAL BALANCE" gets glued onto the address.
+        # A column-caption line ("Particulars", "Debit Credit",
+        # "Debit Amount Credit Amount") is dropped entirely.
+        has_dr_and_cr = (bool(re.search(r'\bDebit\b', txt, re.I))
+                         and bool(re.search(r'\bCredit\b', txt, re.I)))
+        is_column_caption = bool(re.search(r'\bparticulars\b', txt, re.I)) \
+                             or has_dr_and_cr
+        is_report_title = bool(re.search(r'trial\s+balance|group\s+wise',
+                                          txt, re.I))
+        is_period_line = bool(re.search(
+            r'closing\s+balance|opening\s+balance|\bas\s+on\b|\bas\s+at\b',
+            txt, re.I))
+        is_period_range = bool(re.match(
+            r'^\s*\d{1,2}-\w{3,}-\d{2,4}\s+to\s+\d{1,2}-\w{3,}-\d{2,4}\s*$',
+            txt, re.I))
+
+        if is_column_caption:
+            # "Particulars Debit Amount Credit Amount" is a table header,
+            # not metadata — drop it completely.
+            continue
+
+        if is_report_title or is_period_line or is_period_range:
+            if 0 < top < 250:
+                report_lines.append(_strip_page_marker(txt))
+            continue
+
+        # Letterhead band (top ~15 % of page, centred).  Company name +
         # optional shop code + address (typically 3–4 lines).  We keep pure-
         # numeric lines (shop code like "211") as a prefix — the reference
         # Guru Kirpa sample includes them in the address.
-        if top < 90 and x0 >= 180 and len(letterhead) < 4:
+        if top < 120 and x0 >= 180 and len(letterhead) < 4:
             letterhead.append(txt)
             continue
-
-        # Report title band — accept even if page number is present, we
-        # strip it.  Exclude column-caption rows: some PDFs put
-        # "Particulars    Closing Balance" as the table-column caption on
-        # the header row, and we don't want that as the report subtitle.
-        is_column_caption = bool(re.search(r'\bparticulars\b', txt, re.I))
-        if 80 < top < 200 and not is_column_caption:
-            if re.search(r'trial\s+balance|group\s+wise', txt, re.I):
-                report_lines.append(_strip_page_marker(txt))
-            elif re.search(r'closing\s+balance|opening\s+balance', txt, re.I):
-                report_lines.append(_strip_page_marker(txt))
-            elif not has_num and re.search(r'\bas\s+on\b|\bas\s+at\b', txt,
-                                             re.I):
-                report_lines.append(txt)
-            elif re.match(
-                r'^\s*\d{1,2}-\w{3,}-\d{2,4}\s+to\s+\d{1,2}-\w{3,}-\d{2,4}\s*$',
-                    txt, re.I):
-                # Tally-style "1-Apr-25 to 31-Mar-26" period subtitle
-                report_lines.append(txt)
 
     if letterhead:
         meta['company'] = letterhead[0].strip()
@@ -532,6 +564,15 @@ def _parse_format_a(all_pages_lines: List[List[List[dict]]],
 
             # Line values
             name, debit, credit = _classify_by_column(line, debit_right, credit_right)
+
+            # Unlabeled subtotal / grand total — Marg / Super Scales style.
+            # Line has amount(s) at the right column edges but no text at
+            # all in the particulars column.  Silently drop it; the group's
+            # Total row (with a live SUM formula) and the Grand Total row
+            # (sum of Totals) will be regenerated on output.
+            if not name.strip() and (debit is not None or credit is not None):
+                current_group_open = False
+                continue
 
             # Group header? (no values, and not indented far right)
             has_values = (debit is not None) or (credit is not None)
