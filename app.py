@@ -1370,7 +1370,18 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     <p class="section-sub-free">Six calculators built for everyday CA work — no account required, no uploads counted.</p>
   <div class="tools-grid tools-grid-4">
 
-    <a href="/tool/tax-calculator" class="tool-card free-card anim-up anim-d1">
+    <a href="/tool/pdf-to-tb" class="tool-card free-card anim-up anim-d1">
+      <span class="corner-badge cb-free">Free</span>
+      <div class="tool-icon" style="background:linear-gradient(135deg,#ECFDF5,#A7F3D0)">📄</div>
+      <h2>Trial Balance PDF → Excel</h2>
+      <p>Convert any Tally / Busy / Marg Trial Balance PDF into a clean editable Excel — proper Debit/Credit columns, live SUM totals, no merged cells.</p>
+      <div class="tool-footer">
+        <span class="tool-tag tag-live-free">✓ Live · Free</span>
+        <span class="tool-arrow">→</span>
+      </div>
+    </a>
+
+    <a href="/tool/tax-calculator" class="tool-card free-card anim-up anim-d2">
       <span class="corner-badge cb-free">Free</span>
       <div class="tool-icon" style="background:linear-gradient(135deg,#ECFDF5,#A7F3D0)">🧮</div>
       <h2>Income Tax Calculator</h2>
@@ -1381,7 +1392,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       </div>
     </a>
 
-    <a href="/tool/tds-calculator" class="tool-card free-card anim-up anim-d2">
+    <a href="/tool/tds-calculator" class="tool-card free-card anim-up anim-d3">
       <span class="corner-badge cb-free">Free</span>
       <div class="tool-icon" style="background:linear-gradient(135deg,#F0FDFA,#CCFBF1)">📑</div>
       <h2>TDS / TCS Calculator</h2>
@@ -1392,7 +1403,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       </div>
     </a>
 
-    <a href="/tool/depreciation-calculator" class="tool-card free-card anim-up anim-d3">
+    <a href="/tool/depreciation-calculator" class="tool-card free-card anim-up anim-d4">
       <span class="corner-badge cb-free">Free</span>
       <div class="tool-icon" style="background:linear-gradient(135deg,#ECFDF5,#BBF7D0)">🏭</div>
       <h2>Depreciation Calculator</h2>
@@ -1403,7 +1414,7 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       </div>
     </a>
 
-    <a href="/tool/msme-calculator" class="tool-card free-card anim-up anim-d4">
+    <a href="/tool/msme-calculator" class="tool-card free-card anim-up anim-d5">
       <span class="corner-badge cb-free">Free</span>
       <div class="tool-icon" style="background:linear-gradient(135deg,#F0FDFA,#99F6E4)">📄</div>
       <h2>MSME Disallowance</h2>
@@ -1414,22 +1425,11 @@ DASHBOARD_T = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
       </div>
     </a>
 
-    <a href="/tool/capital-gains-calculator" class="tool-card free-card anim-up anim-d5">
+    <a href="/tool/capital-gains-calculator" class="tool-card free-card anim-up anim-d6">
       <span class="corner-badge cb-free">Free</span>
       <div class="tool-icon" style="background:linear-gradient(135deg,#DCFCE7,#A7F3D0)">💰</div>
       <h2>Capital Gains Calculator</h2>
       <p>LTCG/STCG on property, shares, MF. Old vs new regime, indexation, zero-tax sale price.</p>
-      <div class="tool-footer">
-        <span class="tool-tag tag-live-free">✓ Live · Free</span>
-        <span class="tool-arrow">→</span>
-      </div>
-    </a>
-
-    <a href="/tool/pdf-to-tb" class="tool-card free-card anim-up anim-d6">
-      <span class="corner-badge cb-free">Free</span>
-      <div class="tool-icon" style="background:linear-gradient(135deg,#ECFDF5,#A7F3D0)">📄</div>
-      <h2>PDF → Trial Balance</h2>
-      <p>Convert any Tally / Busy / Marg Trial Balance PDF into a clean editable Excel — proper Debit/Credit columns, live SUM totals, no merged cells.</p>
       <div class="tool-footer">
         <span class="tool-tag tag-live-free">✓ Live · Free</span>
         <span class="tool-arrow">→</span>
@@ -12167,47 +12167,63 @@ function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&
 
 PDF_TB_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PDF to Trial Balance – CA Toolkit</title>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>Trial Balance PDF → Excel – CA Toolkit</title>
 <style>
 """ + BASE_CSS + """
-.hero-card{max-width:820px;margin:32px auto;background:#fff;border-radius:20px;
-  box-shadow:0 8px 24px rgba(0,0,0,.06);border:1px solid #E5E7EB;overflow:hidden}
-.hero-hd{background:linear-gradient(135deg,#0B5D4A,#0E8A7B);color:#fff;
-  padding:30px 32px}
-.hero-hd h1{font-family:'Plus Jakarta Sans',sans-serif;font-size:24px;
-  font-weight:800;margin:0 0 6px}
-.hero-hd p{margin:0;font-size:13px;color:rgba(255,255,255,.85);line-height:1.6}
-.badge-free{display:inline-block;background:rgba(255,255,255,.18);color:#fff;
-  padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;
-  letter-spacing:.6px;margin-bottom:10px}
-.hero-body{padding:28px 32px}
-.upload-zone{border:2px dashed #A7F3D0;background:#F0FDF4;border-radius:14px;
-  padding:32px 20px;text-align:center;cursor:pointer;transition:.2s;
-  margin-bottom:20px}
+/* Hero band — matches TDS Calculator / MSME / other free tools */
+.hero{text-align:center;padding:32px 24px 16px;max-width:760px;margin:0 auto}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:#ECFDF5;color:#065F46;
+            border:1px solid #A7F3D0;border-radius:99px;padding:5px 14px;font-size:12px;font-weight:600;margin-bottom:12px}
+h1{font-size:clamp(20px,4vw,32px);font-weight:800;line-height:1.15;letter-spacing:-.5px;margin-bottom:8px}
+h1 em{font-style:normal;color:var(--accent)}
+.hero p{font-size:13px;color:var(--muted);line-height:1.7;max-width:560px;margin:0 auto}
+
+/* Info banner under the hero */
+.act-note{max-width:820px;margin:0 auto;padding:0 24px 14px}
+.act-box{background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:9px 14px;
+         font-size:12px;color:#1e40af;display:flex;align-items:flex-start;gap:6px;line-height:1.6}
+
+/* Main layout — single centred column, ~820px */
+.wrap{max-width:820px;margin:0 auto;padding:0 24px 48px}
+
+/* Card head/body follow BASE_CSS .card conventions */
+.card-body{padding:22px}
+
+/* Upload dropzone (label styled as a block) */
+.upload-zone{display:block;border:2px dashed #A7F3D0;background:#F0FDF4;border-radius:12px;
+  padding:34px 20px;text-align:center;cursor:pointer;transition:all .2s;
+  margin-bottom:16px;box-sizing:border-box}
 .upload-zone:hover{border-color:#059669;background:#DCFCE7}
-.upload-zone.dragover{border-color:#059669;background:#BBF7D0}
-.upload-zone .u-icon{font-size:36px;margin-bottom:10px}
-.upload-zone .u-txt{font-size:14px;color:#065F46;font-weight:600;margin-bottom:4px}
+.upload-zone.dragover{border-color:#059669;background:#BBF7D0;transform:scale(1.01)}
+.upload-zone .u-icon{font-size:36px;margin-bottom:10px;line-height:1}
+.upload-zone .u-txt{font-size:14px;color:#065F46;font-weight:700;margin-bottom:4px}
 .upload-zone .u-sub{font-size:12px;color:#059669}
 #pdfFile{display:none}
+
 .picked{display:none;background:#ECFDF5;border:1px solid #A7F3D0;border-radius:10px;
-  padding:12px 16px;margin-bottom:16px;font-size:13px;color:#065F46}
-.picked.show{display:flex;justify-content:space-between;align-items:center}
+  padding:11px 14px;margin-bottom:14px;font-size:13px;color:#065F46;
+  justify-content:space-between;align-items:center;gap:12px}
+.picked.show{display:flex}
+.picked .pname{font-weight:600;word-break:break-all}
 .picked .remove{background:none;border:none;color:#DC2626;cursor:pointer;
-  font-size:18px;font-weight:700}
-.action-row{display:flex;gap:12px;flex-wrap:wrap}
-.btn-convert{flex:1;min-width:200px;background:linear-gradient(135deg,#059669,#047857);
-  color:#fff;border:none;padding:14px 22px;border-radius:12px;font-size:14px;
-  font-weight:700;cursor:pointer;transition:.2s;font-family:inherit}
-.btn-convert:hover:not(:disabled){transform:translateY(-1px);
-  box-shadow:0 6px 16px rgba(5,150,105,.25)}
-.btn-convert:disabled{opacity:.5;cursor:not-allowed}
-.btn-back{background:#F3F4F6;color:#374151;border:none;padding:14px 22px;
-  border-radius:12px;font-size:14px;font-weight:600;cursor:pointer;
+  font-size:20px;font-weight:700;line-height:1;padding:0 4px;flex:none}
+
+.action-row{display:flex;gap:10px;flex-wrap:wrap}
+.btn-back{background:#F3F4F6;color:#374151;border:none;padding:12px 20px;
+  border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;
   text-decoration:none;display:inline-flex;align-items:center;
   font-family:inherit}
 .btn-back:hover{background:#E5E7EB}
-.status-box{margin-top:16px;padding:14px 18px;border-radius:10px;font-size:13px;
+.btn-convert{flex:1;min-width:200px;background:var(--brand);
+  color:#fff;border:none;padding:12px 20px;border-radius:8px;font-size:14px;
+  font-weight:700;cursor:pointer;transition:background .2s;font-family:inherit}
+.btn-convert:hover:not(:disabled){background:var(--brand-d)}
+.btn-convert:disabled{opacity:.5;cursor:not-allowed}
+
+.status-box{margin-top:14px;padding:12px 16px;border-radius:8px;font-size:13px;
   line-height:1.6;display:none}
 .status-box.show{display:block}
 .status-box.info{background:#EFF6FF;color:#1E40AF;border:1px solid #BFDBFE}
@@ -12217,79 +12233,85 @@ PDF_TB_T = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;
   vertical-align:-2px;margin-right:8px}
 @keyframes spin{to{transform:rotate(360deg)}}
-.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px}
+
+/* Feature tiles */
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:18px}
 @media(max-width:600px){.info-grid{grid-template-columns:1fr}}
-.info-tile{background:#F9FAFB;border:1px solid #E5E7EB;border-radius:12px;
-  padding:16px}
-.info-tile h4{margin:0 0 6px;font-family:'Plus Jakarta Sans',sans-serif;
+.info-tile{background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;padding:14px}
+.info-tile h4{margin:0 0 5px;font-family:'Plus Jakarta Sans',sans-serif;
   font-size:13px;font-weight:800;color:#0B5D4A}
 .info-tile p{margin:0;font-size:12px;color:#4B5563;line-height:1.55}
 </style></head><body>
 
-<!-- NAV -->
-<header class="site-header">
-  <div class="site-header-inner">
-    <a href="/" class="site-brand"><span class="brand-mark">✦</span> CA Toolkit</a>
-    <nav class="site-nav">
-      <a href="/">Home</a>
-      <a href="/ca-tools-hub">All Tools</a>
-      {% if username %}<a href="/logout">Logout</a>{% else %}<a href="/login">Login</a>{% endif %}
-    </nav>
+<nav>
+  <a href="/" class="logo">CA<span class="logo-dot"></span><span>Toolkit</span></a>
+
+  <div class="nav-right">
+    {% if username %}<div class="nav-user"><span class="nav-avatar">{{ username[0].upper() }}</span><strong>{{ username }}</strong></div><div class="nav-sep"></div>{% if is_admin %}<a href="/admin" class="nav-link">Admin</a>{% endif %}{% endif %}
+    <a href="/" class="nav-btn dash">⬅ Dashboard</a>
+    {% if username %}<a href="/logout" class="nav-link">Sign out</a>{% else %}<a href="/login" class="nav-btn">Sign In →</a>{% endif %}
   </div>
-</header>
+</nav>
 
-<div class="hero-card">
-  <div class="hero-hd">
-    <span class="badge-free">🆓 FREE · No login needed</span>
-    <h1>📄 PDF → Trial Balance (Excel)</h1>
-    <p>Upload any Trial Balance PDF exported from Tally, Busy, Marg or other
-    accounting software. Get back a clean, editable .xlsx with proper
-    Debit/Credit columns, section totals, and Grand Total — no merged cells,
-    all totals as live SUM formulas.</p>
-  </div>
+<section class="hero">
+  <div class="hero-badge">🆓 Free · No Login Required</div>
+  <h1>Trial Balance PDF → <em>Excel</em></h1>
+  <p>Upload any Trial Balance PDF exported from Tally, Busy, Marg or other accounting software. Get back a clean, editable .xlsx with proper Debit / Credit columns, section totals, and Grand Total — no merged cells, all totals as live SUM formulas.</p>
+</section>
 
-  <div class="hero-body">
-    <label for="pdfFile" class="upload-zone" id="dropZone">
-      <div class="u-icon">📎</div>
-      <div class="u-txt">Click here or drop your Trial Balance PDF</div>
-      <div class="u-sub">Supports Tally, Busy, Marg &amp; other GST-software exports</div>
-      <input type="file" id="pdfFile" accept=".pdf,application/pdf">
-    </label>
+<div class="act-note">
+  <div class="act-box">ℹ️ <span><strong>Supports every format:</strong> Group-wise with "Total :" rows (Busy / Marg / GST software) and Tally hierarchical with parent subtotals — both handled automatically. No login, no upload counter.</span></div>
+</div>
 
-    <div class="picked" id="picked">
-      <span id="pickedName">–</span>
-      <button class="remove" id="removeBtn" title="Remove">×</button>
+<div class="wrap">
+  <div class="card">
+    <div class="card-head">
+      <div class="icon" style="background:#ECFDF5">📄</div>
+      <div>
+        <h2>Upload &amp; Convert</h2>
+        <p>PDF in, editable Excel out — usually in 3–10 seconds.</p>
+      </div>
     </div>
 
-    <div class="action-row">
-      <a href="/" class="btn-back">← Back</a>
-      <button class="btn-convert" id="convertBtn" disabled>
-        <span id="btnText">Convert to Excel</span>
-      </button>
-    </div>
+    <div class="card-body">
+      <label for="pdfFile" class="upload-zone" id="dropZone">
+        <div class="u-icon">📎</div>
+        <div class="u-txt">Click here or drop your Trial Balance PDF</div>
+        <div class="u-sub">Supports Tally, Busy, Marg &amp; other GST-software exports</div>
+        <input type="file" id="pdfFile" accept=".pdf,application/pdf">
+      </label>
 
-    <div class="status-box" id="statusBox"></div>
+      <div class="picked" id="picked">
+        <span class="pname" id="pickedName">–</span>
+        <button class="remove" id="removeBtn" title="Remove" type="button">×</button>
+      </div>
 
-    <div class="info-grid">
-      <div class="info-tile">
-        <h4>✓ Preserves Format</h4>
-        <p>Debit amounts land in the Debit column, Credit amounts in Credit —
-        never mixed. Grouping and sub-groups are kept.</p>
+      <div class="action-row">
+        <a href="/" class="btn-back">← Back</a>
+        <button class="btn-convert" id="convertBtn" disabled type="button">
+          <span id="btnText">Convert to Excel</span>
+        </button>
       </div>
-      <div class="info-tile">
-        <h4>✓ Editable Output</h4>
-        <p>Zero merged cells. Every total is a live SUM formula. Change a
-        value and every total recalculates instantly.</p>
-      </div>
-      <div class="info-tile">
-        <h4>✓ Every Format</h4>
-        <p>Group-wise with "Total :" rows or Tally hierarchical with parent
-        subtotals — both handled automatically.</p>
-      </div>
-      <div class="info-tile">
-        <h4>✓ Truly Free</h4>
-        <p>No login, no upload counter, no watermark. Convert as many PDFs
-        as you like.</p>
+
+      <div class="status-box" id="statusBox"></div>
+
+      <div class="info-grid">
+        <div class="info-tile">
+          <h4>✓ Preserves Format</h4>
+          <p>Debit amounts land in the Debit column, Credit in Credit — never mixed. Grouping and sub-groups are kept.</p>
+        </div>
+        <div class="info-tile">
+          <h4>✓ Editable Output</h4>
+          <p>Zero merged cells. Every total is a live SUM formula. Change a value and every total recalculates.</p>
+        </div>
+        <div class="info-tile">
+          <h4>✓ Every PDF Layout</h4>
+          <p>Group-wise "Total :" rows or Tally hierarchical with parent subtotals — both handled automatically.</p>
+        </div>
+        <div class="info-tile">
+          <h4>✓ Truly Free</h4>
+          <p>No login, no upload counter, no watermark. Convert as many PDFs as you like.</p>
+        </div>
       </div>
     </div>
   </div>
@@ -12314,7 +12336,8 @@ function clearStatus(){statusBox.className='status-box';statusBox.innerHTML='';}
 function setFile(f){
   if(!f){picked.classList.remove('show');convertBtn.disabled=true;return;}
   if(!f.name.toLowerCase().endsWith('.pdf')){
-    showStatus('Only PDF files are accepted.','error');return;
+    showStatus('Only PDF files are accepted.','error');
+    fileInput.value='';return;
   }
   pickedName.textContent=f.name+' ('+(f.size/1024).toFixed(1)+' KB)';
   picked.classList.add('show');
