@@ -124,6 +124,22 @@ _AMOUNT_RX = re.compile(r'^-?\d[\d,]*(?:\.\d+)?$|^\(-?\d[\d,]*(?:\.\d+)?\)$')
 # Numeric-only token (used when we must decide "is this word a value?")
 _NUM_TEST_RX = re.compile(r'^\(?-?[\d,]+(?:\.\d+)?\)?$')
 
+# ── Format C (DOSPrinter / columnar-ASCII-table) detection ────────────────
+# These PDFs are produced by old DOS-era accounting software (e.g. DOSPrinter)
+# and render as a character-art table with "!" column separators and "=====/-----"
+# row dividers.  pdfplumber emits the separators as single long word-tokens.
+_DOSPRINTER_DIVIDER_RX = re.compile(
+    r'^[!=\-|]{10,}$'   # long runs of !  = or - characters
+)
+# "GROUP TOTAL OF …" or "TOTAL OF …" lines in the DOSPrinter format
+_C_GROUP_TOTAL_RX = re.compile(
+    r'^\s*(?:GROUP\s+)?TOTAL\s+OF\b', re.I
+)
+# Grand total marker in DOSPrinter: "T O T A L" (letter-spaced) or "TOTAL"
+_C_GRAND_TOTAL_RX = re.compile(
+    r'^\s*(?:T\s+O\s+T\s+A\s+L|TOTAL)\s*$', re.I
+)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # WORD / LINE UTILITIES
@@ -359,11 +375,13 @@ def _detect_format(all_lines: List[List[dict]]) -> str:
     """
     Return 'A' for group-wise (with EITHER "Total :" markers OR unlabeled
     bare-number subtotals like Marg / Super Scales exports), 'B' for Tally
-    hierarchical, or 'flat' as a last-resort fallback.
+    hierarchical, 'C' for DOSPrinter columnar ASCII-table, or 'flat' as a
+    last-resort fallback.
     """
     total_hits = 0
     subgroup_hits = 0
     numeric_only_hits = 0
+    divider_hits = 0       # long !===/ !--- lines from DOSPrinter
 
     left_x_seen: List[float] = []
 
@@ -379,6 +397,13 @@ def _detect_format(all_lines: List[List[dict]]) -> str:
         # Must be non-empty and every word must be an amount.
         if line and all(_is_amount(w['text']) for w in line):
             numeric_only_hits += 1
+        # DOSPrinter divider rows: pdfplumber emits "!======!===…" as one token
+        if len(line) == 1 and _DOSPRINTER_DIVIDER_RX.match(txt):
+            divider_hits += 1
+
+    # Format C signal: many character-art divider rows (DOSPrinter / ASCII-table)
+    if divider_hits >= 3:
+        return 'C'
 
     # Group-wise signal: many "Total :" lines OR many unlabeled subtotals
     if total_hits >= 3 or numeric_only_hits >= 3:
@@ -762,6 +787,291 @@ def _parse_format_b(all_pages_lines: List[List[List[dict]]],
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# FORMAT C PARSER  — DOSPrinter / columnar ASCII-table
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# These PDFs are produced by DOS-era accounting software (DOSPrinter, etc.)
+# and look like character-art tables:
+#
+#   ! Code ! Description          ! Station    !     Debit !    Credit !
+#   !======!=====================!============!===========!===========!
+#   !      ! CAPITAL A/C         !            !           !           !
+#   !      !                     !            !           !           !
+#   ! J016 ! SH.JASHANJOT SINGH  !            !           ! 7342734.94!
+#   !------!---------------------!------------!-----------!-----------!
+#   !      ! TOTAL OF CAPITAL A/C!            !      0.00 ! 7342734.94!
+#   !------!---------------------!------------!-----------!-----------!
+#
+# pdfplumber emits each "!======…" divider row as a SINGLE long word-token.
+# Real data rows always have multiple word-tokens, with "!" pipe characters
+# embedded as their own tokens (x0≈28, x0≈69, x0≈276, x0≈362, x0≈455,
+# x0≈547 in this specific PDF family).
+#
+# Detection is column-position based.  The "Debit" and "Credit" column
+# right-edges are already found by _find_column_boundaries; we re-use them.
+# Numbers appear as tokens whose x1 ends with "!" attached (e.g. "4743850.00!")
+# — pdfplumber glues the trailing pipe onto the number.  We strip the "!".
+
+def _strip_pipe(text: str) -> str:
+    """Remove a trailing '!' that pdfplumber sometimes attaches to a number."""
+    return text.rstrip('!')
+
+
+def _is_amount_c(text: str) -> bool:
+    """Like _is_amount but first strips a trailing pipe '!'."""
+    return _is_amount(_strip_pipe(text))
+
+
+def _parse_amount_c(text: str) -> Optional[float]:
+    """Like _parse_amount but first strips a trailing pipe '!'."""
+    return _parse_amount(_strip_pipe(text))
+
+
+def _classify_by_column_c(line: List[dict],
+                            debit_right: float,
+                            credit_right: float) -> Tuple[str, Optional[float], Optional[float]]:
+    """
+    Column classifier for Format C rows.
+
+    The DOSPrinter table has six columns separated by "!" characters:
+      Col 1 (x0≈28–34):   row-start "!"  — always a lone "!" token
+      Col 2 (x0≈40–63):   Code (4-char account code, or blank)
+      Col 3 (x0≈69–74):   separator "!"
+      Col 4 (x0≈80–265):  Description / group name / total label
+      Col 5 (x0≈276–282): separator "!"
+      Col 6 (x0≈299–362): Station (city) — often embedded as "!LUDHIANA"
+      Col 7 (x0≈362–368): separator "!"
+      Col 8 (x0≈370–460): Debit value (ends with "!")
+      Col 9 (x0≈455–460): separator "!"
+      Col 10 (x0≈483–553): Credit value (ends with "!")
+
+    We ignore Code and Station; we collect Description words (x0 < ~270)
+    and then classify numeric tokens by which column right-edge they are
+    closest to, after stripping trailing "!".
+    """
+    # x-coordinate boundaries derived from the column header positions
+    # (same as what _find_column_boundaries already determined):
+    #   debit_right  ≈ 460.8  (x1 of the "Debit" header word)
+    #   credit_right ≈ 553.0  (x1 of the "Credit" header word)
+    #
+    # Token classification:
+    #   x0 <  75  → row/col separator "!" — skip
+    #   x0  75–270 → Description text     — keep
+    #   x0 270–370 → Station col or sep   — skip
+    #   x0 370–465 → Debit value          — numeric
+    #   x0 465–560 → Credit value         — numeric
+
+    DESC_X_MAX = 270.0
+    STATION_X_MAX = 370.0
+
+    part_words: List[str] = []
+    debit_val: Optional[float] = None
+    credit_val: Optional[float] = None
+
+    for w in line:
+        x0 = w['x0']
+        t = w['text']
+
+        # Skip pure separator tokens (lone "!")
+        if t.strip() == '!':
+            continue
+
+        # Station column sometimes appears as "!LUDHIANA" — strip leading "!"
+        clean = t.lstrip('!')
+
+        if x0 < DESC_X_MAX:
+            # Could be separator chars (===/---) — skip those
+            if _DOSPRINTER_DIVIDER_RX.match(clean):
+                continue
+            # Skip the bare code column (x0 40–63) — we don't need it
+            # Actually: include it only if it looks like text, not a 4-char code
+            # We skip account codes (4-char alphanumeric starting at x0≈40)
+            if 38 <= x0 <= 66 and re.match(r'^[A-Z]\d{3}$', clean):
+                continue
+            part_words.append(clean)
+
+        elif x0 < STATION_X_MAX:
+            # Station column — skip (city names go into Station, not TB)
+            # But if it has "!LUDHIANA"-style prefix, city is here — ignore
+            continue
+
+        else:
+            # Numeric column (Debit or Credit)
+            num_str = _strip_pipe(clean)
+            if not _is_amount(num_str):
+                continue
+            val = _parse_amount(num_str)
+            if val is None:
+                continue
+            # Assign to Debit vs Credit by x1 proximity
+            x1 = w['x1']
+            d_dist = abs(x1 - debit_right)
+            c_dist = abs(x1 - credit_right)
+            if d_dist <= c_dist and d_dist <= (credit_right - debit_right) * 0.7:
+                # Accumulate (rare case of split token — just take last)
+                debit_val = val
+            else:
+                credit_val = val
+
+    part_text = ' '.join(part_words).strip()
+    return part_text, debit_val, credit_val
+
+
+def _parse_format_c(all_pages_lines: List[List[List[dict]]],
+                     debit_right: float,
+                     credit_right: float,
+                     page_heights: List[float]) -> List[Dict[str, Any]]:
+    """
+    Parse a DOSPrinter / columnar ASCII-table Trial Balance PDF.
+
+    Row classification:
+      • Single-token line matching _DOSPRINTER_DIVIDER_RX  → divider, skip
+      • Line where description matches _C_GRAND_TOTAL_RX   → grand_total event
+      • Line where description matches _C_GROUP_TOTAL_RX   → total consumed
+        (we regenerate totals with SUM formulas; ignore the PDF values)
+      • Line with no values and description is non-blank   → group header
+      • Line with no values and description is blank       → skip (empty row)
+      • Line with values                                   → leaf entry
+
+    Sub-groups: in DOSPrinter format the sub-group name appears as a separate
+    all-caps line just before its leaves, e.g.:
+        ! ! CAPITAL A/C   !  (sub-group name, no values)
+        ! J016 ! SH.JASHANJOT SINGH … !  (leaf)
+    Section headings (containing "A/C's", "BALANCE SHEET", etc.) open a new
+    top-level group; everything else inside a section is a sub-group.
+
+    Page-break suppression: DOSPrinter repeats the current section header and
+    current sub-group header at the top of the continuation page.  We track
+    the last-seen group and sub-group names and silently skip duplicates.
+
+    DOSPrinter watermark: "DOSPrinter N.N DEMO" appears at the very bottom of
+    the page (top > 820pt on an A4 PDF).  We skip bottom-of-page lines.
+    """
+    events: List[Dict[str, Any]] = []
+    current_section: Optional[str] = None   # e.g. "BALANCE SHEET A/C's"
+    current_subgroup: Optional[str] = None  # e.g. "CAPITAL A/C"
+    saw_grand_total = False
+
+    for page_idx, page_lines in enumerate(all_pages_lines):
+        ph = page_heights[page_idx] if page_idx < len(page_heights) else 842
+
+        for line in page_lines:
+            if not line:
+                continue
+
+            top = line[0]['top']
+
+            # ── Skip DOSPrinter watermark at very bottom of page ───────────
+            # The "DOSPrinter 3.4 DEMO" line sits at top ≈ 829pt on A4 (842pt)
+            if top > ph * 0.97:
+                continue
+
+            # ── Letterhead / page-top: company name + report title ─────────
+            # DOSPrinter repeats these at the top of every page (top < ~100pt).
+            if top < 100:
+                continue
+
+            txt = _line_text(line).strip()
+
+            # ── Single-token divider rows (!=====…, !-----…) ──────────────
+            if len(line) == 1 and _DOSPRINTER_DIVIDER_RX.match(txt):
+                continue
+
+            # ── Column-header row ("! Code ! Description ! Station ! …") ──
+            if re.search(r'\bCode\b.*\bDescription\b', txt, re.I):
+                continue
+
+            # ── Classify the line's columns ────────────────────────────────
+            desc, debit, credit = _classify_by_column_c(line, debit_right, credit_right)
+            desc = desc.strip()
+
+            # Skip blank rows (empty separator rows with only "!" tokens)
+            if not desc and debit is None and credit is None:
+                continue
+
+            # ── Grand total ("T O T A L" / "TOTAL") ───────────────────────
+            # Must be checked BEFORE the leaf branch because the grand-total
+            # row also carries numeric values on the same line.
+            if _C_GRAND_TOTAL_RX.match(desc):
+                if not saw_grand_total:
+                    events.append({'kind': 'grand_total'})
+                    saw_grand_total = True
+                current_section = None
+                current_subgroup = None
+                continue
+
+            # ── Group / section total ("TOTAL OF …" / "GROUP TOTAL OF …") ─
+            # Must be checked BEFORE the leaf branch: these rows always carry
+            # D=0.0 or a sum value, so they would otherwise be emitted as
+            # leaf entries.  We discard the PDF totals and let _render_workbook
+            # regenerate them as live SUM formulas.
+            # "GROUP TOTAL OF …" marks the end of a top-level section; clear
+            # current_section so the next occurrence of the same section label
+            # (e.g. a second "PROFIT & LOSS A/C's" block) is treated as a new
+            # group rather than being skipped as a page-break duplicate.
+            if _C_GROUP_TOTAL_RX.match(desc):
+                current_subgroup = None
+                if desc.upper().startswith('GROUP TOTAL'):
+                    current_section = None
+                continue
+
+            # ── Has numeric values → leaf entry ───────────────────────────
+            if debit is not None or credit is not None:
+                if desc:
+                    events.append({
+                        'kind': 'leaf',
+                        'name': desc,
+                        'debit': debit,
+                        'credit': credit,
+                    })
+                continue
+
+            # ── No values, non-blank description → section or sub-group ───
+            if desc:
+                # Section-level headings are broad accounting section labels:
+                #   "PROFIT & LOSS A/C's"  "BALANCE SHEET A/C's"  "TRADING A/C's"
+                # Sub-group headings are specific account categories:
+                #   "CAPITAL A/C"  "FIXED ASSETS"  "SUNDRY CREDITORS"
+                # Key distinction: section headings contain "A/C's" (possessive
+                # plural) OR contain "BALANCE SHEET" or "PROFIT & LOSS" as the
+                # dominant phrase.  "CAPITAL A/C" only has singular "A/C".
+                is_section = bool(re.search(
+                    r"A/C'?s\b|BALANCE\s+SHEET\s+A|PROFIT\s*&\s*LOSS\s+A|TRADING\s+A/C",
+                    desc, re.I))
+
+                if is_section:
+                    # Page-break duplicate: same section repeated at top of a
+                    # continuation page — skip it but reset sub-group tracking
+                    # so the next sub-group header is correctly emitted.
+                    if desc == current_section:
+                        current_subgroup = None
+                        continue
+                    # Genuine new section (different label, or first time)
+                    events.append({'kind': 'group', 'name': desc})
+                    current_section = desc
+                    current_subgroup = None
+                else:
+                    # Sub-group heading inside the current section.
+                    # Page-break duplicate: same sub-group name repeated at the
+                    # top of the next page — skip it, leaves will follow.
+                    if desc == current_subgroup:
+                        continue
+                    # New sub-group: emit with section as parent
+                    parent = current_section if current_section is not None else desc
+                    if current_section is not None:
+                        events.append({
+                            'kind': 'group',
+                            'name': f'{parent} ------ ( {desc} )',
+                        })
+                    else:
+                        events.append({'kind': 'group', 'name': desc})
+                    current_subgroup = desc
+                continue
+
+    return events
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # FLAT FALLBACK PARSER  — last resort
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1041,22 +1351,37 @@ def convert_pdf_to_tb_excel(pdf_path: str,
                 all_pages_lines.append(lines)
                 all_lines_flat.extend(lines)
 
+            # Detect format first so we can apply format-specific column logic
+            fmt = _detect_format(all_lines_flat)
+
             bounds = _find_column_boundaries(all_lines_flat)
             if bounds is None:
-                return {'status': 'error',
-                        'message': ("Could not detect Debit / Credit column "
-                                    "headers in the PDF. The file may be a "
-                                    "scanned image (no text layer) or use "
-                                    "column names other than 'Debit' and "
-                                    "'Credit'.")}
-            debit_right, credit_right = bounds
+                if fmt == 'C':
+                    # DOSPrinter PDFs have "Debit" and "Credit" as standalone
+                    # words on the header row; if _find_column_boundaries still
+                    # returns None (e.g. "!" is fused to the header word), fall
+                    # back to the known fixed right-edges for this format family.
+                    # These values match the x1 coordinates observed in the PDF.
+                    debit_right = 460.8
+                    credit_right = 553.0
+                else:
+                    return {'status': 'error',
+                            'message': ("Could not detect Debit / Credit column "
+                                        "headers in the PDF. The file may be a "
+                                        "scanned image (no text layer) or use "
+                                        "column names other than 'Debit' and "
+                                        "'Credit'.")}
+            else:
+                debit_right, credit_right = bounds
 
-            fmt = _detect_format(all_lines_flat)
             if fmt == 'A':
                 events = _parse_format_a(all_pages_lines, debit_right,
                                           credit_right, page_heights)
             elif fmt == 'B':
                 events = _parse_format_b(all_pages_lines, debit_right,
+                                          credit_right, page_heights)
+            elif fmt == 'C':
+                events = _parse_format_c(all_pages_lines, debit_right,
                                           credit_right, page_heights)
             else:
                 events = _parse_flat(all_pages_lines, debit_right,
