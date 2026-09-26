@@ -151,6 +151,16 @@ def init_db():
             user_id      INTEGER NOT NULL REFERENCES users(id),
             filename     TEXT,
             processed_at TEXT    NOT NULL)""")
+       # Supabase Data API grants (required from Oct 30 2026)
+        for _tbl in ("users", "usage_log"):
+            for _role in ("authenticated", "service_role"):
+                try:
+                    cur.execute(
+                        f"GRANT SELECT, INSERT, UPDATE, DELETE "
+                        f"ON public.{_tbl} TO {_role}"
+                    )
+                except Exception:
+                    pass  # role may not exist in non-Supabase PG
         # Insert admin if not exists
         cur.execute("SELECT id FROM users WHERE username=%s", (ADMIN_USERNAME,))
         if not cur.fetchone():
